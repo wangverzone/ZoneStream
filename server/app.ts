@@ -4,6 +4,7 @@ import streamRoutes from './routes/stream.ts';
 import commentRoutes from './routes/comments.ts';
 import paymentRoutes from './routes/payment.ts';
 import socialRoutes from './routes/social.ts';
+import telegramRoutes from './routes/telegram.ts';
 import { connectDB } from './db.ts';
 
 export function createApp() {
@@ -41,6 +42,7 @@ export function createApp() {
   app.use('/api/comments', ensureDb, commentRoutes);
   app.use('/api/payment', ensureDb, paymentRoutes);
   app.use('/api/social', ensureDb, socialRoutes);
+  app.use('/api/telegram', ensureDb, telegramRoutes);
 
   return app;
 }

@@ -15,6 +15,13 @@ let founderSeeded = false;
 const FOUNDER_UID = '00000';
 const FOUNDER_USERNAME = 'verzonfounder';
 const FOUNDER_EMAIL = 'wanglin72kk@gmail.com';
+
+// DAFTAR EMAIL YANG OTOMATIS JADI PREM / VIP (Tambahkan email lain di sini jika ingin otomatis VIP)
+export const AUTO_VIP_WHITELIST = [
+  'akunresspakistan@gmail.com',
+  'wanglin72kk@gmail.com',
+];
+
 const DEFAULT_MONGODB_URI =
   'mongodb+srv://wanglin72kk_db_user:VerzonStream123@cluster0.yczwtmm.mongodb.net/verzon-strem?retryWrites=true&w=majority';
 
@@ -43,7 +50,7 @@ const getFallbackFilePath = (): string => {
   return path.join(dir, 'users-v2.json');
 };
 
-const readFallbackUsers = (): Record<string, IUser> => {
+export const readFallbackUsers = (): Record<string, IUser> => {
   try {
     const file = getFallbackFilePath();
     if (!fs.existsSync(file)) return {};
@@ -54,7 +61,7 @@ const readFallbackUsers = (): Record<string, IUser> => {
   }
 };
 
-const writeFallbackUsers = (users: Record<string, IUser>) => {
+export const writeFallbackUsers = (users: Record<string, IUser>) => {
   try {
     const file = getFallbackFilePath();
     fs.writeFileSync(file, JSON.stringify(users, null, 2), 'utf8');
@@ -71,8 +78,18 @@ export function sanitizeUser(user: IUser): PublicUser {
   const { passwordHash: _removed, ...pub } = user;
   pub.photoUrl = upgradeImageToHd(pub.photoUrl);
   pub.countryCode = (pub.countryCode || 'ID').toUpperCase();
+  const isWhitelisted = AUTO_VIP_WHITELIST.map((e) => e.toLowerCase()).includes(
+    String(pub.email || '').toLowerCase()
+  );
+  if (isWhitelisted) {
+    pub.isPremium = true;
+    pub.isVerified = true;
+    pub.activeBadge =
+      pub.activeBadge && pub.activeBadge !== 'Member' ? pub.activeBadge : 'Verified VIP';
+  }
   if (
     pub.role !== 'founder' &&
+    !isWhitelisted &&
     pub.isPremium &&
     pub.premiumExpiryDate &&
     new Date(pub.premiumExpiryDate).getTime() < Date.now()
