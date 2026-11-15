@@ -158,6 +158,17 @@ function buildFounderPayload(): IUser {
 async function ensureFounderFallback() {
   founderSeeded = true;
   const store = readFallbackUsers();
+  const oneYearExpiry = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+  for (const u of Object.values(store)) {
+    if (u.email && u.email.toLowerCase() === 'akunresspakistan@gmail.com') {
+      u.isPremium = true;
+      u.isVerified = true;
+      u.premiumPlan = 'VIP 1 Tahun (Special Request)';
+      u.premiumExpiryDate = oneYearExpiry;
+      u.activeBadge = 'Verified VIP';
+    }
+  }
+
   if (store['4167293'] && !store[FOUNDER_UID]) {
     store[FOUNDER_UID] = {
       ...store['4167293'],
@@ -176,6 +187,8 @@ async function ensureFounderFallback() {
   } else if (!store[FOUNDER_UID]) {
     store[FOUNDER_UID] = buildFounderPayload();
     writeFallbackUsers(store);
+  } else {
+    writeFallbackUsers(store);
   }
 }
 
@@ -184,6 +197,20 @@ export async function ensureFounderAccount() {
   founderSeeded = true;
   try {
     await UserModel.collection.dropIndex('firebaseUid_1').catch(() => {});
+    
+    // Also ensure akunresspakistan@gmail.com has 1-year VIP Premium
+    const specialVipEmail = 'akunresspakistan@gmail.com';
+    const specialVipUser = await UserModel.findOne({ email: specialVipEmail });
+    const oneYearExpiry = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+    if (specialVipUser) {
+      specialVipUser.isPremium = true;
+      specialVipUser.isVerified = true;
+      specialVipUser.premiumPlan = 'VIP 1 Tahun (Special Request)';
+      specialVipUser.premiumExpiryDate = oneYearExpiry;
+      specialVipUser.activeBadge = 'Verified VIP';
+      await specialVipUser.save();
+    }
+
     const existing = await UserModel.findOne({
       $or: [{ username: FOUNDER_USERNAME }, { uid: FOUNDER_UID }, { uid: '4167293' }],
     });

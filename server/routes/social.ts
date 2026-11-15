@@ -14,6 +14,8 @@ import {
 } from '../db.ts';
 import { FriendshipModel, type IFriendship } from '../models/Friendship.ts';
 import { ChatMessageModel, type IChatMessage } from '../models/ChatMessage.ts';
+import { GroupChatModel, type IGroupChat } from '../models/GroupChat.ts';
+import { GroupMessageModel, type IGroupMessage } from '../models/GroupMessage.ts';
 
 const router = Router();
 
@@ -644,6 +646,236 @@ router.delete('/messages/:messageId', requireAuth, async (req: AuthenticatedRequ
   } catch (err) {
     console.error('[Social Message Delete Error]', err);
     return res.status(500).json({ error: 'Gagal menghapus pesan' });
+  }
+});
+
+interface StoredGroupChat extends IGroupChat {
+  _id: string;
+}
+
+interface StoredGroupMessage extends IGroupMessage {
+  _id: string;
+  createdAt: Date;
+}
+
+// GET /api/social/groups — List groups user belongs to
+router.get('/groups', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    void touchUserLastActive(meUid);
+    await connectDB();
+
+    let groups: any[] = [];
+    if (isDbMongoConnected()) {
+      const docs = await GroupChatModel.find({ members: meUid }).sort({ createdAt: -1 });
+      groups = docs.map((d) => ({ ...d.toObject(), _id: String(d._id) }));
+    } else {
+      const all = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+      groups = all.filter((g) => g.members?.includes(meUid));
+    }
+
+    return res.json({ ok: true, groups });
+  } catch (err) {
+    console.error('[Social Groups List Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat daftar grup' });
+  }
+});
+
+// POST /api/social/groups/create — Create new WhatsApp-style group
+router.post('/groups/create', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const name = String(req.body?.name || '').trim().slice(0, 50);
+    const description = String(req.body?.description || '').trim().slice(0, 200);
+    const avatarUrl = String(req.body?.avatarUrl || '').trim();
+    const invitedUids = Array.isArray(req.body?.members) ? req.body.members : [];
+
+    if (!name) {
+      return res.status(400).json({ error: 'Nama grup wajib diisi.' });
+    }
+
+    const members = Array.from(new Set([meUid, ...invitedUids]));
+    const groupId = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    void touchUserLastActive(meUid);
+    await connectDB();
+
+    let created: any;
+    if (isDbMongoConnected()) {
+      const doc = await GroupChatModel.create({
+        groupId,
+        name,
+        description,
+        avatarUrl,
+        creatorUid: meUid,
+        members,
+      });
+      created = { ...doc.toObject(), _id: String(doc._id) };
+    } else {
+      const all = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+      created = {
+        _id: `g_${Date.now()}`,
+        groupId,
+        name,
+        description,
+        avatarUrl,
+        creatorUid: meUid,
+        members,
+        createdAt: new Date(),
+      };
+      all.push(created);
+      writeFallbackJson('groups-v1.json', all);
+    }
+
+    return res.status(201).json({ ok: true, group: created });
+  } catch (err) {
+    console.error('[Social Group Create Error]', err);
+    return res.status(500).json({ error: 'Gagal membuat grup baru' });
+  }
+});
+
+// POST /api/social/groups/:groupId/avatar — Change group profile picture
+router.post('/groups/:groupId/avatar', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const groupId = String(req.params.groupId || '').trim();
+    const avatarUrl = String(req.body?.avatarUrl || '').trim();
+    await connectDB();
+
+    if (isDbMongoConnected()) {
+      const group = await GroupChatModel.findOne({ groupId });
+      if (!group) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
+      }
+      group.avatarUrl = avatarUrl;
+      await group.save();
+    } else {
+      const all = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+      const found = all.find((g) => g.groupId === groupId);
+      if (!found) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      found.avatarUrl = avatarUrl;
+      writeFallbackJson('groups-v1.json', all);
+    }
+
+    return res.json({ ok: true, avatarUrl });
+  } catch (err) {
+    console.error('[Social Group Avatar Error]', err);
+    return res.status(500).json({ error: 'Gagal mengubah foto profil grup' });
+  }
+});
+
+// GET /api/social/groups/:groupId/messages — Get messages for group
+router.get('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const groupId = String(req.params.groupId || '').trim();
+    void touchUserLastActive(meUid);
+    await connectDB();
+
+    let group: any = null;
+    let messages: any[] = [];
+
+    if (isDbMongoConnected()) {
+      group = await GroupChatModel.findOne({ groupId });
+      if (!group) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
+      }
+      const docs = await GroupMessageModel.find({ groupId }).sort({ createdAt: 1 }).limit(200);
+      messages = docs.map((d) => ({ ...d.toObject(), _id: String(d._id) }));
+      group = group.toObject();
+    } else {
+      const allGroups = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+      group = allGroups.find((g) => g.groupId === groupId);
+      if (!group) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
+      }
+      const allMsgs = readFallbackJson<StoredGroupMessage[]>('group-messages-v1.json', []);
+      messages = allMsgs
+        .filter((m) => m.groupId === groupId)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        .slice(-200);
+    }
+
+    return res.json({ ok: true, group, messages });
+  } catch (err) {
+    console.error('[Social Group Messages Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat pesan grup' });
+  }
+});
+
+// POST /api/social/groups/:groupId/messages — Send message, photo, video, VN (audio), or VIP sticker to group
+router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const groupId = String(req.params.groupId || '').trim();
+    const text = String(req.body?.text || '').trim().slice(0, 1500);
+    const mediaUrl = String(req.body?.mediaUrl || '').trim();
+    const mediaType = req.body?.mediaType || ''; // 'image' | 'video' | 'audio'
+    const sticker = String(req.body?.sticker || '').trim();
+    const replyToId = String(req.body?.replyToId || '').trim();
+    const replySenderName = String(req.body?.replySenderName || '').trim().slice(0, 40);
+    const replyText = String(req.body?.replyText || '').trim().slice(0, 140);
+
+    if (!groupId) {
+      return res.status(400).json({ error: 'Grup tidak valid.' });
+    }
+    if (!text && !mediaUrl && !sticker) {
+      return res.status(400).json({ error: 'Pesan tidak boleh kosong.' });
+    }
+
+    const sender = await findUserByUid(meUid);
+    if (!sender) {
+      return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
+    }
+
+    const canUseVipSticker = Boolean(sender.isPremium || sender.role === 'founder');
+    const cleanSticker = sticker && canUseVipSticker ? sticker : '';
+    void touchUserLastActive(meUid);
+    await connectDB();
+
+    let created: any;
+    if (isDbMongoConnected()) {
+      const doc = await GroupMessageModel.create({
+        groupId,
+        senderUid: meUid,
+        senderName: sender.name,
+        senderPhoto: sender.photoUrl || '',
+        text,
+        mediaUrl,
+        mediaType,
+        sticker: cleanSticker,
+        replyToId,
+        replySenderName,
+        replyText,
+      });
+      created = { ...doc.toObject(), _id: String(doc._id) };
+    } else {
+      const all = readFallbackJson<StoredGroupMessage[]>('group-messages-v1.json', []);
+      created = {
+        _id: `gmsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        groupId,
+        senderUid: meUid,
+        senderName: sender.name,
+        senderPhoto: sender.photoUrl || '',
+        text,
+        mediaUrl,
+        mediaType,
+        sticker: cleanSticker,
+        replyToId,
+        replySenderName,
+        replyText,
+        createdAt: new Date(),
+      };
+      all.push(created);
+      writeFallbackJson('group-messages-v1.json', all);
+    }
+
+    return res.status(201).json({ ok: true, message: created });
+  } catch (err) {
+    console.error('[Social Group Message Send Error]', err);
+    return res.status(500).json({ error: 'Gagal mengirim pesan grup' });
   }
 });
 

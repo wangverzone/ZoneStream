@@ -235,10 +235,15 @@ export interface PublicProfileDetail extends PublicCommunityUser {
 
 export interface ChatMessageItem {
   _id: string;
-  conversationId: string;
+  conversationId?: string;
+  groupId?: string;
   senderUid: string;
-  recipientUid: string;
+  recipientUid?: string;
+  senderName?: string;
+  senderPhoto?: string;
   text: string;
+  mediaUrl?: string;
+  mediaType?: 'image' | 'video' | 'audio' | '';
   sticker?: string;
   replyToId?: string;
   replySenderName?: string;
