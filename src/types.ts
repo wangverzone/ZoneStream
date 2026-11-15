@@ -20,6 +20,17 @@ export interface BookmarkItem {
   addedAt: string;
 }
 
+export interface EpisodeBookmarkItem {
+  id: string;
+  type: 'anime' | 'donghua';
+  title: string;
+  poster: string;
+  episodeId: string;
+  episodeTitle: string;
+  episodeNumber: string;
+  addedAt: string;
+}
+
 export interface UserProfile {
   uid: string;
   username: string;
@@ -46,6 +57,7 @@ export interface UserProfile {
   totalEpisodesWatched?: number;
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
+  episodeBookmarks: EpisodeBookmarkItem[];
 }
 
 export interface WatchHistoryReward {

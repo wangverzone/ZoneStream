@@ -5,6 +5,7 @@ import type {
   UserProfile,
   WatchHistoryItem,
   BookmarkItem,
+  EpisodeBookmarkItem,
   WatchHistoryReward,
 } from '../types';
 
@@ -66,23 +67,38 @@ interface AuthContextValue {
   toggleFounderAdPreview: () => Promise<boolean>;
   recordWatchHistory: (item: Omit<WatchHistoryItem, 'updatedAt'>) => Promise<WatchHistoryReward>;
   toggleBookmark: (item: Omit<BookmarkItem, 'addedAt'>) => Promise<boolean>;
+  toggleEpisodeBookmark: (item: Omit<EpisodeBookmarkItem, 'addedAt'>) => Promise<boolean>;
   getLocalHistory: () => WatchHistoryItem[];
   getLocalBookmarks: () => BookmarkItem[];
+  getLocalEpisodeBookmarks: () => EpisodeBookmarkItem[];
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-function readGuestData(): { history: WatchHistoryItem[]; bookmarks: BookmarkItem[] } {
+function readGuestData(): {
+  history: WatchHistoryItem[];
+  bookmarks: BookmarkItem[];
+  episodeBookmarks: EpisodeBookmarkItem[];
+} {
   try {
     const raw = localStorage.getItem(GUEST_STORAGE_KEY);
-    if (!raw) return { history: [], bookmarks: [] };
-    return JSON.parse(raw);
+    if (!raw) return { history: [], bookmarks: [], episodeBookmarks: [] };
+    const parsed = JSON.parse(raw);
+    return {
+      history: parsed.history || [],
+      bookmarks: parsed.bookmarks || [],
+      episodeBookmarks: parsed.episodeBookmarks || [],
+    };
   } catch {
-    return { history: [], bookmarks: [] };
+    return { history: [], bookmarks: [], episodeBookmarks: [] };
   }
 }
 
-function writeGuestData(data: { history: WatchHistoryItem[]; bookmarks: BookmarkItem[] }) {
+function writeGuestData(data: {
+  history: WatchHistoryItem[];
+  bookmarks: BookmarkItem[];
+  episodeBookmarks: EpisodeBookmarkItem[];
+}) {
   try {
     localStorage.setItem(GUEST_STORAGE_KEY, JSON.stringify(data));
   } catch {
@@ -597,8 +613,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return !exists;
   };
 
+  const toggleEpisodeBookmark = async (
+    item: Omit<EpisodeBookmarkItem, 'addedAt'>
+  ): Promise<boolean> => {
+    const token = getToken();
+    if (token) {
+      try {
+        const resp = await fetch('/api/user/episode-bookmark', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(item),
+        });
+        const json = await resp.json();
+        if (resp.ok && json.user) {
+          setUser(json.user);
+          return Boolean(json.bookmarked);
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    const currentEps = guestData.episodeBookmarks || [];
+    const exists = currentEps.some((b) => b.episodeId === item.episodeId);
+    const nextEps = exists
+      ? currentEps.filter((b) => b.episodeId !== item.episodeId)
+      : [{ ...item, addedAt: new Date().toISOString() }, ...currentEps];
+    const next = { ...guestData, episodeBookmarks: nextEps };
+    setGuestData(next);
+    writeGuestData(next);
+    return !exists;
+  };
+
   const getLocalHistory = () => (user ? user.watchHistory : guestData.history);
   const getLocalBookmarks = () => (user ? user.bookmarks : guestData.bookmarks);
+  const getLocalEpisodeBookmarks = () =>
+    user ? user.episodeBookmarks || [] : guestData.episodeBookmarks || [];
 
   const isPremium = Boolean(user?.isPremium);
 
@@ -619,8 +672,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         toggleFounderAdPreview,
         recordWatchHistory,
         toggleBookmark,
+        toggleEpisodeBookmark,
         getLocalHistory,
         getLocalBookmarks,
+        getLocalEpisodeBookmarks,
       }}
     >
       {children}

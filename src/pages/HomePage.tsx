@@ -29,6 +29,7 @@ import { VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import { useAuth } from '../context/AuthContext';
+import { PredictiveSearchDropdown } from '../components/PredictiveSearchDropdown';
 import type {
   HeroSlide,
   MediaCardItem,
@@ -119,6 +120,7 @@ export function HomePage() {
   });
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [syncingFeed, setSyncingFeed] = useState(false);
 
@@ -290,6 +292,15 @@ export function HomePage() {
     }
   };
 
+  const handleRandomGacha = () => {
+    const allPool = [...latestEpisodes, ...donghuaList, ...animeList];
+    if (allPool.length === 0) return;
+    const randomItem = allPool[Math.floor(Math.random() * allPool.length)];
+    if (randomItem?.id) {
+      navigate(`/detail/${randomItem.type}/${encodeURIComponent(randomItem.id)}`);
+    }
+  };
+
   const activeHero = heroSlides[currentSlide];
   const isHeroBookmarked = activeHero
     ? bookmarks.some((b) => b.id === activeHero.id && b.type === activeHero.type)
@@ -344,28 +355,45 @@ export function HomePage() {
             </div>
           </Link>
 
-          {/* Desktop/Tablet Inline Search (Anime & Donghua) + Dedicated Cari User button */}
-          <div className="hidden md:flex flex-1 max-w-lg mx-4 items-center gap-2">
-            <form onSubmit={handleSearchSubmit} className="flex-1">
+          {/* Desktop/Tablet Inline Search (Anime & Donghua) + Dedicated Cari User & Gacha button */}
+          <div className="hidden md:flex flex-1 max-w-xl mx-4 items-center gap-2">
+            <form onSubmit={handleSearchSubmit} className="flex-1 relative">
               <div className="relative w-full">
                 <Search className="w-4 h-4 text-slate-400 dark:text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  onFocus={() => setIsSearchFocused(true)}
+                  onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
                   placeholder="Cari Donghua, Anime, Movie..."
                   className="w-full h-10 pl-10 pr-4 rounded-xl bg-white dark:bg-[#13151D] border border-slate-200 dark:border-white/[0.08] text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-[#E84A18]"
+                />
+                <PredictiveSearchDropdown
+                  query={searchQuery}
+                  isOpen={isSearchFocused}
+                  onClose={() => setIsSearchFocused(false)}
+                  items={[...latestEpisodes, ...donghuaList, ...animeList]}
                 />
               </div>
             </form>
             <Link
               to="/community"
               className="h-10 px-3 rounded-xl bg-white dark:bg-[#13151D] hover:border-[#E84A18] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-gray-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-              title="Pencarian User & Komunitas (terpisah dari Anime/Donghua)"
+              title="Pencarian User & Komunitas"
             >
               <Users className="w-3.5 h-3.5 text-[#E84A18]" />
               <span>Cari User</span>
             </Link>
+            <button
+              type="button"
+              onClick={handleRandomGacha}
+              className="h-10 px-3 rounded-xl bg-white dark:bg-[#13151D] hover:border-[#E84A18] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-gray-200 inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+              title="Rekomendasi Gacha Acak Anime/Donghua"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-[#E84A18]" />
+              <span>Gacha Acak</span>
+            </button>
           </div>
 
           <div className="flex items-center gap-1 sm:gap-1.5 relative shrink-0">
@@ -491,24 +519,34 @@ export function HomePage() {
 
         {/* Mobile Quick Search Bar */}
         {showQuickSearch && (
-          <form onSubmit={handleSearchSubmit} className="md:hidden mb-4 flex gap-2">
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="search"
-                autoFocus
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Cari Donghua atau Anime..."
-                className="w-full h-11 pl-10 pr-4 rounded-xl bg-white dark:bg-[#14161E] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-[#E84A18]"
-              />
+          <form onSubmit={handleSearchSubmit} className="md:hidden mb-4 relative">
+            <div className="relative flex gap-2">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="search"
+                  autoFocus
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onFocus={() => setIsSearchFocused(true)}
+                  onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+                  placeholder="Cari Donghua atau Anime..."
+                  className="w-full h-11 pl-10 pr-4 rounded-xl bg-white dark:bg-[#14161E] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-[#E84A18]"
+                />
+                <PredictiveSearchDropdown
+                  query={searchQuery}
+                  isOpen={isSearchFocused}
+                  onClose={() => setIsSearchFocused(false)}
+                  items={[...latestEpisodes, ...donghuaList, ...animeList]}
+                />
+              </div>
+              <button
+                type="submit"
+                className="px-4 h-11 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold whitespace-nowrap transition-colors"
+              >
+                Cari
+              </button>
             </div>
-            <button
-              type="submit"
-              className="px-4 h-11 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold whitespace-nowrap transition-colors"
-            >
-              Cari
-            </button>
           </form>
         )}
 
@@ -1104,42 +1142,117 @@ export function HomePage() {
           </section>
         )}
 
-        {/* Clean Platform Footer */}
-        <footer className="mt-10 pt-6 pb-4 border-t border-slate-200 dark:border-white/[0.06] flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500 dark:text-[#7A808D]">
-          <div className="flex items-center gap-2.5 text-slate-800 dark:text-gray-300 font-bold">
-            <img
-              src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
-              alt="ZoneStream Logo"
-              className="w-7 h-7 rounded-lg object-cover ring-1 ring-[#E84A18]/60"
-            />
-            <span>ZoneStream Streaming</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link
-              to="/schedule"
-              className="hover:text-slate-900 dark:hover:text-white transition-colors"
-            >
-              Jadwal Rilis
-            </Link>
+        {/* Genre Explorer Quick Grid */}
+        <section className="mt-10">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+              Jelajahi Genre Populer
+            </h2>
             <Link
               to="/catalog"
-              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+              className="text-xs text-slate-500 dark:text-[#9CA3AF] hover:text-[#E84A18] flex items-center gap-0.5 font-medium"
             >
-              Katalog
+              <span>Semua Genre</span>
+              <ChevronRight className="w-4 h-4" />
             </Link>
-            <Link
-              to="/library"
-              className="hover:text-slate-900 dark:hover:text-white transition-colors"
-            >
-              Watchlist
-            </Link>
-            <Link
-              to="/profile"
-              className="hover:text-slate-900 dark:hover:text-white transition-colors"
-            >
-              Akun
-            </Link>
-            <TelegramCsButton />
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
+            {[
+              { name: 'Action', desc: 'Pertarungan epik & jurus sakti', count: '420+ Judul' },
+              { name: 'Cultivation', desc: 'Kultivasi menuju keabadian', count: '310+ Judul' },
+              { name: 'Fantasy', desc: 'Dunia sihir & mitologi', count: '550+ Judul' },
+              { name: 'Romance', desc: 'Kisah cinta menyentuh hati', count: '180+ Judul' },
+              { name: 'Adventure', desc: 'Petualangan tanpa batas', count: '390+ Judul' },
+              { name: 'Martial Arts', desc: 'Pencak silat & bela diri', count: '280+ Judul' },
+              { name: 'Sci-Fi', desc: 'Teknologi masa depan', count: '140+ Judul' },
+              { name: 'Isekai', desc: 'Reinkarnasi di dunia lain', count: '210+ Judul' },
+              { name: 'Comedy', desc: 'Humor segar menghibur', count: '300+ Judul' },
+              { name: 'Supernatural', desc: 'Kekuatan mistis & gaib', count: '250+ Judul' },
+            ].map((g) => (
+              <Link
+                key={g.name}
+                to={`/catalog?genre=${encodeURIComponent(g.name.toLowerCase())}`}
+                className="group p-3.5 rounded-2xl bg-white hover:bg-slate-50 dark:bg-[#14161D] dark:hover:bg-[#1C1F2B] border border-slate-200 dark:border-white/5 transition-all shadow-sm dark:shadow-none flex flex-col justify-between"
+              >
+                <div>
+                  <h3 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-[#E84A18] transition-colors">
+                    {g.name}
+                  </h3>
+                  <p className="text-[10px] text-slate-500 dark:text-[#9CA3AF] mt-0.5 line-clamp-1">
+                    {g.desc}
+                  </p>
+                </div>
+                <span className="text-[10px] text-[#E84A18] font-bold mt-2">
+                  {g.count} →
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        {/* Professional Multi-Column Footer */}
+        <footer className="mt-12 pt-8 pb-6 border-t border-slate-200 dark:border-white/[0.08] text-xs text-slate-500 dark:text-[#7A808D]">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div className="space-y-3 md:col-span-1">
+              <div className="flex items-center gap-2.5 text-slate-900 dark:text-white font-extrabold text-sm">
+                <img
+                  src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
+                  alt="ZoneStream Logo"
+                  className="w-8 h-8 rounded-xl object-cover ring-2 ring-[#E84A18]/60 shadow-md"
+                />
+                <span>ZoneStream &amp; Donghive</span>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF] leading-relaxed">
+                Platform streaming anime &amp; donghua sub Indo terlengkap dengan update otomatis setiap hari, multi-server HD anti-error, Watch Party, &amp; komunitas aktif.
+              </p>
+            </div>
+
+            <div>
+              <h4 className="font-extrabold text-slate-900 dark:text-white mb-3 text-xs uppercase tracking-wider">
+                Navigasi Utama
+              </h4>
+              <ul className="space-y-2 text-[11px]">
+                <li><Link to="/" className="hover:text-[#E84A18] transition-colors">Beranda Utama</Link></li>
+                <li><Link to="/catalog" className="hover:text-[#E84A18] transition-colors">Katalog Lengkap</Link></li>
+                <li><Link to="/schedule" className="hover:text-[#E84A18] transition-colors">Jadwal Rilis Harian</Link></li>
+                <li><Link to="/library" className="hover:text-[#E84A18] transition-colors">Library &amp; Watchlist</Link></li>
+              </ul>
+            </div>
+
+            <div>
+              <h4 className="font-extrabold text-slate-900 dark:text-white mb-3 text-xs uppercase tracking-wider">
+                Komunitas &amp; Sosial
+              </h4>
+              <ul className="space-y-2 text-[11px]">
+                <li><Link to="/community" className="hover:text-[#E84A18] transition-colors">Komunitas &amp; Cari Teman</Link></li>
+                <li><Link to="/chat" className="hover:text-[#E84A18] transition-colors">Grup Chat &amp; Watch Party</Link></li>
+                <li><a href="https://t.me/ZhuuVerzon" target="_blank" rel="noreferrer" className="hover:text-[#E84A18] transition-colors">Bot VIP Telegram</a></li>
+                <li><Link to="/profile" className="hover:text-[#E84A18] transition-colors">Akun &amp; Langganan VIP</Link></li>
+              </ul>
+            </div>
+
+            <div>
+              <h4 className="font-extrabold text-slate-900 dark:text-white mb-3 text-xs uppercase tracking-wider">
+                Dukungan &amp; Bantuan
+              </h4>
+              <div className="space-y-2.5">
+                <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                  Butuh bantuan atau kendala pemutaran video? Hubungi Customer Service resmi kami.
+                </p>
+                <TelegramCsButton />
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-6 border-t border-slate-200 dark:border-white/[0.05] flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px]">
+            <p>&copy; {new Date().getFullYear()} ZoneStream &amp; Donghive Official. All rights reserved.</p>
+            <div className="flex items-center gap-4 text-slate-400">
+              <span>Server HD Stabil</span>
+              <span>•</span>
+              <span>Sub Indo / English / Japan / Mandarin</span>
+              <span>•</span>
+              <span>Zero Error</span>
+            </div>
           </div>
         </footer>
       </div>

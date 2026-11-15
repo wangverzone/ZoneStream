@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { AdsterraGlobalManager } from './components/AdsterraAds';
+import { PageTransition } from './components/PageTransition';
 import { HomePage } from './pages/HomePage';
 import { SchedulePage } from './pages/SchedulePage';
 import { CatalogPage } from './pages/CatalogPage';
@@ -21,21 +22,21 @@ export default function App() {
         <BrowserRouter>
           <AdsterraGlobalManager />
           <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/schedule" element={<SchedulePage />} />
-            <Route path="/catalog" element={<CatalogPage />} />
-            <Route path="/library" element={<LibraryPage />} />
-            <Route path="/community" element={<CommunityPage />} />
-            <Route path="/users" element={<CommunityPage />} />
-            <Route path="/u/:uid" element={<PublicProfilePage />} />
-            <Route path="/user/:uid" element={<PublicProfilePage />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/chat/:peerUid" element={<ChatPage />} />
-            <Route path="/login" element={<ProfilePage />} />
-            <Route path="/profile" element={<ProfilePage />} />
-            <Route path="/profile/edit" element={<EditProfilePage />} />
-            <Route path="/detail/:type/:id" element={<DetailPage />} />
-            <Route path="/watch/:type/:episodeId" element={<WatchPage />} />
+            <Route path="/" element={<PageTransition><HomePage /></PageTransition>} />
+            <Route path="/schedule" element={<PageTransition><SchedulePage /></PageTransition>} />
+            <Route path="/catalog" element={<PageTransition><CatalogPage /></PageTransition>} />
+            <Route path="/library" element={<PageTransition><LibraryPage /></PageTransition>} />
+            <Route path="/community" element={<PageTransition><CommunityPage /></PageTransition>} />
+            <Route path="/users" element={<PageTransition><CommunityPage /></PageTransition>} />
+            <Route path="/u/:uid" element={<PageTransition><PublicProfilePage /></PageTransition>} />
+            <Route path="/user/:uid" element={<PageTransition><PublicProfilePage /></PageTransition>} />
+            <Route path="/chat" element={<PageTransition><ChatPage /></PageTransition>} />
+            <Route path="/chat/:peerUid" element={<PageTransition><ChatPage /></PageTransition>} />
+            <Route path="/login" element={<PageTransition><ProfilePage /></PageTransition>} />
+            <Route path="/profile" element={<PageTransition><ProfilePage /></PageTransition>} />
+            <Route path="/profile/edit" element={<PageTransition><EditProfilePage /></PageTransition>} />
+            <Route path="/detail/:type/:id" element={<PageTransition><DetailPage /></PageTransition>} />
+            <Route path="/watch/:type/:episodeId" element={<PageTransition><WatchPage /></PageTransition>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>

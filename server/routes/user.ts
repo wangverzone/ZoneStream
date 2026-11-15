@@ -805,4 +805,53 @@ router.post('/bookmark', requireAuth, async (req: AuthenticatedRequest, res) => 
   }
 });
 
+// Toggle episode bookmark (Watch Later)
+router.post('/episode-bookmark', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const uid = req.authUser!.uid;
+    const { id, type, title, poster, episodeId, episodeTitle, episodeNumber } = req.body || {};
+    if (!episodeId || !title) {
+      return res.status(400).json({ error: 'Data episode bookmark tidak lengkap' });
+    }
+
+    let bookmarked = false;
+    const updated = await updateUserByUid(uid, (current: any) => {
+      const eps = current.episodeBookmarks || [];
+      const exists = eps.some((b: any) => b.episodeId === episodeId);
+      if (exists) {
+        bookmarked = false;
+        return {
+          ...current,
+          episodeBookmarks: eps.filter((b: any) => b.episodeId !== episodeId),
+        };
+      }
+      bookmarked = true;
+      return {
+        ...current,
+        episodeBookmarks: [
+          {
+            id: String(id),
+            type: (type === 'donghua' ? 'donghua' : 'anime') as 'anime' | 'donghua',
+            title: String(title),
+            poster: String(poster || ''),
+            episodeId: String(episodeId),
+            episodeTitle: String(episodeTitle || ''),
+            episodeNumber: String(episodeNumber || '1'),
+            addedAt: new Date().toISOString(),
+          },
+          ...eps,
+        ].slice(0, 100),
+      };
+    });
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Akun tidak ditemukan' });
+    }
+    return res.json({ ok: true, bookmarked, user: sanitizeUser(updated) });
+  } catch (err) {
+    console.error('[Episode Bookmark Error]', err);
+    return res.status(500).json({ error: 'Gagal menyimpan episode bookmark' });
+  }
+});
+
 export default router;

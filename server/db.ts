@@ -169,6 +169,7 @@ function buildFounderPayload(): IUser {
     totalEpisodesWatched: 0,
     watchHistory: [],
     bookmarks: [],
+    episodeBookmarks: [],
   };
 }
 
@@ -347,6 +348,7 @@ export async function createMemberUser(payload: {
     totalEpisodesWatched: 0,
     watchHistory: [],
     bookmarks: [],
+    episodeBookmarks: [],
   };
 
   if (mongoOk) {
@@ -454,6 +456,7 @@ export async function findOrCreateGoogleUser(params: {
     totalEpisodesWatched: 0,
     watchHistory: [],
     bookmarks: [],
+    episodeBookmarks: [],
   };
 
   if (mongoOk) {

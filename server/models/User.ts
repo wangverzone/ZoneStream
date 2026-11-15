@@ -49,6 +49,7 @@ export interface IUser {
   totalEpisodesWatched?: number;
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
+  episodeBookmarks: EpisodeBookmarkItem[];
   lastActiveAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -86,6 +87,31 @@ const BookmarkSchema = new Schema<BookmarkItem>(
   { _id: false }
 );
 
+export interface EpisodeBookmarkItem {
+  id: string;
+  type: 'anime' | 'donghua';
+  title: string;
+  poster: string;
+  episodeId: string;
+  episodeTitle: string;
+  episodeNumber: string;
+  addedAt: string;
+}
+
+const EpisodeBookmarkSchema = new Schema<EpisodeBookmarkItem>(
+  {
+    id: { type: String, required: true },
+    type: { type: String, enum: ['anime', 'donghua'], required: true },
+    title: { type: String, required: true },
+    poster: { type: String, default: '' },
+    episodeId: { type: String, required: true },
+    episodeTitle: { type: String, required: true },
+    episodeNumber: { type: String, default: '1' },
+    addedAt: { type: String, default: () => new Date().toISOString() },
+  },
+  { _id: false }
+);
+
 const UserSchema = new Schema<IUserDocument>(
   {
     uid: { type: String, required: true, unique: true, index: true },
@@ -114,6 +140,7 @@ const UserSchema = new Schema<IUserDocument>(
     totalEpisodesWatched: { type: Number, default: 0, min: 0 },
     watchHistory: { type: [WatchHistorySchema], default: [] },
     bookmarks: { type: [BookmarkSchema], default: [] },
+    episodeBookmarks: { type: [EpisodeBookmarkSchema], default: [] },
     lastActiveAt: { type: Date, default: () => new Date() },
   },
   { timestamps: true }

@@ -1102,6 +1102,80 @@ export function ProfilePage() {
           </div>
         </div>
 
+        {/* Subscription Management Panel */}
+        <div className="px-4 mt-4">
+          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+            <div className="flex items-center justify-between gap-3 mb-3 pb-3 border-b border-slate-100 dark:border-white/5">
+              <div className="flex items-center gap-2.5">
+                <span className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 to-[#E84A18] text-white flex items-center justify-center shadow-md">
+                  <Crown className="w-4 h-4" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                    Manajemen Langganan &amp; Level VIP
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                    Status akun, level kultivasi, dan masa aktif VIP Anda
+                  </p>
+                </div>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wide ${
+                isPremium || user?.role === 'founder'
+                  ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30'
+                  : 'bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-gray-300'
+              }`}>
+                {user?.role === 'founder' ? 'Founder Lifetime' : isPremium ? 'VIP Aktif' : 'Free Member'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3">
+                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                  Level Akun Anda
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-base font-extrabold text-slate-900 dark:text-white">
+                    Lv. {levelDisplay}
+                  </span>
+                  <span className="text-[11px] text-[#E84A18] font-bold">
+                    ({user?.exp || 0} EXP)
+                  </span>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3">
+                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
+                  Masa Aktif Premium
+                </span>
+                <span className="text-xs font-extrabold text-slate-900 dark:text-white truncate block">
+                  {user?.role === 'founder'
+                    ? 'Seumur Hidup (Founder)'
+                    : isPremium && user?.premiumExpiryDate
+                    ? new Date(user.premiumExpiryDate).toLocaleDateString('id-ID', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })
+                    : 'Belum Berlangganan'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <a
+                href="https://t.me/ZhuuVerzon"
+                target="_blank"
+                rel="noreferrer"
+                className="flex-1 min-h-[44px] rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-sky-500/20 transition-all"
+              >
+                <Send className="w-4 h-4" />
+                <span>Request Upgrade via Bot Telegram</span>
+              </a>
+              <TelegramCsButton />
+            </div>
+          </div>
+        </div>
+
         {/* Upgrade to Premium + Verified Badge Card */}
         <div className="px-4 mt-4">
           <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>

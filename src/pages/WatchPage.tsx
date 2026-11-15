@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   ArrowLeft,
+  Bookmark,
   ChevronLeft,
   ChevronRight,
   Crown,
@@ -13,9 +14,11 @@ import {
   Sparkles,
   Subtitles,
   Timer,
+  Radio,
 } from 'lucide-react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
+import { WatchPartySidebar } from '../components/WatchPartySidebar';
 import { AdsterraBanner300x250 } from '../components/AdsterraAds';
 import { WatchAdsModal } from '../components/WatchAdsModal';
 import { CommentSection } from '../components/CommentSection';
@@ -63,9 +66,29 @@ export function WatchPage() {
   const { type = 'donghua', episodeId = '' } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { isPremium, recordWatchHistory } = useAuth();
+  const { isPremium, recordWatchHistory, toggleEpisodeBookmark, getLocalEpisodeBookmarks } = useAuth();
   const { lang, subLang, changeSubtitle } = useAppLanguage();
   const t = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.id;
+
+  const episodeBookmarks = getLocalEpisodeBookmarks();
+  const isEpisodeBookmarked = episodeBookmarks.some((b) => b.episodeId === episodeId);
+
+  const handleToggleEpisodeBookmark = async () => {
+    const seriesTitle = stream?.seriesTitle || navState?.seriesTitle || stream?.title || 'Video';
+    const seriesId = stream?.seriesId || episodeId;
+    const posterUrl = stream?.poster || navState?.poster || '';
+    const epNumber = stream?.episodeNumber || '1';
+
+    await toggleEpisodeBookmark({
+      id: seriesId,
+      type: type === 'donghua' ? 'donghua' : 'anime',
+      title: seriesTitle,
+      poster: posterUrl,
+      episodeId: episodeId,
+      episodeTitle: stream?.title || `Episode ${epNumber}`,
+      episodeNumber: String(epNumber),
+    });
+  };
 
   const navState =
     (location.state as {
@@ -87,6 +110,7 @@ export function WatchPage() {
   const [adUnlocked, setAdUnlocked] = useState(isPremium || alreadyUnlockedByNav);
   const [nextAdSeconds, setNextAdSeconds] = useState(MIDROLL_INTERVAL_SECONDS);
   const [reward, setReward] = useState<WatchHistoryReward | null>(null);
+  const [showWatchParty, setShowWatchParty] = useState(false);
 
   useEffect(() => {
     if (isPremium) {
@@ -248,14 +272,44 @@ export function WatchPage() {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-10">
         {/* Top Bar */}
         <div className="flex items-center justify-between gap-3 mb-4">
-          <button
-            type="button"
-            onClick={handleBack}
-            className="min-h-[40px] px-3 rounded-xl bg-white hover:bg-slate-100 dark:bg-[#15171F] dark:hover:bg-[#1E212B] text-slate-900 dark:text-white text-xs font-semibold flex items-center gap-2 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>{t.backToDetail}</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleBack}
+              className="min-h-[40px] px-3 rounded-xl bg-white hover:bg-slate-100 dark:bg-[#15171F] dark:hover:bg-[#1E212B] text-slate-900 dark:text-white text-xs font-semibold flex items-center gap-2 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>{t.backToDetail}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleToggleEpisodeBookmark}
+              title={isEpisodeBookmarked ? 'Hapus dari Watch Later' : 'Simpan ke Watch Later'}
+              className={`min-h-[40px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors border ${
+                isEpisodeBookmarked
+                  ? 'bg-[#E84A18] text-white border-[#E84A18]'
+                  : 'bg-white hover:bg-slate-100 dark:bg-[#15171F] dark:hover:bg-[#1E212B] text-slate-700 dark:text-gray-200 border-slate-200 dark:border-white/5'
+              }`}
+            >
+              <Bookmark className={`w-4 h-4 ${isEpisodeBookmarked ? 'fill-current' : ''}`} />
+              <span className="hidden sm:inline">
+                {isEpisodeBookmarked ? 'Tersimpan' : 'Watch Later'}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowWatchParty((s) => !s)}
+              title="Watch Party (Nobar Bersama)"
+              className={`min-h-[40px] px-3 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors border ${
+                showWatchParty
+                  ? 'bg-emerald-500 text-white border-emerald-500'
+                  : 'bg-white hover:bg-slate-100 dark:bg-[#15171F] dark:hover:bg-[#1E212B] text-slate-700 dark:text-gray-200 border-slate-200 dark:border-white/5'
+              }`}
+            >
+              <Radio className={`w-4 h-4 ${showWatchParty ? 'animate-pulse text-white' : 'text-emerald-500'}`} />
+              <span className="hidden sm:inline">Watch Party</span>
+            </button>
+          </div>
 
           {isPremium ? (
             <span className="px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-600 dark:text-amber-300 text-xs font-bold flex items-center gap-1.5">
@@ -310,7 +364,7 @@ export function WatchPage() {
 
         {/* Dual-Engine Video Player Container */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 space-y-4">
+          <div className={`${showWatchParty ? 'lg:col-span-2' : 'lg:col-span-3'} space-y-4`}>
             <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-slate-200 dark:border-white/10 shadow-2xl">
               {loading || switchingMirror ? (
                 <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-xs text-gray-300">
@@ -337,9 +391,19 @@ export function WatchPage() {
               ) : isCurrentBlockedInIframe ? (
                 <div className="w-full h-full flex flex-col items-center justify-center gap-3 p-6 text-center bg-[#111319]">
                   <p className="text-xs sm:text-sm text-gray-200 font-semibold max-w-md">
-                    Server ini membatasi pemutaran di halaman. Silakan klik tombol di bawah untuk pindah ke server lain secara otomatis:
+                    Server ini dibatasi oleh sandbox browser. Klik tombol di bawah untuk memutar dengan Server Cadangan HD atau pindah server:
                   </p>
                   <div className="flex flex-wrap items-center justify-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveUrl('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4');
+                        setActiveStreamType('mp4');
+                      }}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-lg shadow-emerald-600/30"
+                    >
+                      <span>Putar Server Cadangan HD</span>
+                    </button>
                     {stream && stream.servers.length > 1 && (
                       <button
                         type="button"
@@ -347,7 +411,7 @@ export function WatchPage() {
                         className="px-4 py-2 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5"
                       >
                         <RefreshCw className="w-3.5 h-3.5" />
-                        <span>Pindah Server Otomatis</span>
+                        <span>Pindah Server Lain</span>
                       </button>
                     )}
                     <a
@@ -670,6 +734,16 @@ export function WatchPage() {
               </div>
             )}
           </div>
+
+          {/* Watch Party Sidebar */}
+          {showWatchParty && (
+            <WatchPartySidebar
+              episodeId={episodeId}
+              seriesTitle={stream?.title || 'Watch Party'}
+              isOpen={showWatchParty}
+              onClose={() => setShowWatchParty(false)}
+            />
+          )}
         </div>
       </div>
 
