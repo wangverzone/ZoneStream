@@ -63,15 +63,22 @@ async function getRelationshipStatus(
   return 'pending_received';
 }
 
-// GET /api/social/users?q=... — Search ALL community users (distinct from Anime/Donghua catalog search)
+// GET /api/social/users?q=... — Search community users by UID/username/name (requires login & non-empty query for privacy)
 router.get('/users', async (req: AuthenticatedRequest, res) => {
   try {
     const q = String(req.query.q || '').trim();
-    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 30));
+    const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 20));
     const viewerUid = extractViewerUid(req);
 
-    if (viewerUid) {
-      void touchUserLastActive(viewerUid);
+    // Privacy protection: only logged-in users can search, and empty queries never dump member lists
+    if (!viewerUid) {
+      return res.json({ ok: true, users: [], requiresAuth: true });
+    }
+
+    void touchUserLastActive(viewerUid);
+
+    if (!q) {
+      return res.json({ ok: true, users: [] });
     }
 
     const users = await searchCommunityUsers(q, limit);

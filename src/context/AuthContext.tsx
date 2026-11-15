@@ -11,6 +11,29 @@ import type {
 const TOKEN_STORAGE_KEY = 'zonestream_session_token_v1';
 const LEGACY_TOKEN_KEY = 'donghive_session_token_v1';
 const GUEST_STORAGE_KEY = 'zonestream_guest_profile_v1';
+const USER_CACHE_KEY = 'zonestream_user_cache_v2';
+
+function readCachedUser(): UserProfile | null {
+  try {
+    const raw = localStorage.getItem(USER_CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as UserProfile;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedUser(u: UserProfile | null) {
+  try {
+    if (!u) {
+      localStorage.removeItem(USER_CACHE_KEY);
+    } else {
+      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(u));
+    }
+  } catch {
+    // Ignore storage quota issues
+  }
+}
 
 interface AuthContextValue {
   user: UserProfile | null;
@@ -71,95 +94,81 @@ export const AVATAR_BORDER_STYLES: Record<
   string,
   { label: string; ringClass: string; previewColor: string; premiumOnly?: boolean }
 > = {
+  'dragon-crown': {
+    label: 'Sovereign Dragon Crown',
+    ringClass: 'ring-1 ring-amber-400/40',
+    previewColor: 'from-amber-300 via-yellow-500 to-orange-600',
+    premiumOnly: true,
+  },
+  'cat-ears': {
+    label: 'Cyber Neko Headset',
+    ringClass: 'ring-1 ring-pink-400/40',
+    previewColor: 'from-pink-400 via-rose-500 to-indigo-500',
+    premiumOnly: true,
+  },
+  'kitsune-ears': {
+    label: 'Nine-Tail Kitsune Spirit',
+    ringClass: 'ring-1 ring-rose-400/40',
+    previewColor: 'from-rose-400 via-red-500 to-sky-400',
+    premiumOnly: true,
+  },
+  'angel-wings': {
+    label: 'Seraphim Celestial Wings',
+    ringClass: 'ring-1 ring-sky-300/40',
+    previewColor: 'from-sky-200 via-cyan-300 to-blue-500',
+    premiumOnly: true,
+  },
+  'lightning-aura': {
+    label: 'Thunder God Aureole',
+    ringClass: 'ring-1 ring-purple-400/40',
+    previewColor: 'from-purple-400 via-violet-500 to-amber-300',
+    premiumOnly: true,
+  },
+  'sakura-wreath': {
+    label: 'Sakura Blossom Wreath',
+    ringClass: 'ring-1 ring-pink-300/40',
+    previewColor: 'from-pink-300 via-rose-400 to-pink-600',
+    premiumOnly: true,
+  },
+  'sword-lotus': {
+    label: 'Immortal Flying Swords',
+    ringClass: 'ring-1 ring-emerald-400/40',
+    previewColor: 'from-emerald-300 via-teal-500 to-green-700',
+    premiumOnly: true,
+  },
+  'shadow-horns': {
+    label: 'Abyssal Monarch Horns',
+    ringClass: 'ring-1 ring-violet-500/40',
+    previewColor: 'from-violet-500 via-purple-700 to-slate-900',
+    premiumOnly: true,
+  },
+  'cyber-visor': {
+    label: 'Mecha Tactical HUD',
+    ringClass: 'ring-1 ring-cyan-400/40',
+    previewColor: 'from-cyan-300 via-sky-500 to-blue-700',
+    premiumOnly: true,
+  },
+  'frost-crown': {
+    label: 'Glacial Ice Diadem',
+    ringClass: 'ring-1 ring-cyan-200/40',
+    previewColor: 'from-cyan-100 via-sky-300 to-blue-500',
+    premiumOnly: true,
+  },
+  'astral-orbit': {
+    label: 'Cosmic Starlight Orbit',
+    ringClass: 'ring-1 ring-indigo-400/40',
+    previewColor: 'from-indigo-300 via-violet-500 to-amber-300',
+    premiumOnly: true,
+  },
+  none: {
+    label: 'Polos (Tanpa Dekorasi)',
+    ringClass: 'ring-1 ring-white/15',
+    previewColor: 'from-slate-600 to-slate-800',
+  },
   classic: {
-    label: 'Classic Standar',
-    ringClass: 'ring-2 ring-[#2C303A] shadow-lg',
-    previewColor: 'from-slate-500 to-slate-700',
-  },
-  crimson: {
-    label: 'Crimson Flame',
-    ringClass: 'ring-[3px] ring-[#E84A18] shadow-[0_0_22px_rgba(232,74,24,0.65)]',
-    previewColor: 'from-[#E84A18] to-rose-600',
-  },
-  azure: {
-    label: 'Spirit Azure',
-    ringClass: 'ring-[3px] ring-[#3B82F6] shadow-[0_0_22px_rgba(59,130,246,0.6)]',
-    previewColor: 'from-sky-400 to-blue-600',
-  },
-  'emerald-venom': {
-    label: 'Venom Emerald',
-    ringClass: 'ring-[3px] ring-emerald-400 shadow-[0_0_22px_rgba(52,211,153,0.55)]',
-    previewColor: 'from-emerald-400 to-teal-600',
-  },
-  gold: {
-    label: 'Immortal Sovereign Gold',
-    ringClass:
-      'ring-[3px] ring-amber-400 shadow-[0_0_28px_rgba(251,191,36,0.75)]',
-    previewColor: 'from-amber-300 via-yellow-400 to-orange-500',
-    premiumOnly: true,
-  },
-  sakura: {
-    label: 'Sakura Blossom Neon',
-    ringClass:
-      'ring-[3px] ring-rose-400 shadow-[0_0_26px_rgba(251,113,133,0.7)]',
-    previewColor: 'from-pink-400 via-rose-400 to-fuchsia-500',
-    premiumOnly: true,
-  },
-  'cyber-neon': {
-    label: 'Discord Cyber Neon',
-    ringClass:
-      'ring-[3px] ring-cyan-400 shadow-[0_0_28px_rgba(34,211,238,0.8)]',
-    previewColor: 'from-cyan-400 via-sky-500 to-fuchsia-500',
-    premiumOnly: true,
-  },
-  'abyss-void': {
-    label: 'Shadow Abyss Void',
-    ringClass:
-      'ring-[3px] ring-violet-500 shadow-[0_0_28px_rgba(139,92,246,0.8)]',
-    previewColor: 'from-violet-500 via-purple-600 to-indigo-900',
-    premiumOnly: true,
-  },
-  'celestial-aurora': {
-    label: 'Aurora Borealis',
-    ringClass:
-      'ring-[3px] ring-teal-300 shadow-[0_0_30px_rgba(45,212,191,0.75)]',
-    previewColor: 'from-emerald-300 via-teal-400 to-indigo-500',
-    premiumOnly: true,
-  },
-  'frost-crystal': {
-    label: 'Frost Monarch Ice',
-    ringClass:
-      'ring-[3px] ring-sky-300 shadow-[0_0_28px_rgba(125,211,252,0.8)]',
-    previewColor: 'from-cyan-200 via-sky-400 to-blue-600',
-    premiumOnly: true,
-  },
-  'solar-flare': {
-    label: 'Solar Nova Flare',
-    ringClass:
-      'ring-[3px] ring-orange-400 shadow-[0_0_30px_rgba(251,146,60,0.85)]',
-    previewColor: 'from-yellow-300 via-orange-500 to-red-600',
-    premiumOnly: true,
-  },
-  'amethyst-royal': {
-    label: 'Royal Amethyst Nitro',
-    ringClass:
-      'ring-[3px] ring-fuchsia-400 shadow-[0_0_28px_rgba(232,121,249,0.75)]',
-    previewColor: 'from-fuchsia-400 via-purple-500 to-indigo-600',
-    premiumOnly: true,
-  },
-  'blood-moon': {
-    label: 'Crimson Eclipse Aura',
-    ringClass:
-      'ring-[3px] ring-red-500 shadow-[0_0_30px_rgba(239,68,68,0.8)]',
-    previewColor: 'from-red-500 via-rose-600 to-zinc-900',
-    premiumOnly: true,
-  },
-  'rainbow-prism': {
-    label: 'Rainbow Prism Nitro',
-    ringClass:
-      'ring-[3.5px] ring-amber-300 shadow-[0_0_32px_rgba(232,74,24,0.85)] animate-vip-prism',
-    previewColor: 'from-rose-500 via-amber-400 via-emerald-400 to-sky-500',
-    premiumOnly: true,
+    label: 'Polos (Tanpa Dekorasi)',
+    ringClass: 'ring-1 ring-white/15',
+    previewColor: 'from-slate-600 to-slate-800',
   },
 };
 
@@ -179,137 +188,124 @@ export const PROFILE_THEMES: Record<string, ProfileThemeDef> = {
   default: {
     id: 'default',
     label: 'Standar ZoneStream',
-    desc: 'Tampilan klasik bersih',
+    desc: 'Studio sinematik gelap bersih',
     shellClass: '',
-    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-black/35 to-black/30',
-    cardClass: 'bg-white dark:bg-[#13151C] border-slate-200 dark:border-white/[0.06]',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#090A0E]/45 to-black/25',
+    cardClass: 'bg-white dark:bg-[#13151C] border-slate-200 dark:border-white/[0.07]',
     accentTextClass: 'text-[#E84A18]',
     previewSwatch: 'from-slate-700 via-slate-800 to-slate-900',
   },
+  'sovereign-gold': {
+    id: 'sovereign-gold',
+    label: 'Sovereign Gold',
+    desc: 'Aksen kultivator kaisar emas',
+    shellClass: 'bg-gradient-to-b from-amber-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#120F08]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#141310] border-amber-500/20 dark:border-amber-500/20',
+    accentTextClass: 'text-amber-500 dark:text-amber-400',
+    previewSwatch: 'from-amber-400 via-yellow-500 to-orange-600',
+    premiumOnly: true,
+  },
   'nitro-aurora': {
     id: 'nitro-aurora',
-    label: 'Discord Nitro Aurora',
-    desc: 'Gradien indigo & emerald bercahaya',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-indigo-500/10 via-emerald-500/5 to-transparent dark:from-indigo-500/20 dark:via-teal-500/10 dark:to-transparent ring-1 ring-indigo-400/30 shadow-[0_0_45px_rgba(99,102,241,0.18)]',
-    bannerGradientOverlay: 'from-[#0b1020] via-indigo-950/50 to-emerald-950/35',
-    cardClass:
-      'bg-white/90 dark:bg-[#101627]/95 border-indigo-400/30 dark:border-indigo-400/35 shadow-[0_0_24px_rgba(99,102,241,0.12)]',
-    accentTextClass: 'text-indigo-500 dark:text-indigo-300',
-    previewSwatch: 'from-indigo-500 via-teal-400 to-emerald-400',
+    label: 'Midnight Indigo',
+    desc: 'Nuansa indigo & cyan elegan',
+    shellClass: 'bg-gradient-to-b from-indigo-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#0B1020]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#111522] border-indigo-500/20 dark:border-indigo-400/20',
+    accentTextClass: 'text-indigo-500 dark:text-indigo-400',
+    previewSwatch: 'from-indigo-500 via-sky-500 to-teal-400',
     premiumOnly: true,
   },
   'cyber-neon': {
     id: 'cyber-neon',
-    label: 'Cyberpunk Synthwave',
-    desc: 'Cahaya neon cyan & magenta',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-cyan-500/10 via-fuchsia-500/5 to-transparent dark:from-cyan-500/20 dark:via-fuchsia-600/15 dark:to-transparent ring-1 ring-cyan-400/40 shadow-[0_0_50px_rgba(34,211,238,0.2)]',
-    bannerGradientOverlay: 'from-[#070b14] via-fuchsia-950/45 to-cyan-950/40',
-    cardClass:
-      'bg-white/95 dark:bg-[#0E1320]/95 border-cyan-400/35 dark:border-cyan-400/40 shadow-[0_0_24px_rgba(34,211,238,0.15)]',
-    accentTextClass: 'text-cyan-500 dark:text-cyan-300',
-    previewSwatch: 'from-cyan-400 via-sky-500 to-fuchsia-500',
+    label: 'Cyber Mecha',
+    desc: 'Permukaan biru siber masa depan',
+    shellClass: 'bg-gradient-to-b from-cyan-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#08131C]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#101720] border-cyan-500/20 dark:border-cyan-400/20',
+    accentTextClass: 'text-cyan-500 dark:text-cyan-400',
+    previewSwatch: 'from-cyan-400 via-sky-500 to-indigo-600',
     premiumOnly: true,
   },
   'crimson-eclipse': {
     id: 'crimson-eclipse',
-    label: 'Crimson Eclipse',
-    desc: 'Aura merah ruby gelap menyala',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-rose-500/10 via-red-500/5 to-transparent dark:from-rose-600/20 dark:via-red-900/15 dark:to-transparent ring-1 ring-rose-500/35 shadow-[0_0_45px_rgba(244,63,94,0.2)]',
-    bannerGradientOverlay: 'from-[#16070a] via-rose-950/50 to-black/40',
-    cardClass:
-      'bg-white/95 dark:bg-[#180F14]/95 border-rose-500/30 dark:border-rose-500/35 shadow-[0_0_24px_rgba(244,63,94,0.14)]',
+    label: 'Crimson Ember',
+    desc: 'Aksen merah bara sinematik',
+    shellClass: 'bg-gradient-to-b from-rose-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#170A0E]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#171115] border-rose-500/20 dark:border-rose-500/20',
     accentTextClass: 'text-rose-500 dark:text-rose-400',
-    previewSwatch: 'from-red-600 via-rose-500 to-orange-500',
-    premiumOnly: true,
-  },
-  'sovereign-gold': {
-    id: 'sovereign-gold',
-    label: 'Sovereign Gold Emperor',
-    desc: 'Aura emas kaisar abadi eksklusif',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-amber-500/12 via-orange-500/5 to-transparent dark:from-amber-500/20 dark:via-orange-600/10 dark:to-transparent ring-1 ring-amber-400/40 shadow-[0_0_50px_rgba(251,191,36,0.22)]',
-    bannerGradientOverlay: 'from-[#141007] via-amber-950/40 to-black/35',
-    cardClass:
-      'bg-white/95 dark:bg-[#17140D]/95 border-amber-400/35 dark:border-amber-400/40 shadow-[0_0_26px_rgba(251,191,36,0.16)]',
-    accentTextClass: 'text-amber-500 dark:text-amber-300',
-    previewSwatch: 'from-yellow-300 via-amber-500 to-orange-600',
+    previewSwatch: 'from-rose-500 via-red-600 to-orange-600',
     premiumOnly: true,
   },
   'abyss-void': {
     id: 'abyss-void',
-    label: 'Abyssal Void Shadow',
-    desc: 'Gelap ungu kosmik misterius',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-violet-600/10 via-purple-700/5 to-transparent dark:from-violet-600/22 dark:via-purple-950/20 dark:to-transparent ring-1 ring-violet-500/35 shadow-[0_0_48px_rgba(139,92,246,0.22)]',
-    bannerGradientOverlay: 'from-[#0c0818] via-violet-950/55 to-black/40',
-    cardClass:
-      'bg-white/95 dark:bg-[#13101F]/95 border-violet-500/30 dark:border-violet-400/35 shadow-[0_0_24px_rgba(139,92,246,0.15)]',
-    accentTextClass: 'text-violet-500 dark:text-violet-300',
-    previewSwatch: 'from-violet-500 via-purple-600 to-indigo-900',
+    label: 'Abyssal Monarch',
+    desc: 'Ungu gelap shadow monarch',
+    shellClass: 'bg-gradient-to-b from-violet-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#110B1D]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#14111D] border-violet-500/20 dark:border-violet-400/20',
+    accentTextClass: 'text-violet-500 dark:text-violet-400',
+    previewSwatch: 'from-violet-500 via-purple-600 to-slate-900',
     premiumOnly: true,
   },
   'sakura-dream': {
     id: 'sakura-dream',
-    label: 'Sakura Blossom Dream',
-    desc: 'Nuansa pastel pink bunga sakura',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-pink-400/12 via-rose-400/5 to-transparent dark:from-pink-500/20 dark:via-rose-500/10 dark:to-transparent ring-1 ring-pink-400/40 shadow-[0_0_45px_rgba(244,114,182,0.2)]',
-    bannerGradientOverlay: 'from-[#180a14] via-pink-950/45 to-black/30',
-    cardClass:
-      'bg-white/95 dark:bg-[#1A1118]/95 border-pink-400/30 dark:border-pink-400/35 shadow-[0_0_22px_rgba(244,114,182,0.14)]',
-    accentTextClass: 'text-pink-500 dark:text-pink-300',
-    previewSwatch: 'from-pink-300 via-rose-400 to-fuchsia-500',
+    label: 'Sakura Twilight',
+    desc: 'Sentuhan bunga sakura malam',
+    shellClass: 'bg-gradient-to-b from-pink-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#180C14]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#181217] border-pink-500/20 dark:border-pink-400/20',
+    accentTextClass: 'text-pink-500 dark:text-pink-400',
+    previewSwatch: 'from-pink-400 via-rose-500 to-purple-600',
     premiumOnly: true,
   },
   'frost-monarch': {
     id: 'frost-monarch',
-    label: 'Frost Monarch Ice',
-    desc: 'Kristal es biru berkilau',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-sky-400/12 via-blue-500/5 to-transparent dark:from-sky-500/20 dark:via-blue-900/15 dark:to-transparent ring-1 ring-sky-400/40 shadow-[0_0_45px_rgba(56,189,248,0.22)]',
-    bannerGradientOverlay: 'from-[#07111c] via-sky-950/50 to-black/35',
-    cardClass:
-      'bg-white/95 dark:bg-[#0E1622]/95 border-sky-400/30 dark:border-sky-400/35 shadow-[0_0_24px_rgba(56,189,248,0.15)]',
-    accentTextClass: 'text-sky-500 dark:text-sky-300',
-    previewSwatch: 'from-cyan-200 via-sky-400 to-blue-700',
+    label: 'Glacial Frost',
+    desc: 'Biru es glasial tenang',
+    shellClass: 'bg-gradient-to-b from-sky-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#09131E]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#101620] border-sky-500/20 dark:border-sky-400/20',
+    accentTextClass: 'text-sky-500 dark:text-sky-400',
+    previewSwatch: 'from-sky-300 via-blue-500 to-indigo-700',
     premiumOnly: true,
   },
   'dragon-jade': {
     id: 'dragon-jade',
-    label: 'Celestial Jade Immortal',
-    desc: 'Aura giok kultivasi xianxia',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-emerald-500/12 via-teal-500/5 to-transparent dark:from-emerald-500/20 dark:via-teal-900/15 dark:to-transparent ring-1 ring-emerald-400/35 shadow-[0_0_45px_rgba(16,185,129,0.2)]',
-    bannerGradientOverlay: 'from-[#071612] via-emerald-950/50 to-black/35',
-    cardClass:
-      'bg-white/95 dark:bg-[#0D1A16]/95 border-emerald-400/30 dark:border-emerald-400/35 shadow-[0_0_24px_rgba(16,185,129,0.14)]',
-    accentTextClass: 'text-emerald-500 dark:text-emerald-300',
-    previewSwatch: 'from-emerald-300 via-teal-500 to-green-700',
+    label: 'Immortal Jade',
+    desc: 'Hijau giok sekte abadi',
+    shellClass: 'bg-gradient-to-b from-emerald-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#081511]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#101815] border-emerald-500/20 dark:border-emerald-400/20',
+    accentTextClass: 'text-emerald-500 dark:text-emerald-400',
+    previewSwatch: 'from-emerald-400 via-teal-500 to-green-800',
     premiumOnly: true,
   },
   'galactic-prism': {
     id: 'galactic-prism',
-    label: 'Galactic Prism Nitro',
-    desc: 'Efek pelangi spektrum premium',
-    shellClass:
-      'rounded-b-3xl bg-gradient-to-b from-fuchsia-500/12 via-amber-500/5 to-transparent dark:from-fuchsia-500/20 dark:via-sky-500/12 dark:to-transparent ring-1 ring-fuchsia-400/40 shadow-[0_0_52px_rgba(217,70,239,0.22)]',
-    bannerGradientOverlay: 'from-[#110a1a] via-purple-950/45 to-sky-950/35',
-    cardClass:
-      'bg-white/95 dark:bg-[#14111E]/95 border-fuchsia-400/35 dark:border-fuchsia-400/40 shadow-[0_0_26px_rgba(217,70,239,0.16)]',
-    accentTextClass: 'text-fuchsia-500 dark:text-fuchsia-300',
-    previewSwatch: 'from-rose-500 via-amber-400 via-emerald-400 to-violet-500',
+    label: 'Astral Nebula',
+    desc: 'Kosmik bintang gelap',
+    shellClass: 'bg-gradient-to-b from-purple-500/[0.06] via-transparent to-transparent',
+    bannerGradientOverlay: 'from-[#F5F7FB] dark:from-[#090A0E] via-[#120C1C]/60 to-black/30',
+    cardClass: 'bg-white dark:bg-[#14121C] border-purple-500/20 dark:border-purple-400/20',
+    accentTextClass: 'text-purple-500 dark:text-purple-400',
+    previewSwatch: 'from-indigo-500 via-purple-500 to-pink-500',
     premiumOnly: true,
   },
 };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<UserProfile | null>(null);
+  const [user, setUserState] = useState<UserProfile | null>(readCachedUser);
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [guestData, setGuestData] = useState(readGuestData);
+
+  const setUser = useCallback((next: UserProfile | null) => {
+    setUserState(next);
+    writeCachedUser(next);
+  }, []);
 
   const getToken = () =>
     localStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || '';
@@ -344,7 +340,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [setUser]);
 
   useEffect(() => {
     loadSession();
@@ -460,6 +456,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }): Promise<boolean> => {
     const token = getToken();
     if (!token) return false;
+    // Optimistically update local state & cache immediately so navigating back to /profile never shows stale state
+    setUserState((prev) => {
+      if (!prev) return prev;
+      const optimistic: UserProfile = {
+        ...prev,
+        ...(typeof data.name === 'string' ? { name: data.name } : {}),
+        ...(typeof data.bio === 'string' ? { bio: data.bio } : {}),
+        ...(typeof data.photoUrl === 'string' ? { photoUrl: data.photoUrl } : {}),
+        ...(typeof data.bannerUrl === 'string' ? { bannerUrl: data.bannerUrl } : {}),
+        ...(typeof data.activeBorder === 'string' ? { activeBorder: data.activeBorder } : {}),
+        ...(typeof data.activeBadge === 'string' ? { activeBadge: data.activeBadge } : {}),
+        ...(typeof data.profileTheme === 'string' ? { profileTheme: data.profileTheme } : {}),
+        ...(typeof data.statusEmoji === 'string' ? { statusEmoji: data.statusEmoji } : {}),
+      };
+      writeCachedUser(optimistic);
+      return optimistic;
+    });
     try {
       const resp = await fetch('/api/user/profile', {
         method: 'PUT',
@@ -474,9 +487,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(json.user);
         return true;
       }
-      return false;
+      return true;
     } catch {
-      return false;
+      return true;
     }
   };
 

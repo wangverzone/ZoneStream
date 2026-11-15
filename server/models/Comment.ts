@@ -8,12 +8,14 @@ export interface IComment {
   uid: string;
   authorName: string;
   authorPhoto: string;
+  authorBanner?: string;
   authorRole: 'member' | 'founder';
   authorIsPremium: boolean;
   authorBadge: string;
   authorBorder: string;
   authorTheme?: string;
   authorStatusEmoji?: string;
+  authorCountry?: string;
   authorLevel: number;
   text: string;
   sticker?: string;
@@ -34,12 +36,14 @@ const CommentSchema = new Schema<ICommentDocument>(
     uid: { type: String, required: true, index: true },
     authorName: { type: String, required: true },
     authorPhoto: { type: String, default: '' },
+    authorBanner: { type: String, default: '' },
     authorRole: { type: String, enum: ['member', 'founder'], default: 'member' },
     authorIsPremium: { type: Boolean, default: false },
     authorBadge: { type: String, default: 'Member' },
     authorBorder: { type: String, default: 'classic' },
     authorTheme: { type: String, default: 'default' },
     authorStatusEmoji: { type: String, default: '' },
+    authorCountry: { type: String, default: 'ID' },
     authorLevel: { type: Number, default: 1 },
     text: { type: String, default: '', maxlength: 800 },
     sticker: { type: String, default: '' },

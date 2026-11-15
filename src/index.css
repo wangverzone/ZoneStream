@@ -21,6 +21,15 @@
     background-color: var(--bg-canvas);
     color: var(--text-main);
     overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button,
+  a,
+  [role="button"] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .font-mono-tabular {
@@ -38,22 +47,21 @@
   scrollbar-width: none;
 }
 
-@keyframes vip-float {
-  0%, 100% { transform: translateY(0px); }
-  50% { transform: translateY(-2px); }
-}
-
-@keyframes vip-glow-spin {
-  0% { filter: hue-rotate(0deg); }
-  100% { filter: hue-rotate(360deg); }
-}
-
 .animate-vip-float {
-  animation: vip-float 2.6s ease-in-out infinite;
+  transform: translateZ(0);
 }
 
 .animate-vip-prism {
-  animation: vip-glow-spin 6s linear infinite;
+  transform: translateZ(0);
+}
+
+@media (hover: none), (pointer: coarse) {
+  button,
+  a,
+  [role="button"] {
+    transform: none !important;
+    transition-property: background-color, border-color, color, opacity, box-shadow !important;
+  }
 }
 
 .wa-wallpaper {

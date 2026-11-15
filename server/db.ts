@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import { hashPassword } from './auth.ts';
-import { IUser, PublicUser, UserModel } from './models/User.ts';
+import { UserModel, type IUser, type PublicUser } from './models/User.ts';
 import { VerificationCodeModel, type OtpPurpose } from './models/VerificationCode.ts';
 
 import { TransactionModel } from './models/Transaction.ts';
@@ -17,6 +17,17 @@ const FOUNDER_USERNAME = 'verzonfounder';
 const FOUNDER_EMAIL = 'wanglin72kk@gmail.com';
 const DEFAULT_MONGODB_URI =
   'mongodb+srv://wanglin72kk_db_user:VerzonStream123@cluster0.yczwtmm.mongodb.net/verzon-strem?retryWrites=true&w=majority';
+
+export function upgradeImageToHd(url?: string): string {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('data:image/')) return raw;
+  // Upgrade Google User Content avatars from s96-c to s512-c HD
+  if (raw.includes('googleusercontent.com')) {
+    return raw.replace(/=s\d+(-c)?/g, '=s512-c');
+  }
+  return raw;
+}
 
 const memoryCodes = new Map<
   string,
@@ -58,6 +69,8 @@ export const generateDisplayUid = (): string => {
 
 export function sanitizeUser(user: IUser): PublicUser {
   const { passwordHash: _removed, ...pub } = user;
+  pub.photoUrl = upgradeImageToHd(pub.photoUrl);
+  pub.countryCode = (pub.countryCode || 'ID').toUpperCase();
   if (
     pub.role !== 'founder' &&
     pub.isPremium &&
@@ -129,9 +142,10 @@ function buildFounderPayload(): IUser {
     premiumPlan: 'Founder Lifetime',
     premiumExpiryDate: '',
     activeBadge: 'Verified Founder',
-    activeBorder: 'rainbow-prism',
+    activeBorder: 'lightning-aura',
     profileTheme: 'sovereign-gold',
     statusEmoji: 'infinity-dao',
+    countryCode: 'ID',
     lastWatchDate: '',
     watchStreak: 1,
     dailyEpisodesWatched: 0,
@@ -150,6 +164,10 @@ async function ensureFounderFallback() {
       uid: FOUNDER_UID,
       level: 999999,
       exp: 0,
+      activeBorder:
+        !store['4167293'].activeBorder || store['4167293'].activeBorder === 'classic'
+          ? 'lightning-aura'
+          : store['4167293'].activeBorder,
       profileTheme: store['4167293'].profileTheme || 'sovereign-gold',
       statusEmoji: store['4167293'].statusEmoji || 'infinity-dao',
     };
@@ -196,6 +214,10 @@ export async function ensureFounderAccount() {
         existing.exp = 0;
         dirty = true;
       }
+      if (!existing.activeBorder || existing.activeBorder === 'classic') {
+        existing.activeBorder = 'lightning-aura';
+        dirty = true;
+      }
       if (!existing.profileTheme || existing.profileTheme === 'default') {
         existing.profileTheme = 'sovereign-gold';
         dirty = true;
@@ -210,7 +232,7 @@ export async function ensureFounderAccount() {
           await CommentModel.updateMany({ uid: oldUid }, { $set: { uid: FOUNDER_UID, authorLevel: 999999 } }).catch(() => {});
           await TransactionModel.updateMany({ uid: oldUid }, { $set: { uid: FOUNDER_UID } }).catch(() => {});
         }
-        console.log('[DB] Migrated VerzonFounder to UID 00000 & unlimited level.');
+        console.log('[DB] Migrated VerzonFounder to UID 00000 & 3D decoration.');
       }
     }
   } catch (err) {
@@ -507,6 +529,7 @@ export function toCommunityUserSummary(user: IUser) {
     activeBorder: pub.activeBorder || 'classic',
     profileTheme: pub.profileTheme || 'default',
     statusEmoji: pub.statusEmoji || '',
+    countryCode: (pub.countryCode || 'ID').toUpperCase(),
     watchStreak: pub.watchStreak || 0,
     totalEpisodesWatched: pub.totalEpisodesWatched || 0,
     bookmarksCount: Array.isArray(pub.bookmarks) ? pub.bookmarks.length : 0,
@@ -515,44 +538,55 @@ export function toCommunityUserSummary(user: IUser) {
   };
 }
 
-export async function searchCommunityUsers(query: string, limit = 30): Promise<IUser[]> {
+export async function searchCommunityUsers(query: string, limit = 20): Promise<IUser[]> {
   const mongoOk = await connectDB();
-  const cleanQ = query.trim();
+  const cleanQ = query
+    .trim()
+    .replace(/^@+/, '')
+    .replace(/^uid:\s*/i, '')
+    .trim();
+
+  // Privacy: never return all members when query is empty
+  if (!cleanQ) {
+    return [];
+  }
 
   if (mongoOk) {
-    if (!cleanQ) {
-      const docs = await UserModel.find({})
-        .sort({ role: 1, isPremium: -1, level: -1, lastActiveAt: -1 })
-        .limit(limit);
-      // Put founder first cleanly
-      return docs
-        .map((d) => d.toObject())
-        .sort((a, b) => (a.role === 'founder' ? -1 : b.role === 'founder' ? 1 : (b.level || 1) - (a.level || 1)));
-    }
     const escaped = cleanQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const rx = new RegExp(escaped, 'i');
     const docs = await UserModel.find({
-      $or: [{ name: rx }, { username: rx }, { uid: rx }],
+      $or: [{ uid: rx }, { username: rx }, { name: rx }],
     })
       .sort({ isPremium: -1, level: -1 })
       .limit(limit);
-    return docs.map((d) => d.toObject());
+    return docs
+      .map((d) => d.toObject())
+      .sort((a, b) =>
+        a.uid === cleanQ || a.username.toLowerCase() === cleanQ.toLowerCase()
+          ? -1
+          : b.uid === cleanQ || b.username.toLowerCase() === cleanQ.toLowerCase()
+          ? 1
+          : 0
+      );
   }
 
   const all = Object.values(readFallbackUsers());
-  const filtered = cleanQ
-    ? all.filter((u) => {
-        const lq = cleanQ.toLowerCase();
-        return (
-          u.name.toLowerCase().includes(lq) ||
-          u.username.toLowerCase().includes(lq) ||
-          u.uid.toLowerCase().includes(lq)
-        );
-      })
-    : all;
+  const lq = cleanQ.toLowerCase();
+  const filtered = all.filter(
+    (u) =>
+      u.uid.toLowerCase().includes(lq) ||
+      u.username.toLowerCase().includes(lq) ||
+      u.name.toLowerCase().includes(lq)
+  );
 
   return filtered
-    .sort((a, b) => (a.role === 'founder' ? -1 : b.role === 'founder' ? 1 : (b.level || 1) - (a.level || 1)))
+    .sort((a, b) =>
+      a.uid.toLowerCase() === lq || a.username.toLowerCase() === lq
+        ? -1
+        : b.uid.toLowerCase() === lq || b.username.toLowerCase() === lq
+        ? 1
+        : 0
+    )
     .slice(0, limit);
 }
 

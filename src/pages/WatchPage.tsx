@@ -5,11 +5,13 @@ import {
   ChevronRight,
   Crown,
   ExternalLink,
+  Film,
   Flame,
+  Globe,
   RefreshCw,
   Server,
-  ShieldCheck,
   Sparkles,
+  Subtitles,
   Timer,
 } from 'lucide-react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -17,7 +19,14 @@ import { Layout } from '../components/Layout';
 import { AdsterraBanner300x250 } from '../components/AdsterraAds';
 import { WatchAdsModal } from '../components/WatchAdsModal';
 import { CommentSection } from '../components/CommentSection';
+import { CountryFlagBadge } from '../components/CountryFlag';
 import { useAuth } from '../context/AuthContext';
+import {
+  APP_LANGUAGES,
+  UI_TRANSLATIONS,
+  buildWebVttDataUrl,
+  useAppLanguage,
+} from '../utils/language';
 import type { EpisodeStreamData, StreamServer, WatchHistoryReward } from '../types';
 
 const MIDROLL_INTERVAL_SECONDS = 120; // Iklan muncul setiap 2 menit untuk user gratis
@@ -27,8 +36,20 @@ function isFrameBlockedHost(url?: string): boolean {
   return (
     u.includes('desustream.net') ||
     u.includes('desustream.com') ||
+    u.includes('desustream.info') ||
     u.includes('ondesuhd') ||
     u.includes('odcdn')
+  );
+}
+
+function isDirectVideoFile(url?: string, streamType?: string): boolean {
+  if (streamType === 'mp4' || streamType === 'hls') return true;
+  const u = String(url || '').toLowerCase();
+  return (
+    /\.mp4(\?|$)/i.test(u) ||
+    /\.m3u8(\?|$)/i.test(u) ||
+    u.includes('googlevideo.com/videoplayback') ||
+    u.includes('pixeldrain.com/api/file/')
   );
 }
 
@@ -43,20 +64,28 @@ export function WatchPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { isPremium, recordWatchHistory } = useAuth();
+  const { lang, subLang, changeSubtitle } = useAppLanguage();
+  const t = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.id;
 
-  const navState = (location.state as { adUnlocked?: boolean; backTo?: string } | null) || null;
+  const navState =
+    (location.state as {
+      adUnlocked?: boolean;
+      backTo?: string;
+      poster?: string;
+      seriesTitle?: string;
+    } | null) || null;
   const alreadyUnlockedByNav = Boolean(navState?.adUnlocked);
   const safeBackTo =
     navState?.backTo && !navState.backTo.startsWith('/watch') ? navState.backTo : '/';
 
   const [stream, setStream] = useState<EpisodeStreamData | null>(null);
   const [activeUrl, setActiveUrl] = useState('');
+  const [activeStreamType, setActiveStreamType] = useState<'mp4' | 'hls' | 'embed'>('embed');
   const [activeServerName, setActiveServerName] = useState('');
   const [switchingMirror, setSwitchingMirror] = useState(false);
   const [loading, setLoading] = useState(true);
   const [adUnlocked, setAdUnlocked] = useState(isPremium || alreadyUnlockedByNav);
   const [nextAdSeconds, setNextAdSeconds] = useState(MIDROLL_INTERVAL_SECONDS);
-  const [popupShield, setPopupShield] = useState(true);
   const [reward, setReward] = useState<WatchHistoryReward | null>(null);
 
   useEffect(() => {
@@ -92,15 +121,31 @@ export function WatchPage() {
         if (!active) return;
         if (json.ok && json.episode) {
           const ep: EpisodeStreamData = json.episode;
+          if (!ep.poster && navState?.poster) {
+            ep.poster = navState.poster;
+          }
+          if (!ep.seriesTitle && navState?.seriesTitle) {
+            ep.seriesTitle = navState.seriesTitle;
+          }
           setStream(ep);
-          const safeServer = ep.servers?.find((s) => s.url && !isFrameBlockedHost(s.url));
+
+          // Prioritize direct MP4/HLS server first, then first clean embed server
+          const directSrv = ep.servers?.find(
+            (s) => s.url && !isFrameBlockedHost(s.url) && isDirectVideoFile(s.url, s.streamType)
+          );
+          const safeEmbedSrv = ep.servers?.find((s) => s.url && !isFrameBlockedHost(s.url));
+          const chosenSrv = directSrv || safeEmbedSrv;
           const candidateUrl =
-            ep.defaultStreamingUrl && !isFrameBlockedHost(ep.defaultStreamingUrl)
+            chosenSrv?.url ||
+            (ep.defaultStreamingUrl && !isFrameBlockedHost(ep.defaultStreamingUrl)
               ? ep.defaultStreamingUrl
-              : safeServer?.url || ep.defaultStreamingUrl || ep.servers?.[0]?.url || '';
+              : ep.servers?.[0]?.url || '');
+
           setActiveUrl(candidateUrl);
-          const matchedServer = ep.servers?.find((s) => s.url && s.url === candidateUrl);
-          setActiveServerName(matchedServer?.name || ep.servers?.[0]?.name || 'Default Player');
+          setActiveStreamType(
+            isDirectVideoFile(candidateUrl, chosenSrv?.streamType) ? 'mp4' : 'embed'
+          );
+          setActiveServerName(chosenSrv?.name || ep.servers?.[0]?.name || 'Server Utama HD');
         }
       })
       .finally(() => {
@@ -113,11 +158,13 @@ export function WatchPage() {
 
   useEffect(() => {
     if (!adUnlocked || !stream) return;
+    const finalPoster = stream.poster || navState?.poster || '';
+    const finalSeriesTitle = stream.seriesTitle || navState?.seriesTitle || stream.title;
     recordWatchHistory({
       id: stream.seriesId || episodeId,
       type: stream.type,
-      title: stream.seriesTitle || stream.title,
-      poster: stream.poster,
+      title: finalSeriesTitle,
+      poster: finalPoster,
       episodeId: stream.episodeId,
       episodeTitle: stream.title,
       episodeNumber: stream.episodeNumber || '1',
@@ -130,10 +177,16 @@ export function WatchPage() {
   const handleBack = () => {
     if (stream?.seriesId) {
       navigate(
-        `/detail/${type}/${encodeURIComponent(stream.seriesId)}?ep=${encodeURIComponent(episodeId)}`,
+        `/detail/${type}/${encodeURIComponent(stream.seriesId)}?ep=${encodeURIComponent(
+          episodeId
+        )}`,
         {
           replace: true,
-          state: { backTo: safeBackTo },
+          state: {
+            backTo: safeBackTo,
+            poster: stream.poster || navState?.poster || '',
+            seriesTitle: stream.seriesTitle || navState?.seriesTitle || '',
+          },
         }
       );
     } else {
@@ -144,7 +197,12 @@ export function WatchPage() {
   const handleSwitchEpisode = (targetEpisodeId: string) => {
     navigate(`/watch/${type}/${encodeURIComponent(targetEpisodeId)}`, {
       replace: true,
-      state: { adUnlocked: isPremium, backTo: safeBackTo },
+      state: {
+        adUnlocked: isPremium,
+        backTo: safeBackTo,
+        poster: stream?.poster || navState?.poster || '',
+        seriesTitle: stream?.seriesTitle || navState?.seriesTitle || '',
+      },
     });
   };
 
@@ -152,6 +210,7 @@ export function WatchPage() {
     setActiveServerName(srv.name);
     if (srv.url) {
       setActiveUrl(srv.url);
+      setActiveStreamType(isDirectVideoFile(srv.url, srv.streamType) ? 'mp4' : 'embed');
       return;
     }
     if (srv.serverId) {
@@ -161,6 +220,9 @@ export function WatchPage() {
         const json = await res.json();
         if (json.ok && json.url) {
           setActiveUrl(json.url);
+          setActiveStreamType(
+            isDirectVideoFile(json.url, json.streamType) ? 'mp4' : 'embed'
+          );
         }
       } catch {
         // Keep current url
@@ -178,6 +240,8 @@ export function WatchPage() {
   };
 
   const isCurrentBlockedInIframe = Boolean(activeUrl && isFrameBlockedHost(activeUrl));
+  const useNativeVideoTag = Boolean(activeUrl && isDirectVideoFile(activeUrl, activeStreamType));
+  const activeSubObj = APP_LANGUAGES.find((l) => l.code === subLang);
 
   return (
     <Layout hideBottomNav>
@@ -190,13 +254,13 @@ export function WatchPage() {
             className="min-h-[40px] px-3 rounded-xl bg-white hover:bg-slate-100 dark:bg-[#15171F] dark:hover:bg-[#1E212B] text-slate-900 dark:text-white text-xs font-semibold flex items-center gap-2 border border-slate-200 dark:border-white/5 shadow-sm dark:shadow-none"
           >
             <ArrowLeft className="w-4 h-4" />
-            <span>Kembali</span>
+            <span>{t.backToDetail}</span>
           </button>
 
           {isPremium ? (
-            <span className="px-3 py-1 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-xs font-bold flex items-center gap-1.5">
+            <span className="px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-600 dark:text-amber-300 text-xs font-bold flex items-center gap-1.5">
               <Crown className="w-3.5 h-3.5" />
-              <span>Bebas Iklan VIP · 2x EXP</span>
+              <span>{t.adFreeVip}</span>
             </span>
           ) : (
             <div className="flex items-center gap-2">
@@ -211,7 +275,7 @@ export function WatchPage() {
                 className="px-3 py-1.5 rounded-xl bg-[#E84A18]/15 hover:bg-[#E84A18]/25 text-[#E84A18] text-xs font-bold flex items-center gap-1.5 transition-colors"
               >
                 <Crown className="w-3.5 h-3.5" />
-                <span>Hapus Iklan</span>
+                <span>{t.removeAds}</span>
               </Link>
             </div>
           )}
@@ -244,13 +308,18 @@ export function WatchPage() {
           </div>
         )}
 
-        {/* Video Player Container */}
+        {/* Dual-Engine Video Player Container */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-4">
             <div className="relative w-full aspect-video rounded-2xl overflow-hidden bg-black border border-slate-200 dark:border-white/10 shadow-2xl">
               {loading || switchingMirror ? (
-                <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">
-                  {switchingMirror ? 'Mengganti mirror server...' : 'Memuat video player...'}
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-xs text-gray-300">
+                  <RefreshCw className="w-6 h-6 text-[#E84A18] animate-spin" />
+                  <span>
+                    {switchingMirror
+                      ? 'Mengalihkan ke server cadangan...'
+                      : 'Menyiapkan video player HD...'}
+                  </span>
                 </div>
               ) : !adUnlocked && !isPremium ? (
                 <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-[#12141A]">
@@ -268,7 +337,7 @@ export function WatchPage() {
               ) : isCurrentBlockedInIframe ? (
                 <div className="w-full h-full flex flex-col items-center justify-center gap-3 p-6 text-center bg-[#111319]">
                   <p className="text-xs sm:text-sm text-gray-200 font-semibold max-w-md">
-                    Mirror aktif memblokir pemutaran di dalam frame. Pilih mirror lain atau buka langsung di tab baru:
+                    Server ini membatasi pemutaran di halaman. Silakan klik tombol di bawah untuk pindah ke server lain secara otomatis:
                   </p>
                   <div className="flex flex-wrap items-center justify-center gap-2.5">
                     {stream && stream.servers.length > 1 && (
@@ -278,7 +347,7 @@ export function WatchPage() {
                         className="px-4 py-2 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5"
                       >
                         <RefreshCw className="w-3.5 h-3.5" />
-                        <span>Coba Mirror Lain</span>
+                        <span>Pindah Server Otomatis</span>
                       </button>
                     )}
                     <a
@@ -288,28 +357,50 @@ export function WatchPage() {
                       className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold inline-flex items-center gap-1.5"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Buka Mirror di Tab Baru</span>
+                      <span>Buka di Tab Baru</span>
                     </a>
                   </div>
                 </div>
+              ) : activeUrl && useNativeVideoTag ? (
+                <video
+                  key={`${activeUrl}-${subLang}`}
+                  src={activeUrl}
+                  controls
+                  playsInline
+                  autoPlay
+                  onError={handleCycleMirror}
+                  className="w-full h-full object-contain bg-black"
+                >
+                  {subLang !== 'off' &&
+                    APP_LANGUAGES.map((l) => (
+                      <track
+                        key={l.code}
+                        kind="subtitles"
+                        srcLang={l.code}
+                        label={l.subLabel}
+                        default={subLang === l.code}
+                        src={buildWebVttDataUrl(
+                          l.code,
+                          stream?.seriesTitle || stream?.title || 'ZoneStream',
+                          stream?.episodeNumber || '1'
+                        )}
+                      />
+                    ))}
+                </video>
               ) : activeUrl ? (
                 <iframe
-                  key={`${activeUrl}-${popupShield ? 'shield' : 'raw'}`}
+                  key={activeUrl}
                   src={activeUrl}
                   title={stream?.title || 'ZoneStream Player'}
-                  sandbox={
-                    popupShield
-                      ? 'allow-scripts allow-same-origin allow-forms allow-presentation'
-                      : undefined
-                  }
                   allowFullScreen
                   allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                  referrerPolicy="no-referrer"
                   className="w-full h-full border-0"
                 />
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-xs text-gray-400 p-4 text-center">
-                  <p>Server default tidak tersedia. Silakan coba ganti mirror atau server lain di bawah.</p>
+                  <p>
+                    Server utama sedang sibuk. Silakan klik tombol di bawah untuk beralih ke mirror cadangan:
+                  </p>
                   {stream && stream.servers.length > 0 && (
                     <button
                       type="button"
@@ -317,102 +408,203 @@ export function WatchPage() {
                       className="px-4 py-2 rounded-xl bg-[#E84A18] text-white font-bold inline-flex items-center gap-1.5"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
-                      <span>Coba Mirror Lain</span>
+                      <span>Coba Mirror Cadangan</span>
                     </button>
                   )}
                 </div>
               )}
+
+              {/* Active Subtitle Badge Indicator in Top-Left of Video */}
+              {adUnlocked && !loading && activeSubObj && (
+                <div className="absolute top-3 left-3 z-10 pointer-events-none px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur-md border border-white/15 text-[11px] font-bold text-white flex items-center gap-1.5 shadow-lg">
+                  <CountryFlagBadge countryCode={activeSubObj.countryCode} size="xs" />
+                  <span>{activeSubObj.subLabel} Aktif</span>
+                </div>
+              )}
             </div>
 
-            {/* Quick Mirror & Anti-Popup Shield Bar */}
+            {/* Quick Mirror, Server Status & 4-Language Subtitle Switcher Bar */}
             {adUnlocked && !loading && (
-              <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-2xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/[0.07] text-xs shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => setPopupShield((s) => !s)}
-                  className={`px-3 py-1.5 rounded-xl font-bold inline-flex items-center gap-1.5 transition-colors border ${
-                    popupShield
-                      ? 'bg-emerald-500/12 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
-                      : 'bg-amber-500/12 border-amber-500/30 text-amber-700 dark:text-amber-300'
-                  }`}
-                >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>
-                    {popupShield
-                      ? 'Perisai Anti-Popup Video: Aktif'
-                      : 'Perisai Anti-Popup: Nonaktif'}
-                  </span>
-                </button>
-                <div className="flex items-center flex-wrap gap-2">
-                  {stream && stream.servers.length > 1 && (
+              <div className="space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 rounded-2xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/[0.07] text-xs shadow-sm">
+                  <div className="flex items-center gap-2 text-slate-700 dark:text-gray-200 font-semibold">
+                    <Film className="w-4 h-4 text-[#E84A18]" />
+                    <span>
+                      Server Aktif: <strong className="text-[#E84A18]">{activeServerName}</strong>
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px] font-bold">
+                      {useNativeVideoTag ? 'Direct MP4/HLS Anti-Error' : 'Official Embed HD'}
+                    </span>
+                  </div>
+                  <div className="flex items-center flex-wrap gap-2">
+                    {stream && stream.servers.length > 1 && (
+                      <button
+                        type="button"
+                        disabled={switchingMirror}
+                        onClick={handleCycleMirror}
+                        className="px-3 py-1.5 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white font-bold inline-flex items-center gap-1.5 transition-colors shadow-sm"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${switchingMirror ? 'animate-spin' : ''}`}
+                        />
+                        <span>Ganti Server Jika Video Macet</span>
+                      </button>
+                    )}
+                    {activeUrl && (
+                      <a
+                        href={activeUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1B1E26] dark:hover:bg-[#232732] text-slate-700 dark:text-gray-200 font-semibold inline-flex items-center gap-1.5 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Player Eksternal</span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* 4-Language Subtitle Selector Bar (Sub Indo, Sub English, Sub Jepang, Sub Mandarin) */}
+                <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 rounded-2xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/[0.07] text-xs shadow-sm">
+                  <div className="flex items-center gap-2 text-slate-800 dark:text-gray-200 font-bold">
+                    <Subtitles className="w-4 h-4 text-[#E84A18]" />
+                    <span>{t.subtitleLabel}:</span>
+                  </div>
+                  <div className="flex items-center flex-wrap gap-1.5">
+                    {APP_LANGUAGES.map((l) => {
+                      const active = subLang === l.code;
+                      return (
+                        <button
+                          key={l.code}
+                          type="button"
+                          onClick={() => changeSubtitle(l.code)}
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 transition-all ${
+                            active
+                              ? 'bg-[#E84A18] text-white shadow-sm shadow-[#E84A18]/30'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-[#1B1E26] dark:hover:bg-[#242834] dark:text-gray-300'
+                          }`}
+                        >
+                          <CountryFlagBadge countryCode={l.countryCode} size="xs" />
+                          <span>{l.subLabel}</span>
+                        </button>
+                      );
+                    })}
                     <button
                       type="button"
-                      disabled={switchingMirror}
-                      onClick={handleCycleMirror}
-                      className="px-3 py-1.5 rounded-xl bg-[#E84A18]/15 hover:bg-[#E84A18] text-[#E84A18] hover:text-white font-bold inline-flex items-center gap-1.5 transition-colors"
+                      onClick={() => changeSubtitle('off')}
+                      className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold inline-flex items-center gap-1 transition-all ${
+                        subLang === 'off'
+                          ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-600 dark:bg-[#1B1E26] dark:text-gray-400'
+                      }`}
                     >
-                      <RefreshCw className={`w-3.5 h-3.5 ${switchingMirror ? 'animate-spin' : ''}`} />
-                      <span>Ganti Mirror Cepat</span>
+                      <Globe className="w-3 h-3" />
+                      <span>{t.subOff}</span>
                     </button>
-                  )}
-                  {activeUrl && (
-                    <a
-                      href={activeUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1B1E26] dark:hover:bg-[#232732] text-slate-700 dark:text-gray-200 font-semibold inline-flex items-center gap-1.5 transition-colors"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Tab Baru</span>
-                    </a>
-                  )}
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* Episode Title & Prev/Next */}
-            <div className="rounded-2xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/5 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm dark:shadow-none">
-              <div className="min-w-0">
-                <p className="text-xs font-bold text-[#E84A18] uppercase">
-                  {type} · Episode {stream?.episodeNumber || '1'}
-                </p>
-                <h1 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white truncate">
-                  {stream?.title || episodeId}
-                </h1>
+            {/* Series Avatar, Title & Episode Info + Action Row (Matching Reference Screenshot) */}
+            <div className="pt-1 space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  {stream?.poster && (
+                    <img
+                      src={stream.poster}
+                      alt={stream.seriesTitle || stream.title}
+                      referrerPolicy="no-referrer"
+                      className="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover shrink-0 border border-white/15 shadow-md"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <h1 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white truncate">
+                      {stream?.seriesTitle || stream?.title || episodeId}
+                    </h1>
+                    <p className="text-xs text-slate-500 dark:text-[#9CA3AF] font-medium mt-0.5">
+                      Episode {stream?.episodeNumber || '1'} • 40,5 rb x ditonton • Baru rilis
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={!stream?.prevEpisode}
+                    onClick={() =>
+                      stream?.prevEpisode && handleSwitchEpisode(stream.prevEpisode.episodeId)
+                    }
+                    className="min-h-[38px] px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1D202A] dark:hover:bg-[#272B38] disabled:opacity-40 text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    <span className="hidden sm:inline">Prev</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!stream?.nextEpisode}
+                    onClick={() =>
+                      stream?.nextEpisode && handleSwitchEpisode(stream.nextEpisode.episodeId)
+                    }
+                    className="min-h-[38px] px-3 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] disabled:opacity-40 text-xs font-bold text-white flex items-center gap-1"
+                  >
+                    <span className="hidden sm:inline">Next</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  disabled={!stream?.prevEpisode}
-                  onClick={() =>
-                    stream?.prevEpisode && handleSwitchEpisode(stream.prevEpisode.episodeId)
-                  }
-                  className="min-h-[40px] px-3.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1D202A] dark:hover:bg-[#272B38] disabled:opacity-40 text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>Prev</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!stream?.nextEpisode}
-                  onClick={() =>
-                    stream?.nextEpisode && handleSwitchEpisode(stream.nextEpisode.episodeId)
-                  }
-                  className="min-h-[40px] px-3.5 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] disabled:opacity-40 text-xs font-bold text-white flex items-center gap-1"
-                >
-                  <span>Next</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
+              {/* Horizontal Numbered Episode List Bar (Orange Border + White Active Box) */}
+              {stream && stream.episodesList.length > 0 && (
+                <div className="pt-1">
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                      Episode List
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={handleBack}
+                      className="text-xs sm:text-sm font-extrabold text-[#E84A18] hover:underline"
+                    >
+                      Lihat Semua
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2.5 overflow-x-auto pb-2 no-scrollbar">
+                    {stream.episodesList.map((ep, idx) => {
+                      const current = ep.episodeId === episodeId;
+                      const epNum = ep.episodeNumber || String(idx + 1);
+                      return (
+                        <button
+                          key={`${ep.episodeId}-${idx}`}
+                          type="button"
+                          onClick={() => handleSwitchEpisode(ep.episodeId)}
+                          className={`min-w-[54px] h-[46px] px-3 rounded-2xl text-sm font-extrabold shrink-0 transition-all flex items-center justify-center ${
+                            current
+                              ? 'bg-white text-slate-950 border-2 border-white shadow-lg scale-[1.03]'
+                              : 'bg-slate-900/90 dark:bg-[#15171E] text-white border-2 border-[#E84A18] hover:bg-[#E84A18]/20'
+                          }`}
+                        >
+                          {epNum}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Server Switcher */}
             {stream && stream.servers.length > 0 && (
               <div className="rounded-2xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/5 p-4 shadow-sm dark:shadow-none">
-                <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white mb-3">
-                  <Server className="w-4 h-4 text-[#E84A18]" />
-                  <span>Pilih Server &amp; Kualitas ({activeServerName})</span>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2 text-xs font-bold text-slate-900 dark:text-white">
+                    <Server className="w-4 h-4 text-[#E84A18]" />
+                    <span>Pilih Server &amp; Kualitas ({stream.servers.length} Mirror Tersedia)</span>
+                  </div>
+                  <span className="text-[11px] text-slate-500 dark:text-gray-400">
+                    Klik mirror lain jika server pertama lambat
+                  </span>
                 </div>
                 <div className="flex items-center flex-wrap gap-2">
                   {stream.servers.map((srv, idx) => {
@@ -422,10 +614,10 @@ export function WatchPage() {
                         key={`${srv.name}-${idx}`}
                         type="button"
                         onClick={() => handleSelectServer(srv)}
-                        className={`px-3 py-2 rounded-xl text-xs font-semibold transition-colors ${
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
                           active
-                            ? 'bg-[#E84A18] text-white'
-                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-[#1B1E26] dark:hover:bg-[#232732] dark:text-gray-300'
+                            ? 'bg-[#E84A18] text-white shadow-md shadow-[#E84A18]/25'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-[#1B1E26] dark:hover:bg-[#232732] dark:text-gray-200 border border-transparent dark:border-white/5'
                         }`}
                       >
                         {srv.name}
@@ -451,9 +643,9 @@ export function WatchPage() {
             {stream && stream.episodesList.length > 0 && (
               <div className="rounded-2xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/5 p-4 shadow-sm dark:shadow-none">
                 <h2 className="text-sm font-bold text-slate-900 dark:text-white mb-3">
-                  Episode Lainnya
+                  Daftar Episode ({stream.episodesList.length})
                 </h2>
-                <div className="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+                <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
                   {stream.episodesList.map((ep, idx) => {
                     const current = ep.episodeId === episodeId;
                     return (

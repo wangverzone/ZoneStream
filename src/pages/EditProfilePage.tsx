@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Crown,
   Frame,
+  Globe,
   Image as ImageIcon,
   KeyRound,
   Lock,
@@ -22,9 +23,15 @@ import { useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { TELEGRAM_BADGE_PRESETS, VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge, VIP_EMOJIS } from '../components/VipEmojis';
+import { CountryFlagBadge } from '../components/CountryFlag';
+import {
+  AvatarDecoration,
+  DISCORD_AVATAR_DECORATIONS,
+  normalizeDecorationId,
+} from '../components/AvatarDecoration';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
+import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
-import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 import heroFallbackImg from '../assets/images/donghua_hero_fallback_1794755348232.jpg';
 
 const PRESET_BANNERS = [
@@ -40,15 +47,17 @@ function fileToCompressedDataUrl(file: File, maxSize: number): Promise<string> {
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(String(reader.result));
           return;
         }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
+        resolve(canvas.toDataURL('image/jpeg', 0.94));
       };
       img.onerror = reject;
       img.src = String(reader.result);
@@ -60,10 +69,12 @@ function fileToCompressedDataUrl(file: File, maxSize: number): Promise<string> {
 
 export function EditProfilePage() {
   const { user, isPremium, updateProfile } = useAuth();
+  const { lang, currentLanguageOption, changeLanguage } = useAppLanguage();
   const navigate = useNavigate();
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const bannerInputRef = useRef<HTMLInputElement>(null);
+  const initializedUidRef = useRef<string>('');
 
   const canCustomizePremium = Boolean(isPremium || user?.role === 'founder');
 
@@ -71,7 +82,7 @@ export function EditProfilePage() {
   const [bio, setBio] = useState(user?.bio || '');
   const [photoUrl, setPhotoUrl] = useState(user?.photoUrl || '');
   const [bannerUrl, setBannerUrl] = useState(user?.bannerUrl || '');
-  const [activeBorder, setActiveBorder] = useState(user?.activeBorder || 'classic');
+  const [activeBorder, setActiveBorder] = useState(user?.activeBorder || 'none');
   const [activeBadge, setActiveBadge] = useState(user?.activeBadge || 'Member');
   const [profileTheme, setProfileTheme] = useState(user?.profileTheme || 'default');
   const [statusEmoji, setStatusEmoji] = useState(user?.statusEmoji || '');
@@ -79,6 +90,7 @@ export function EditProfilePage() {
   const [editingField, setEditingField] = useState<
     | 'name'
     | 'bio'
+    | 'language'
     | 'badge'
     | 'status-emoji'
     | 'theme'
@@ -91,6 +103,7 @@ export function EditProfilePage() {
   >(null);
   const [saving, setSaving] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
+  const [autoSavedLabel, setAutoSavedLabel] = useState<string>('');
 
   const [newEmail, setNewEmail] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -105,14 +118,17 @@ export function EditProfilePage() {
       navigate('/profile', { replace: true });
       return;
     }
-    setName(user.name);
-    setBio(user.bio || '');
-    setPhotoUrl(user.photoUrl);
-    setBannerUrl(user.bannerUrl);
-    setActiveBorder(user.activeBorder || 'classic');
-    setActiveBadge(user.activeBadge || 'Member');
-    setProfileTheme(user.profileTheme || 'default');
-    setStatusEmoji(user.statusEmoji || '');
+    if (initializedUidRef.current !== user.uid) {
+      initializedUidRef.current = user.uid;
+      setName(user.name);
+      setBio(user.bio || '');
+      setPhotoUrl(user.photoUrl);
+      setBannerUrl(user.bannerUrl);
+      setActiveBorder(user.activeBorder || 'none');
+      setActiveBadge(user.activeBadge || 'Member');
+      setProfileTheme(user.profileTheme || 'default');
+      setStatusEmoji(user.statusEmoji || '');
+    }
   }, [user, navigate]);
 
   const resetOtpState = () => {
@@ -124,32 +140,20 @@ export function EditProfilePage() {
     setPreviewOtp('');
   };
 
-  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!canCustomizePremium) {
-      setEditingField('premium-lock');
-      return;
-    }
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const dataUrl = await fileToCompressedDataUrl(file, 450);
-    setPhotoUrl(dataUrl);
-  };
-
-  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!canCustomizePremium) {
-      setEditingField('premium-lock');
-      return;
-    }
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const dataUrl = await fileToCompressedDataUrl(file, 1200);
-    setBannerUrl(dataUrl);
-    setEditingField(null);
-  };
-
-  const handleSave = async () => {
-    if (!user) return;
-    setSaving(true);
+  const triggerAutoSave = async (
+    overrides: Partial<{
+      name: string;
+      bio: string;
+      photoUrl: string;
+      bannerUrl: string;
+      activeBorder: string;
+      activeBadge: string;
+      profileTheme: string;
+      statusEmoji: string;
+    }>,
+    label = 'Tersimpan otomatis!'
+  ) => {
+    if (!user) return false;
     const payload: {
       name: string;
       bio: string;
@@ -160,24 +164,60 @@ export function EditProfilePage() {
       profileTheme?: string;
       statusEmoji?: string;
     } = {
-      name: name.trim() || user.name,
-      bio: bio.trim(),
-      activeBorder,
+      name: (overrides.name ?? name).trim() || user.name,
+      bio: (overrides.bio ?? bio).trim(),
+      activeBorder: overrides.activeBorder ?? activeBorder,
     };
     if (canCustomizePremium) {
-      payload.photoUrl = photoUrl;
-      payload.bannerUrl = bannerUrl;
-      payload.activeBadge = activeBadge;
-      payload.profileTheme = profileTheme;
-      payload.statusEmoji = statusEmoji;
+      payload.photoUrl = overrides.photoUrl ?? photoUrl;
+      payload.bannerUrl = overrides.bannerUrl ?? bannerUrl;
+      payload.activeBadge = overrides.activeBadge ?? activeBadge;
+      payload.profileTheme = overrides.profileTheme ?? profileTheme;
+      payload.statusEmoji = overrides.statusEmoji ?? statusEmoji;
     }
     const ok = await updateProfile(payload);
+    if (ok) {
+      setAutoSavedLabel(label);
+      setTimeout(() => setAutoSavedLabel(''), 2400);
+    }
+    return ok;
+  };
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canCustomizePremium) {
+      setEditingField('premium-lock');
+      return;
+    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await fileToCompressedDataUrl(file, 900);
+    setPhotoUrl(dataUrl);
+    void triggerAutoSave({ photoUrl: dataUrl }, 'Foto profil HD tersimpan!');
+  };
+
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canCustomizePremium) {
+      setEditingField('premium-lock');
+      return;
+    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await fileToCompressedDataUrl(file, 1920);
+    setBannerUrl(dataUrl);
+    setEditingField(null);
+    void triggerAutoSave({ bannerUrl: dataUrl }, 'Latar HD tersimpan!');
+  };
+
+  const handleSave = async () => {
+    if (!user) return;
+    setSaving(true);
+    const ok = await triggerAutoSave({}, 'Profil berhasil disimpan!');
     setSaving(false);
     if (ok) {
       setSavedToast(true);
       setTimeout(() => {
         navigate('/profile');
-      }, 650);
+      }, 400);
     }
   };
 
@@ -315,12 +355,22 @@ export function EditProfilePage() {
 
             <button
               type="button"
-              onClick={() => navigate('/profile')}
+              onClick={ async () => {
+                await triggerAutoSave({});
+                navigate('/profile');
+              }}
               aria-label="Kembali ke Profil"
-              className="absolute top-4 left-4 z-20 min-h-[42px] min-w-[42px] rounded-xl bg-black/50 hover:bg-black/75 backdrop-blur-md text-white flex items-center justify-center transition-colors"
+              className="absolute top-4 left-4 z-20 min-h-[42px] min-w-[42px] rounded-xl bg-black/55 hover:bg-black/80 backdrop-blur-md text-white flex items-center justify-center border border-white/15 transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
+
+            {autoSavedLabel && (
+              <div className="absolute top-4 left-16 z-20 px-3 py-1.5 rounded-xl bg-emerald-500/90 backdrop-blur-md text-white text-xs font-extrabold flex items-center gap-1.5 shadow-lg">
+                <Check className="w-3.5 h-3.5" />
+                <span>{autoSavedLabel}</span>
+              </div>
+            )}
 
             <button
               type="button"
@@ -342,36 +392,38 @@ export function EditProfilePage() {
           {/* Avatar — pointer-events-none on outer wrapper so banner bottom-right button stays clickable */}
           <div className="relative z-10 -mt-14 flex flex-col items-center px-4 pointer-events-none">
             <div className="relative pointer-events-auto">
-              <img
-                src={photoUrl || defaultAvatarImg}
+              <AvatarDecoration
+                src={photoUrl}
                 alt={name}
-                referrerPolicy="no-referrer"
-                className={`w-28 h-28 rounded-full object-cover bg-white dark:bg-[#181A20] ${borderStyle}`}
-              />
-              <button
-                type="button"
-                onClick={() =>
-                  canCustomizePremium
-                    ? avatarInputRef.current?.click()
-                    : setEditingField('premium-lock')
-                }
-                aria-label="Upload Foto Profil"
-                className={`absolute bottom-0 right-0 w-9 h-9 rounded-full text-white flex items-center justify-center shadow-lg border-2 border-[#F5F7FB] dark:border-[#090A0E] transition-colors ${
-                  canCustomizePremium
-                    ? 'bg-[#E84A18] hover:bg-[#F35B2B]'
-                    : 'bg-slate-700 hover:bg-amber-500'
-                }`}
+                decorationId={activeBorder}
+                size="xl"
               >
-                {canCustomizePremium ? (
-                  <Camera className="w-4 h-4" />
-                ) : (
-                  <Lock className="w-4 h-4 text-amber-400" />
-                )}
-              </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    canCustomizePremium
+                      ? avatarInputRef.current?.click()
+                      : setEditingField('premium-lock')
+                  }
+                  aria-label="Upload Foto Profil"
+                  className={`absolute bottom-0 right-0 z-30 w-9 h-9 rounded-full text-white flex items-center justify-center shadow-lg border-2 border-[#F5F7FB] dark:border-[#090A0E] transition-colors ${
+                    canCustomizePremium
+                      ? 'bg-[#E84A18] hover:bg-[#F35B2B]'
+                      : 'bg-slate-700 hover:bg-amber-500'
+                  }`}
+                >
+                  {canCustomizePremium ? (
+                    <Camera className="w-4 h-4" />
+                  ) : (
+                    <Lock className="w-4 h-4 text-amber-400" />
+                  )}
+                </button>
+              </AvatarDecoration>
             </div>
 
             <div className="mt-3 flex items-center justify-center gap-1.5 flex-wrap pointer-events-auto">
               <h1 className="text-xl font-extrabold text-slate-900 dark:text-white">{name}</h1>
+              <CountryFlagBadge countryCode={user?.countryCode} size="sm" />
               {canCustomizePremium && (
                 <VerifiedBadge
                   size="md"
@@ -439,6 +491,26 @@ export function EditProfilePage() {
               </div>
               <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
                 <span className="truncate max-w-[160px]">{bio || 'Tambah bio...'}</span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setEditingField('language')}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Globe className="w-5 h-5 text-[#E84A18]" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Bahasa Aplikasi &amp; Subtitle (4 Bahasa)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span className="inline-flex items-center gap-1.5 text-slate-900 dark:text-white font-semibold">
+                  <CountryFlagBadge countryCode={currentLanguageOption.countryCode} size="xs" />
+                  <span>{currentLanguageOption.nativeLabel}</span>
+                </span>
                 <ChevronRight className="w-4 h-4" />
               </div>
             </button>
@@ -533,14 +605,16 @@ export function EditProfilePage() {
               className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
             >
               <div className="flex items-center gap-3">
-                <Frame className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <Frame className="w-5 h-5 text-[#E84A18]" />
                 <span className="text-sm font-medium text-slate-900 dark:text-white">
-                  Border Avatar (14 Gaya)
+                  Dekorasi Avatar Discord (12 Gaya SVG)
                 </span>
               </div>
               <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
-                <span className="truncate max-w-[140px]">
-                  {AVATAR_BORDER_STYLES[activeBorder]?.label || 'Classic Standar'}
+                <span className="truncate max-w-[150px] font-semibold text-slate-800 dark:text-gray-200">
+                  {AVATAR_BORDER_STYLES[normalizeDecorationId(activeBorder)]?.label ||
+                    AVATAR_BORDER_STYLES[activeBorder]?.label ||
+                    'Tanpa Dekorasi'}
                 </span>
                 <ChevronRight className="w-4 h-4" />
               </div>
@@ -697,6 +771,76 @@ export function EditProfilePage() {
         </div>
       )}
 
+      {/* 4-Language App & Subtitle Picker Modal */}
+      {editingField === 'language' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                  Pilih Bahasa &amp; Subtitle (4 Bahasa)
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                  Mengatur bahasa aplikasi dan subtitle otomatis saat menonton video
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              {APP_LANGUAGES.map((opt) => {
+                const selected = lang === opt.code;
+                return (
+                  <button
+                    key={opt.code}
+                    type="button"
+                    onClick={() => {
+                      changeLanguage(opt.code);
+                      setEditingField(null);
+                      setAutoSavedLabel(`Bahasa ${opt.nativeLabel} & ${opt.subLabel} aktif!`);
+                      setTimeout(() => setAutoSavedLabel(''), 2400);
+                    }}
+                    className={`w-full p-3.5 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all ${
+                      selected
+                        ? 'border-[#E84A18] bg-[#E84A18]/15 shadow-sm'
+                        : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#1B1E26] dark:hover:bg-[#232732]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <CountryFlagBadge countryCode={opt.countryCode} size="md" />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                            {opt.label}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md bg-[#E84A18]/20 text-[#E84A18] text-[10px] font-bold">
+                            {opt.subLabel}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate mt-0.5">
+                          {opt.description}
+                        </p>
+                      </div>
+                    </div>
+                    {selected && (
+                      <span className="w-6 h-6 rounded-full bg-[#E84A18] text-white flex items-center justify-center shrink-0">
+                        <Check className="w-3.5 h-3.5" />
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Name Modal */}
       {editingField === 'name' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
@@ -720,10 +864,13 @@ export function EditProfilePage() {
             />
             <button
               type="button"
-              onClick={() => setEditingField(null)}
+              onClick={() => {
+                setEditingField(null);
+                void triggerAutoSave({ name }, 'Nama akun tersimpan!');
+              }}
               className="w-full h-11 rounded-xl bg-[#E84A18] text-white font-bold text-sm"
             >
-              Terapkan
+              Terapkan &amp; Simpan
             </button>
           </div>
         </div>
@@ -753,10 +900,13 @@ export function EditProfilePage() {
             />
             <button
               type="button"
-              onClick={() => setEditingField(null)}
+              onClick={() => {
+                setEditingField(null);
+                void triggerAutoSave({ bio }, 'Bio profil tersimpan!');
+              }}
               className="w-full h-11 rounded-xl bg-[#E84A18] text-white font-bold text-sm"
             >
-              Terapkan
+              Terapkan &amp; Simpan
             </button>
           </div>
         </div>
@@ -793,25 +943,26 @@ export function EditProfilePage() {
             </p>
             <div className="grid grid-cols-2 gap-2.5">
               {PRESET_BANNERS.map((p) => (
-                <button
-                  key={p.label}
-                  type="button"
-                  onClick={() => {
-                    setBannerUrl(p.src);
-                    setEditingField(null);
-                  }}
-                  className="group relative h-24 rounded-xl overflow-hidden border border-slate-200 dark:border-white/10 hover:border-[#E84A18]"
-                >
-                  <img src={p.src} alt={p.label} className="w-full h-full object-cover" />
-                  <div className="absolute inset-0 bg-black/45 flex items-end p-2">
-                    <span className="text-[11px] font-bold text-white">{p.label}</span>
-                  </div>
-                </button>
-              ))}
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => {
+                      setBannerUrl(p.src);
+                      setEditingField(null);
+                      void triggerAutoSave({ bannerUrl: p.src }, 'Latar belakang tersimpan!');
+                    }}
+                    className="group relative h-24 rounded-xl overflow-hidden border border-slate-200 dark:border-white/10 hover:border-[#E84A18]"
+                  >
+                    <img src={p.src} alt={p.label} className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/45 flex items-end p-2">
+                      <span className="text-[11px] font-bold text-white">{p.label}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Discord-Style Profile Theme Modal (Premium & Founder) */}
       {editingField === 'theme' && canCustomizePremium && (
@@ -844,6 +995,7 @@ export function EditProfilePage() {
                     onClick={() => {
                       setProfileTheme(theme.id);
                       setEditingField(null);
+                      void triggerAutoSave({ profileTheme: theme.id }, `Tema ${theme.label} dipasang!`);
                     }}
                     className={`w-full p-3 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all ${
                       selected
@@ -905,6 +1057,7 @@ export function EditProfilePage() {
                     onClick={() => {
                       setActiveBadge(b.label);
                       setEditingField(null);
+                      void triggerAutoSave({ activeBadge: b.label }, `Lencana ${b.label} dipasang!`);
                     }}
                     className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
                       selected
@@ -927,17 +1080,17 @@ export function EditProfilePage() {
         </div>
       )}
 
-      {/* Equippable Status Emoji Modal (Telegram Emoji Status Style) */}
+      {/* 3D Equippable Status Emoji Modal (Telegram / Discord 3D Emblem Style) */}
       {editingField === 'status-emoji' && canCustomizePremium && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl max-h-[85vh] flex flex-col">
+          <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-[#11131B] border border-slate-200 dark:border-white/15 p-5 shadow-2xl max-h-[88vh] flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  Pasang Emoji Eksklusif di Nama
+                <h3 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                  Pasang Emoji 3D Eksklusif di Nama
                 </h3>
                 <p className="text-[11px] text-slate-500 dark:text-gray-400">
-                  Tampil seperti status emoji Telegram tepat di samping nama Anda
+                  Emblem 3D berkilau tampil otomatis di samping nama Anda di semua perangkat
                 </p>
               </div>
               <button
@@ -954,18 +1107,19 @@ export function EditProfilePage() {
               onClick={() => {
                 setStatusEmoji('');
                 setEditingField(null);
+                void triggerAutoSave({ statusEmoji: '' }, 'Emoji status dilepas!');
               }}
-              className={`w-full mb-3 h-10 px-3 rounded-xl text-xs font-semibold flex items-center justify-between border ${
+              className={`w-full mb-3 h-10 px-3.5 rounded-xl text-xs font-bold flex items-center justify-between border ${
                 !statusEmoji
-                  ? 'border-[#E84A18] bg-[#E84A18]/10 text-[#E84A18]'
-                  : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#1B1E26] text-slate-600 dark:text-gray-300'
+                  ? 'border-[#E84A18] bg-[#E84A18]/15 text-[#E84A18]'
+                  : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#191C26] text-slate-600 dark:text-gray-300'
               }`}
             >
               <span>Tanpa Emoji Status</span>
               {!statusEmoji && <Check className="w-4 h-4" />}
             </button>
 
-            <div className="grid grid-cols-2 gap-2 overflow-y-auto pr-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 overflow-y-auto pr-1 py-1">
               {VIP_EMOJIS.map((vip) => {
                 const Icon = vip.icon;
                 const selected = statusEmoji === vip.id;
@@ -976,20 +1130,32 @@ export function EditProfilePage() {
                     onClick={() => {
                       setStatusEmoji(vip.id);
                       setEditingField(null);
+                      void triggerAutoSave({ statusEmoji: vip.id }, `Emoji 3D ${vip.label} dipasang!`);
                     }}
-                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                    className={`p-3 rounded-2xl border flex items-center justify-between gap-3 transition-colors text-left ${
                       selected
-                        ? 'border-[#E84A18] bg-[#E84A18]/15'
+                        ? 'border-[#E84A18] bg-gradient-to-r from-[#E84A18]/25 to-amber-500/15 ring-1 ring-[#E84A18]/50 shadow-lg'
                         : `${vip.bgClass} ${vip.borderClass} hover:brightness-110`
                     }`}
                   >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Icon className={`w-5 h-5 shrink-0 ${vip.textClass}`} />
-                      <span className={`text-xs font-bold truncate ${vip.textClass}`}>
-                        {vip.label}
-                      </span>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-11 h-11 rounded-2xl bg-black/30 border border-white/15 flex items-center justify-center shrink-0 shadow-inner">
+                        <Icon className="w-7 h-7" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className={`text-xs sm:text-sm font-extrabold truncate ${vip.textClass}`}>
+                          {vip.label}
+                        </p>
+                        <p className="text-[10px] text-slate-600 dark:text-gray-300 truncate">
+                          {vip.subtitle}
+                        </p>
+                      </div>
                     </div>
-                    {selected && <Check className="w-4 h-4 text-[#E84A18] shrink-0" />}
+                    {selected && (
+                      <span className="w-6 h-6 rounded-full bg-[#E84A18] text-white flex items-center justify-center shrink-0 shadow">
+                        <Check className="w-3.5 h-3.5" />
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -998,17 +1164,17 @@ export function EditProfilePage() {
         </div>
       )}
 
-      {/* Border Modal (14 Discord-Style Rings) */}
+      {/* Discord-Style 3D SVG Avatar Decorations Modal */}
       {editingField === 'border' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl max-h-[85vh] flex flex-col">
+          <div className="w-full max-w-xl rounded-3xl bg-white dark:bg-[#11131B] border border-slate-200 dark:border-white/15 p-5 shadow-2xl max-h-[88vh] flex flex-col">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  Pilih Border Avatar (14 Gaya)
+                <h3 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                  Pilih Dekorasi Avatar 3D Discord (12 Gaya)
                 </h3>
                 <p className="text-[11px] text-slate-500 dark:text-gray-400">
-                  Bingkai menyala eksklusif ala Discord Nitro untuk foto profilmu
+                  Klik dekorasi untuk langsung memasang &amp; menyimpan otomatis ke profil Anda
                 </p>
               </div>
               <button
@@ -1019,38 +1185,55 @@ export function EditProfilePage() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="space-y-2 overflow-y-auto pr-1">
-              {Object.entries(AVATAR_BORDER_STYLES).map(([key, item]) => {
-                const locked = Boolean(item.premiumOnly && !canCustomizePremium);
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1 py-1">
+              {DISCORD_AVATAR_DECORATIONS.map((preset) => {
+                const locked = Boolean(preset.vip && !canCustomizePremium);
+                const selected = normalizeDecorationId(activeBorder) === preset.id;
                 return (
                   <button
-                    key={key}
+                    key={preset.id}
                     type="button"
                     disabled={locked}
                     onClick={() => {
-                      setActiveBorder(key);
+                      setActiveBorder(preset.id);
                       setEditingField(null);
+                      void triggerAutoSave(
+                        { activeBorder: preset.id },
+                        `Dekorasi ${preset.name} berhasil dipasang!`
+                      );
                     }}
-                    className={`w-full h-12 px-3.5 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-2 ${
-                      activeBorder === key
-                        ? 'bg-[#E84A18] text-white'
+                    className={`relative rounded-2xl p-3.5 border flex flex-col items-center text-center gap-2.5 transition-colors ${
+                      selected
+                        ? 'border-[#E84A18] bg-gradient-to-b from-[#E84A18]/20 to-transparent ring-1 ring-[#E84A18]/50 shadow-lg'
                         : locked
-                        ? 'bg-slate-100 text-slate-400 dark:bg-[#171920] dark:text-gray-500 cursor-not-allowed'
-                        : 'bg-slate-100 text-slate-800 hover:bg-slate-200 dark:bg-[#1B1E26] dark:text-gray-200 dark:hover:bg-[#232732]'
+                        ? 'border-slate-200 dark:border-white/5 bg-slate-100/70 dark:bg-[#171920] opacity-60 cursor-not-allowed'
+                        : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#181B24] dark:hover:bg-[#212533]'
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span
-                        className={`w-6 h-6 rounded-full bg-gradient-to-tr ${item.previewColor} shrink-0 ring-2 ring-white/25`}
+                    <div className="py-1.5">
+                      <AvatarDecoration
+                        src={photoUrl}
+                        alt={preset.name}
+                        decorationId={preset.id}
+                        size="lg"
                       />
-                      <span className="truncate">{item.label}</span>
+                    </div>
+                    <div className="min-w-0 w-full">
+                      <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                        {preset.name}
+                      </p>
+                      <p className="text-[10px] text-slate-500 dark:text-gray-400 line-clamp-1">
+                        {preset.subtitle}
+                      </p>
                     </div>
                     {locked ? (
-                      <span className="text-[11px] flex items-center gap-1 text-amber-500 dark:text-amber-400 shrink-0">
-                        <Lock className="w-3.5 h-3.5" /> VIP
+                      <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-400 text-[9px] font-bold inline-flex items-center gap-0.5">
+                        <Lock className="w-2.5 h-2.5" /> VIP
                       </span>
-                    ) : activeBorder === key ? (
-                      <Check className="w-4 h-4 shrink-0" />
+                    ) : selected ? (
+                      <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#E84A18] text-white flex items-center justify-center shadow">
+                        <Check className="w-3 h-3" />
+                      </span>
                     ) : null}
                   </button>
                 );

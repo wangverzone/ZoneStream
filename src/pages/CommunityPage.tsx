@@ -15,9 +15,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { TELEGRAM_BADGE_MAP, VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
-import { AVATAR_BORDER_STYLES, PROFILE_THEMES, useAuth } from '../context/AuthContext';
+import { AvatarDecoration } from '../components/AvatarDecoration';
+import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
 import type { PublicCommunityUser, RelationshipStatus } from '../types';
-import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 
 function getToken(): string {
   return (
@@ -37,19 +37,27 @@ export function CommunityPage() {
   const [friends, setFriends] = useState<PublicCommunityUser[]>([]);
   const [incoming, setIncoming] = useState<PublicCommunityUser[]>([]);
   const [outgoing, setOutgoing] = useState<PublicCommunityUser[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [busyUid, setBusyUid] = useState('');
 
   const fetchSearchUsers = async (qStr: string) => {
+    const trimmed = qStr.trim();
+    if (!me || !trimmed) {
+      setUsers([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const token = getToken();
-      const res = await fetch(`/api/social/users?q=${encodeURIComponent(qStr.trim())}`, {
+      const res = await fetch(`/api/social/users?q=${encodeURIComponent(trimmed)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       const json = await res.json();
       if (json.ok && Array.isArray(json.users)) {
         setUsers(json.users);
+      } else {
+        setUsers([]);
       }
     } catch {
       setUsers([]);
@@ -77,9 +85,15 @@ export function CommunityPage() {
   };
 
   useEffect(() => {
+    if (!me || !query.trim()) {
+      setUsers([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
     const timer = setTimeout(() => {
       fetchSearchUsers(query);
-    }, 220);
+    }, 200);
     return () => clearTimeout(timer);
   }, [query, me?.uid]);
 
@@ -134,11 +148,8 @@ export function CommunityPage() {
                 <span>Komunitas &amp; Pertemanan ZoneStream</span>
               </div>
               <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white">
-                Cari User, Tambah Teman &amp; Chat
+                Cari User via UID atau @Username
               </h1>
-              <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-300 mt-1 max-w-2xl">
-                Temukan sesama penonton berdasarkan nama, <span className="font-mono-tabular">@username</span>, atau <span className="font-mono-tabular">UID (00000)</span>. Pencarian ini khusus akun pengguna, terpisah dari pencarian Anime &amp; Donghua.
-              </p>
             </div>
 
             <div className="flex items-center flex-wrap gap-2 shrink-0">
@@ -160,17 +171,18 @@ export function CommunityPage() {
           </div>
 
           {/* Dedicated User Search Bar */}
-          <div className="mt-5 relative">
+          <div className="mt-4 relative">
             <Search className="w-4 h-4 text-[#E84A18] absolute left-4 top-1/2 -translate-y-1/2" />
             <input
               type="search"
               value={query}
+              disabled={!me}
               onChange={(e) => {
                 setQuery(e.target.value);
                 if (tab !== 'all') setTab('all');
               }}
-              placeholder="Cari nama user, @username, atau UID (contoh: VerzonFounder atau 00000)..."
-              className="w-full h-12 pl-11 pr-4 rounded-2xl bg-white dark:bg-[#0B0D13] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-[#E84A18] shadow-sm"
+              placeholder={me ? 'Username atau UID' : 'Login untuk cari Username atau UID'}
+              className="w-full h-12 pl-11 pr-4 rounded-2xl bg-white dark:bg-[#0B0D13] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-[#E84A18] shadow-sm disabled:opacity-60"
             />
           </div>
 
@@ -185,7 +197,7 @@ export function CommunityPage() {
                   : 'bg-white/80 dark:bg-white/5 text-slate-600 dark:text-gray-300 hover:bg-white dark:hover:bg-white/10'
               }`}
             >
-              Semua User ({users.length})
+              Hasil Pencarian ({users.length})
             </button>
             {me && (
               <>
@@ -222,9 +234,25 @@ export function CommunityPage() {
         </div>
 
         {/* User Cards Grid */}
-        {loading && tab === 'all' ? (
+        {!me ? (
+          <div className="rounded-3xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.06] p-10 text-center">
+            <Users className="w-9 h-9 text-[#E84A18] mx-auto mb-3" />
+            <p className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white">
+              Masuk Akun untuk Mencari Member
+            </p>
+            <p className="text-xs text-slate-500 dark:text-gray-400 mt-1 max-w-xs mx-auto">
+              Cari menggunakan Username atau UID.
+            </p>
+            <Link
+              to="/profile"
+              className="mt-4 inline-flex items-center justify-center px-5 py-2.5 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold shadow-lg shadow-[#E84A18]/25 transition-colors"
+            >
+              Login Sekarang
+            </Link>
+          </div>
+        ) : loading && tab === 'all' ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[1, 2, 3, 4, 5, 6].map((i) => (
+            {[1, 2, 3].map((i) => (
               <div
                 key={i}
                 className="h-44 rounded-3xl bg-slate-200 dark:bg-[#141720] animate-pulse"
@@ -232,17 +260,16 @@ export function CommunityPage() {
             ))}
           </div>
         ) : displayedList.length === 0 ? (
-          <div className="rounded-3xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.06] p-10 text-center">
-            <Sparkles className="w-8 h-8 text-[#E84A18] mx-auto mb-2" />
+          <div className="rounded-3xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.06] p-8 text-center">
+            <Sparkles className="w-7 h-7 text-[#E84A18] mx-auto mb-2" />
             <p className="text-sm font-bold text-slate-900 dark:text-white">
               {tab === 'friends'
-                ? 'Belum ada teman yang ditambahkan.'
+                ? 'Belum ada teman'
                 : tab === 'requests'
-                ? 'Tidak ada permintaan pertemanan tertunda.'
-                : 'Tidak ada user yang cocok dengan pencarianmu.'}
-            </p>
-            <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-              Coba kata kunci lain atau jelajahi tab Semua User untuk menemukan member aktif.
+                ? 'Tidak ada permintaan pertemanan'
+                : !query.trim()
+                ? 'Ketik Username atau UID'
+                : 'User tidak ditemukan'}
             </p>
           </div>
         ) : (
@@ -250,9 +277,6 @@ export function CommunityPage() {
             {displayedList.map((u) => {
               const isFounder = u.role === 'founder';
               const hasVip = Boolean(u.isPremium || isFounder);
-              const borderCls =
-                AVATAR_BORDER_STYLES[u.activeBorder || 'classic']?.ringClass ||
-                AVATAR_BORDER_STYLES.classic.ringClass;
               const themeDef =
                 PROFILE_THEMES[hasVip ? u.profileTheme || 'default' : 'default'] ||
                 PROFILE_THEMES.default;
@@ -284,15 +308,16 @@ export function CommunityPage() {
 
                     <div className="px-4 pb-3 -mt-8 relative">
                       <Link to={`/u/${u.uid}`} className="inline-block relative">
-                        <img
-                          src={u.photoUrl || defaultAvatarImg}
+                        <AvatarDecoration
+                          src={u.photoUrl}
                           alt={u.name}
-                          referrerPolicy="no-referrer"
-                          className={`w-16 h-16 rounded-full object-cover bg-white dark:bg-[#13151C] ${borderCls}`}
-                        />
-                        {u.isOnline && (
-                          <span className="absolute bottom-0.5 right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#13151C]" />
-                        )}
+                          decorationId={u.activeBorder}
+                          size="lg"
+                        >
+                          {u.isOnline && (
+                            <span className="absolute bottom-0.5 right-0.5 z-30 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#13151C]" />
+                          )}
+                        </AvatarDecoration>
                       </Link>
 
                       <div className="mt-2">

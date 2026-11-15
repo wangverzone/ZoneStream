@@ -56,6 +56,19 @@ export function CatalogPage() {
     setGenre(genreParam);
   }, [searchParams]);
 
+  // Live debounced search so typing "one pice" or any Anime/Donghua title updates results automatically
+  useEffect(() => {
+    const currentUrlQ = searchParams.get('q') || '';
+    if (query.trim() === currentUrlQ.trim()) return;
+    const timer = setTimeout(() => {
+      const next = new URLSearchParams(searchParams);
+      if (query.trim()) next.set('q', query.trim());
+      else next.delete('q');
+      setSearchParams(next, { replace: true });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query, searchParams, setSearchParams]);
+
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -139,7 +152,7 @@ export function CatalogPage() {
         <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
           <div className="flex items-center gap-3">
             <h1 className="text-lg font-extrabold text-slate-900 dark:text-white">
-              Katalog Anime &amp; Donghua
+              Katalog Anime &amp; Donghua Global
             </h1>
             {!loading && items.length > 0 && (
               <span className="text-xs font-semibold text-slate-500 dark:text-[#9CA3AF] font-mono-tabular">
@@ -164,7 +177,7 @@ export function CatalogPage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Cari judul Anime atau Donghua..."
+              placeholder="Cari semua Anime & Donghua dunia (contoh: One Piece, Naruto, BTTH, JJK)..."
               className="w-full h-11 pl-10 pr-4 rounded-xl bg-white dark:bg-[#15171F] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-[#E84A18]"
             />
           </div>

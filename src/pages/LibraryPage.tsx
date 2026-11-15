@@ -104,7 +104,12 @@ export function LibraryPage() {
               <Link
                 key={h.episodeId}
                 to={`/watch/${h.type}/${encodeURIComponent(h.episodeId)}`}
-                state={{ backTo: '/library?tab=history', adUnlocked: isPremium }}
+                state={{
+                  backTo: '/library?tab=history',
+                  adUnlocked: isPremium,
+                  poster: h.poster,
+                  seriesTitle: h.title,
+                }}
                 className="group flex items-center gap-3 p-2.5 rounded-2xl bg-white hover:bg-slate-50 dark:bg-[#14161D] dark:hover:bg-[#1B1E26] border border-slate-200 dark:border-white/5 transition-colors shadow-sm dark:shadow-none"
               >
                 <div className="relative w-28 aspect-video rounded-xl overflow-hidden bg-slate-200 dark:bg-[#1D202A] shrink-0">
@@ -112,6 +117,10 @@ export function LibraryPage() {
                     src={h.poster || heroFallbackImg}
                     alt={h.title}
                     referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      const img = e.currentTarget;
+                      if (img.src !== heroFallbackImg) img.src = heroFallbackImg;
+                    }}
                     className="w-full h-full object-cover"
                   />
                   <div className="absolute inset-0 bg-black/35 flex items-center justify-center">

@@ -9,6 +9,21 @@ const router = Router();
 const VIP_TOKEN_REGEX = /\[vip:[a-z0-9_-]+\]/i;
 
 const memoryComments: Array<any> = [];
+let globalSamplePurged = false;
+
+function detectRequestCountry(req: any): string {
+  const raw =
+    req.body?.countryCode ||
+    req.headers?.['x-client-country'] ||
+    req.headers?.['x-vercel-ip-country'] ||
+    req.headers?.['cf-ipcountry'] ||
+    '';
+  const clean = String(raw || '').trim().toUpperCase();
+  if (/^[A-Z]{2}$/.test(clean) && clean !== 'XX') {
+    return clean;
+  }
+  return 'ID';
+}
 
 // GET /api/comments?mediaKey=donghua:renegade-immortal&sort=latest|popular
 router.get('/', async (req, res) => {
@@ -23,34 +38,64 @@ router.get('/', async (req, res) => {
     let rawComments: any[] = [];
 
     if (mongoOk) {
+      // Purge all previously seeded sample/bot comments globally so 100% of comments come strictly from real registered users
+      if (!globalSamplePurged) {
+        globalSamplePurged = true;
+        await CommentModel.deleteMany({
+          $or: [
+            { uid: { $in: ['5017224', '7729104', '8812301'] } },
+            {
+              authorName: {
+                $in: ['Calista', 'Rizky Pratama', "亗CHEN NAN 千丁' 爪尺ㄒㄥ表"],
+              },
+            },
+            {
+              uid: '00000',
+              text: 'Kualitas server HD sudah dioptimalkan penuh. Selamat menonton dan tulis pendapat kalian di bawah!',
+            },
+          ],
+        }).catch(() => {});
+      }
+
       rawComments = await CommentModel.find({ mediaKey })
         .sort({ pinned: -1, createdAt: -1 })
-        .limit(120)
+        .limit(150)
         .lean();
 
-      // Enrich live user metadata so badges, borders, levels, and avatars stay current
+      // Enrich live user metadata and strictly verify the commenter is a real registered account in UserModel
       const uids = Array.from(new Set(rawComments.map((c) => c.uid).filter(Boolean)));
       if (uids.length > 0) {
         const users = await UserModel.find({ uid: { $in: uids } })
-          .select('uid name photoUrl role isPremium isVerified activeBadge activeBorder profileTheme statusEmoji level')
+          .select(
+            'uid name photoUrl bannerUrl role isPremium isVerified activeBadge activeBorder profileTheme statusEmoji countryCode level'
+          )
           .lean();
         const userMap = new Map(users.map((u: any) => [u.uid, u]));
-        rawComments = rawComments.map((c) => {
-          const live = userMap.get(c.uid);
-          if (!live) return c;
-          return {
-            ...c,
-            authorName: live.name || c.authorName,
-            authorPhoto: live.photoUrl ?? c.authorPhoto,
-            authorRole: live.role || c.authorRole,
-            authorIsPremium: Boolean(live.isPremium || live.isVerified || live.role === 'founder'),
-            authorBadge: live.activeBadge || c.authorBadge,
-            authorBorder: live.activeBorder || c.authorBorder,
-            authorTheme: live.profileTheme || c.authorTheme || 'default',
-            authorStatusEmoji: live.statusEmoji || c.authorStatusEmoji || '',
-            authorLevel: live.level || c.authorLevel,
-          };
-        });
+
+        // Filter out any comment whose author UID does not exist in UserModel (prevents any ghost/sample comments)
+        rawComments = rawComments
+          .filter((c) => userMap.has(c.uid))
+          .map((c) => {
+            const live = userMap.get(c.uid)!;
+            return {
+              ...c,
+              authorName: live.name || c.authorName,
+              authorPhoto: live.photoUrl || c.authorPhoto,
+              authorBanner: live.bannerUrl || c.authorBanner || '',
+              authorRole: live.role || c.authorRole,
+              authorIsPremium: Boolean(
+                live.isPremium || live.isVerified || live.role === 'founder'
+              ),
+              authorBadge: live.activeBadge || c.authorBadge,
+              authorBorder: live.activeBorder || c.authorBorder,
+              authorTheme: live.profileTheme || c.authorTheme || 'default',
+              authorStatusEmoji: live.statusEmoji || c.authorStatusEmoji || '',
+              authorCountry: (live.countryCode || c.authorCountry || 'ID').toUpperCase(),
+              authorLevel: live.level || c.authorLevel,
+            };
+          });
+      } else {
+        rawComments = [];
       }
     } else {
       rawComments = memoryComments.filter((c) => c.mediaKey === mediaKey);
@@ -72,12 +117,14 @@ router.get('/', async (req, res) => {
       uid: c.uid,
       authorName: c.authorName,
       authorPhoto: c.authorPhoto || '',
+      authorBanner: c.authorBanner || '',
       authorRole: c.authorRole || 'member',
       authorIsPremium: Boolean(c.authorIsPremium),
       authorBadge: c.authorBadge || 'Member',
       authorBorder: c.authorBorder || 'classic',
       authorTheme: c.authorTheme || 'default',
       authorStatusEmoji: c.authorStatusEmoji || '',
+      authorCountry: (c.authorCountry || 'ID').toUpperCase(),
       authorLevel: c.authorLevel || 1,
       text: c.text || '',
       sticker: c.sticker || '',
@@ -124,6 +171,8 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       });
     }
 
+    const countryCode = (user.countryCode || detectRequestCountry(req) || 'ID').toUpperCase();
+
     const payload = {
       mediaKey: cleanMediaKey,
       mediaTitle: String(mediaTitle || '').slice(0, 120),
@@ -132,12 +181,14 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       uid: user.uid,
       authorName: user.name,
       authorPhoto: user.photoUrl || '',
+      authorBanner: hasVipPrivilege ? user.bannerUrl || '' : '',
       authorRole: user.role,
       authorIsPremium: hasVipPrivilege,
       authorBadge: user.activeBadge || (hasVipPrivilege ? 'Verified' : 'Member'),
       authorBorder: user.activeBorder || 'classic',
       authorTheme: user.profileTheme || 'default',
       authorStatusEmoji: hasVipPrivilege ? user.statusEmoji || '' : '',
+      authorCountry: countryCode,
       authorLevel: user.level || 1,
       text: cleanText,
       sticker: cleanSticker,

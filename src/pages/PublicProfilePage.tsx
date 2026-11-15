@@ -18,7 +18,9 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { TELEGRAM_BADGE_MAP, VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
-import { AVATAR_BORDER_STYLES, PROFILE_THEMES, useAuth } from '../context/AuthContext';
+import { CountryFlagBadge } from '../components/CountryFlag';
+import { AvatarDecoration } from '../components/AvatarDecoration';
+import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
 import type { PublicProfileDetail, RelationshipStatus } from '../types';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
@@ -175,9 +177,6 @@ export function PublicProfilePage() {
 
   const isTargetFounder = profile.role === 'founder';
   const hasVip = Boolean(profile.isPremium || isTargetFounder);
-  const borderCls =
-    AVATAR_BORDER_STYLES[profile.activeBorder || 'classic']?.ringClass ||
-    AVATAR_BORDER_STYLES.classic.ringClass;
   const themeDef =
     PROFILE_THEMES[hasVip ? profile.profileTheme || 'default' : 'default'] ||
     PROFILE_THEMES.default;
@@ -192,24 +191,27 @@ export function PublicProfilePage() {
           </div>
         )}
 
-        {/* Discord-themed Profile Header Card */}
+        {/* Discord-themed 3D Profile Header Card */}
         <div
-          className={`relative sm:rounded-3xl overflow-hidden border-b sm:border border-slate-200 dark:border-white/[0.08] shadow-xl ${themeDef.shellClass}`}
+          className={`relative sm:rounded-3xl overflow-hidden border-b sm:border border-slate-200 dark:border-white/[0.12] shadow-[0_22px_55px_rgba(0,0,0,0.5)] ${themeDef.shellClass}`}
         >
           {/* Banner */}
-          <div className="relative h-48 sm:h-64 w-full overflow-hidden bg-slate-900">
+          <div className="relative h-52 sm:h-72 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
             <img
               src={profile.bannerUrl || defaultBannerImg}
               alt={`Latar ${profile.name}`}
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover"
+              decoding="async"
+              fetchPriority="high"
+              className="w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] brightness-[1.02]"
             />
-            <div className={`absolute inset-0 bg-gradient-to-t ${themeDef.bannerGradientOverlay}`} />
+            <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#090A0E] via-[#090A0E]/65 to-transparent pointer-events-none" />
+            <div className="absolute inset-0 ring-1 ring-inset ring-white/10 pointer-events-none" />
 
             <button
               type="button"
               onClick={() => navigate(-1)}
-              className="absolute top-4 left-4 z-20 min-h-[40px] px-3 rounded-xl bg-black/55 hover:bg-black/80 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 border border-white/15 transition-colors"
+              className="absolute top-4 left-4 z-20 min-h-[40px] px-3.5 rounded-xl bg-black/65 hover:bg-black/85 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 border border-white/20 shadow-lg transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Kembali</span>
@@ -217,10 +219,10 @@ export function PublicProfilePage() {
 
             <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
               <span
-                className={`px-3 py-1 rounded-full text-[11px] font-bold backdrop-blur-md border ${
+                className={`px-3 py-1 rounded-full text-[11px] font-bold backdrop-blur-md border shadow-md ${
                   profile.isOnline
-                    ? 'bg-emerald-500/20 border-emerald-400/40 text-emerald-200'
-                    : 'bg-black/50 border-white/15 text-gray-200'
+                    ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-200'
+                    : 'bg-black/60 border-white/20 text-gray-200'
                 }`}
               >
                 {formatLastSeen(profile.lastActiveAt, profile.isOnline)}
@@ -233,25 +235,27 @@ export function PublicProfilePage() {
             <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
               <div className="flex flex-col sm:flex-row sm:items-end gap-4">
                 <div className="relative self-start">
-                  <img
-                    src={profile.photoUrl || defaultAvatarImg}
+                  <AvatarDecoration
+                    src={profile.photoUrl}
                     alt={profile.name}
-                    referrerPolicy="no-referrer"
-                    className={`w-28 h-28 sm:w-32 sm:h-32 rounded-full object-cover bg-white dark:bg-[#14161D] ${borderCls}`}
-                  />
-                  {profile.isOnline && (
-                    <span
-                      title="Sedang Online"
-                      className="absolute bottom-2 right-2 w-4 h-4 rounded-full bg-emerald-500 ring-4 ring-white dark:ring-[#13151C]"
-                    />
-                  )}
+                    decorationId={profile.activeBorder}
+                    size="xl"
+                  >
+                    {profile.isOnline && (
+                      <span
+                        title="Sedang Online"
+                        className="absolute bottom-2 right-2 z-30 w-4 h-4 rounded-full bg-emerald-500 ring-4 ring-white dark:ring-[#13151C]"
+                      />
+                    )}
+                  </AvatarDecoration>
                 </div>
 
                 <div className="pb-1">
                   <div className="flex items-center flex-wrap gap-2">
-                    <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white">
+                    <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
                       {profile.name}
                     </h1>
+                    <CountryFlagBadge countryCode={profile.countryCode} size="sm" />
                     {hasVip && (
                       <VerifiedBadge
                         size="lg"
@@ -260,7 +264,7 @@ export function PublicProfilePage() {
                       />
                     )}
                     {hasVip && profile.statusEmoji && (
-                      <StatusEmojiBadge statusEmoji={profile.statusEmoji} size="sm" />
+                      <StatusEmojiBadge statusEmoji={profile.statusEmoji} size="md" />
                     )}
                   </div>
 

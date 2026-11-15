@@ -39,6 +39,7 @@ export interface UserProfile {
   activeBorder: string;
   profileTheme?: string;
   statusEmoji?: string;
+  countryCode?: string;
   lastWatchDate?: string;
   watchStreak?: number;
   dailyEpisodesWatched?: number;
@@ -96,12 +97,14 @@ export interface CommentItem {
   uid: string;
   authorName: string;
   authorPhoto: string;
+  authorBanner?: string;
   authorRole: 'member' | 'founder';
   authorIsPremium: boolean;
   authorBadge: string;
   authorBorder: string;
   authorTheme?: string;
   authorStatusEmoji?: string;
+  authorCountry?: string;
   authorLevel: number;
   text: string;
   sticker?: string;
@@ -115,6 +118,7 @@ export interface HeroSlide {
   episodeId?: string;
   type: 'anime' | 'donghua';
   title: string;
+  episodeLabel?: string;
   poster: string;
   backdrop: string;
   hasWideBanner?: boolean;
@@ -165,6 +169,7 @@ export interface MediaDetail {
   synopsis: string;
   genres: string[];
   episodes: EpisodeItem[];
+  seasons?: MediaCardItem[];
 }
 
 export interface StreamServer {
@@ -172,6 +177,7 @@ export interface StreamServer {
   url?: string;
   serverId?: string;
   quality?: string;
+  streamType?: 'mp4' | 'hls' | 'embed';
 }
 
 export interface EpisodeStreamData {
@@ -212,6 +218,7 @@ export interface PublicCommunityUser {
   activeBorder: string;
   profileTheme: string;
   statusEmoji: string;
+  countryCode?: string;
   watchStreak: number;
   totalEpisodesWatched: number;
   bookmarksCount: number;

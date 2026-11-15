@@ -25,6 +25,20 @@ const FIREBASE_WEB_API_KEY = 'AIzaSyBPXKFLf1xPdo9H9Bw8w8KAPFGY0dYH-04';
 
 export const getExpNeededForLevel = (level: number) => Math.max(100, level * 200);
 
+function detectRequestCountry(req: any): string {
+  const raw =
+    req.body?.countryCode ||
+    req.headers?.['x-client-country'] ||
+    req.headers?.['x-vercel-ip-country'] ||
+    req.headers?.['cf-ipcountry'] ||
+    '';
+  const clean = String(raw || '').trim().toUpperCase();
+  if (/^[A-Z]{2}$/.test(clean) && clean !== 'XX') {
+    return clean;
+  }
+  return 'ID';
+}
+
 function buildOtpHtml(code: string, purposeLabel: string): string {
   return `<div style="font-family:Arial,sans-serif;background:#0b0c0f;color:#f4f5f7;padding:28px;border-radius:16px;max-width:480px;margin:auto;border:1px solid #262936;">
     <h2 style="color:#E84A18;margin-top:0;font-size:20px;">ZoneStream · Kode Verifikasi Keamanan</h2>
@@ -34,6 +48,9 @@ function buildOtpHtml(code: string, purposeLabel: string): string {
   </div>`;
 }
 
+const DEFAULT_GMAIL_USER = 'wanglin72kk@gmail.com';
+const DEFAULT_GMAIL_APP_PASSWORD = 'etjadzxgeerlydae';
+
 async function dispatchEmailCode(
   toEmail: string,
   code: string,
@@ -42,28 +59,23 @@ async function dispatchEmailCode(
   const html = buildOtpHtml(code, purposeLabel);
   const subject = `Kode Verifikasi ZoneStream: ${code}`;
 
-  const gmailUser = process.env.GMAIL_USER?.trim();
-  const gmailPass = process.env.GMAIL_APP_PASSWORD?.trim();
-  const smtpHost = process.env.SMTP_HOST?.trim();
+  const gmailUser = (process.env.GMAIL_USER || DEFAULT_GMAIL_USER).trim();
+  const gmailPass = (process.env.GMAIL_APP_PASSWORD || DEFAULT_GMAIL_APP_PASSWORD)
+    .replace(/\s+/g, '')
+    .trim();
+  const smtpHost = process.env.SMTP_HOST?.trim() || 'smtp.gmail.com';
   const smtpPort = Number(process.env.SMTP_PORT || 465);
   const smtpUser = process.env.SMTP_USER?.trim() || gmailUser;
-  const smtpPass = process.env.SMTP_PASS?.trim() || gmailPass;
+  const smtpPass = (process.env.SMTP_PASS || gmailPass).replace(/\s+/g, '').trim();
 
-  if ((gmailUser && gmailPass) || (smtpHost && smtpUser && smtpPass)) {
+  if (smtpUser && smtpPass) {
     try {
-      const transporter = nodemailer.createTransport(
-        smtpHost
-          ? {
-              host: smtpHost,
-              port: smtpPort,
-              secure: smtpPort === 465,
-              auth: { user: smtpUser, pass: smtpPass },
-            }
-          : {
-              service: 'gmail',
-              auth: { user: gmailUser, pass: gmailPass },
-            }
-      );
+      const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
+        auth: { user: smtpUser, pass: smtpPass },
+      });
       await transporter.sendMail({
         from: process.env.EMAIL_FROM || `ZoneStream <${smtpUser}>`,
         to: toEmail,
@@ -429,9 +441,17 @@ router.post('/forgot-password', async (req, res) => {
 // Get authenticated user profile
 router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const user = await findUserByUid(req.authUser!.uid);
+    let user = await findUserByUid(req.authUser!.uid);
     if (!user) {
       return res.status(404).json({ error: 'Akun tidak ditemukan' });
+    }
+    const detectedCountry = detectRequestCountry(req);
+    if (!user.countryCode && detectedCountry) {
+      const updated = await updateUserByUid(user.uid, (cur) => ({
+        ...cur,
+        countryCode: detectedCountry,
+      }));
+      if (updated) user = updated;
     }
     void touchUserLastActive(user.uid);
     return res.json({ ok: true, user: sanitizeUser(user) });
@@ -441,36 +461,8 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// Update profile (Foto Profil, Latar, Tema Discord, Border VIP, Lencana Telegram & Emoji Status wajib Premium/Founder)
-const FREE_BORDERS = new Set(['classic', 'crimson', 'azure', 'emerald-venom']);
-const ALL_BORDERS = new Set([
-  'classic',
-  'crimson',
-  'azure',
-  'emerald-venom',
-  'gold',
-  'sakura',
-  'cyber-neon',
-  'abyss-void',
-  'celestial-aurora',
-  'frost-crystal',
-  'solar-flare',
-  'amethyst-royal',
-  'blood-moon',
-  'rainbow-prism',
-]);
-const ALL_THEMES = new Set([
-  'default',
-  'nitro-aurora',
-  'cyber-neon',
-  'crimson-eclipse',
-  'sovereign-gold',
-  'abyss-void',
-  'sakura-dream',
-  'frost-monarch',
-  'dragon-jade',
-  'galactic-prism',
-]);
+// Update profile (Foto Profil, Latar, Tema Discord, Dekorasi Avatar Discord, Lencana Telegram & Emoji Status wajib Premium/Founder)
+const FREE_BORDERS = new Set(['none', 'classic']);
 
 router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
@@ -484,6 +476,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
       activeBadge,
       profileTheme,
       statusEmoji,
+      countryCode,
     } = req.body || {};
 
     const existing = await findUserByUid(uid);
@@ -492,19 +485,22 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
     }
 
     const hasPremiumAccess = Boolean(existing.isPremium || existing.role === 'founder');
+    const cleanBorder = typeof activeBorder === 'string' ? activeBorder.trim().slice(0, 64) : undefined;
+    const cleanTheme = typeof profileTheme === 'string' ? profileTheme.trim().slice(0, 64) : undefined;
+
     const tryingPhotoEdit =
       typeof photoUrl === 'string' && photoUrl !== (existing.photoUrl || '');
     const tryingBannerEdit =
       typeof bannerUrl === 'string' && bannerUrl !== (existing.bannerUrl || '');
     const tryingPremiumBorder =
-      typeof activeBorder === 'string' &&
-      ALL_BORDERS.has(activeBorder) &&
-      !FREE_BORDERS.has(activeBorder) &&
-      activeBorder !== existing.activeBorder;
+      typeof cleanBorder === 'string' &&
+      cleanBorder.length > 0 &&
+      !FREE_BORDERS.has(cleanBorder) &&
+      cleanBorder !== existing.activeBorder;
     const tryingPremiumTheme =
-      typeof profileTheme === 'string' &&
-      profileTheme !== 'default' &&
-      profileTheme !== (existing.profileTheme || 'default');
+      typeof cleanTheme === 'string' &&
+      cleanTheme !== 'default' &&
+      cleanTheme !== (existing.profileTheme || 'default');
     const tryingStatusEmoji =
       typeof statusEmoji === 'string' &&
       statusEmoji !== '' &&
@@ -520,7 +516,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
     ) {
       return res.status(403).json({
         error:
-          'Foto Profil, Latar Belakang, Tema Discord, Border VIP, & Emoji Status khusus akun Premium! Upgrade ke Premium terlebih dahulu.',
+          'Foto Profil, Latar Belakang, Tema Discord, Dekorasi Avatar 3D, & Emoji Status khusus akun Premium! Upgrade ke Premium terlebih dahulu.',
       });
     }
 
@@ -540,18 +536,18 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
 
       const nextPhoto =
         hasPremiumAccess && typeof photoUrl === 'string'
-          ? photoUrl.slice(0, 2_500_000)
+          ? photoUrl.slice(0, 6_000_000)
           : current.photoUrl;
 
       const nextBanner =
         hasPremiumAccess && typeof bannerUrl === 'string'
-          ? bannerUrl.slice(0, 2_500_000)
+          ? bannerUrl.slice(0, 6_000_000)
           : current.bannerUrl;
 
-      let nextBorder = current.activeBorder;
-      if (typeof activeBorder === 'string' && ALL_BORDERS.has(activeBorder)) {
-        if (hasPremiumAccess || FREE_BORDERS.has(activeBorder)) {
-          nextBorder = activeBorder;
+      let nextBorder = current.activeBorder || 'none';
+      if (typeof cleanBorder === 'string' && cleanBorder.length > 0) {
+        if (hasPremiumAccess || FREE_BORDERS.has(cleanBorder)) {
+          nextBorder = cleanBorder;
         }
       }
 
@@ -565,14 +561,19 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
       }
 
       let nextTheme = current.profileTheme || 'default';
-      if (typeof profileTheme === 'string' && ALL_THEMES.has(profileTheme)) {
-        nextTheme = hasPremiumAccess ? profileTheme : 'default';
+      if (typeof cleanTheme === 'string' && cleanTheme.length > 0) {
+        nextTheme = hasPremiumAccess ? cleanTheme : 'default';
       }
 
       let nextStatusEmoji = current.statusEmoji || '';
       if (typeof statusEmoji === 'string') {
         nextStatusEmoji = hasPremiumAccess ? statusEmoji.trim().slice(0, 40) : '';
       }
+
+      const cleanCountry =
+        typeof countryCode === 'string' && /^[A-Za-z]{2}$/.test(countryCode.trim())
+          ? countryCode.trim().toUpperCase()
+          : current.countryCode || detectRequestCountry(req);
 
       return {
         ...current,
@@ -584,6 +585,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
         activeBadge: nextBadge,
         profileTheme: nextTheme,
         statusEmoji: nextStatusEmoji,
+        countryCode: cleanCountry,
       };
     });
 

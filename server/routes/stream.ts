@@ -1,5 +1,11 @@
 import { Router } from 'express';
 import {
+  browseGlobalAniList,
+  fetchGlobalMediaDetail,
+  normalizeExtractedStreamUrl,
+  normalizeSearchQuery,
+  parseSeriesAndEpisode,
+  resolveDirectVideoFromEmbed,
   resolveOtakudesuServer,
   scrapeDonghiveCatalog,
   scrapeDonghiveDetail,
@@ -14,6 +20,7 @@ import {
   scrapeOtakudesuHome,
   scrapeOtakudesuSchedule,
   scrapeOtakudesuSearch,
+  searchGlobalAniList,
 } from '../providers/directScraper.ts';
 
 const router = Router();
@@ -66,20 +73,44 @@ function enqueueUpstream<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
-function proxyPoster(raw?: string): string {
+function isValidHttpImageUrl(raw?: string): boolean {
   const url = String(raw || '').trim();
-  if (!url) return '';
-  if (url.startsWith('/') || url.startsWith('data:')) return url;
-  if (/^https?:\/\//i.test(url)) {
-    return `/api/stream/img?url=${encodeURIComponent(url)}`;
+  if (!url || url.startsWith('data:') || url.includes('blank.gif') || url.includes('placeholder')) {
+    return false;
   }
-  return url;
+  return /^https?:\/\//i.test(url);
 }
 
-// GET /api/stream/img?url=... — Bypass hotlink 403 (e.g., anichin.moe) & cache posters at edge
+function proxyPoster(raw?: string): string {
+  const url = String(raw || '').trim();
+  if (!url || url.startsWith('data:')) return '';
+  if (url.startsWith('/api/stream/img') || url.startsWith('/assets/')) return url;
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      // Hosts with no hotlink block that load directly in browser (avoids Vercel US-East datacenter 403s)
+      if (
+        host.endsWith('otakudesu.blog') ||
+        host.endsWith('otakudesu.cloud') ||
+        host.endsWith('anilist.co') ||
+        host.endsWith('myanimelist.net') ||
+        host === 'wsrv.nl' ||
+        host.endsWith('weserv.nl')
+      ) {
+        return url;
+      }
+    } catch {
+      // Fallback to proxy below
+    }
+    return `/api/stream/img?url=${encodeURIComponent(url)}`;
+  }
+  return '';
+}
+
+// GET /api/stream/img?url=... — Bypass hotlink 403 with multi-stage fallback & direct browser redirect
 router.get('/img', async (req, res) => {
+  const rawUrl = String(req.query.url || '').trim();
   try {
-    const rawUrl = String(req.query.url || '').trim();
     if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
       return res.status(400).send('Invalid URL');
     }
@@ -104,45 +135,65 @@ router.get('/img', async (req, res) => {
       return res.send(cached.buf);
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
-    try {
-      const resp = await fetch(rawUrl, {
-        signal: controller.signal,
-        headers: {
-          Referer: `${parsed.origin}/`,
+    const fetchImageBuffer = async (
+      targetUrl: string,
+      referer?: string,
+      timeoutMs = 5500
+    ): Promise<{ contentType: string; buf: Buffer } | null> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const headers: Record<string, string> = {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
           Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        },
-      });
-      if (!resp.ok) {
-        return res.status(resp.status).send('Upstream image error');
+        };
+        if (referer) headers.Referer = referer;
+        const resp = await fetch(targetUrl, { signal: controller.signal, headers });
+        if (!resp.ok) return null;
+        const contentType = resp.headers.get('content-type') || 'image/jpeg';
+        if (!contentType.startsWith('image/')) return null;
+        const arr = await resp.arrayBuffer();
+        const buf = Buffer.from(arr);
+        if (buf.byteLength < 100) return null;
+        return { contentType, buf };
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
       }
-      const contentType = resp.headers.get('content-type') || 'image/jpeg';
-      if (!contentType.startsWith('image/')) {
-        return res.status(415).send('Not an image');
-      }
-      const arr = await resp.arrayBuffer();
-      const buf = Buffer.from(arr);
+    };
 
-      if (imageCache.size > 150) {
+    // Attempt 1: Direct upstream fetch with origin Referer (required by anichin.moe & donghive.vip)
+    let result = await fetchImageBuffer(rawUrl, `${parsed.origin}/`, 5000);
+
+    // Attempt 2: Direct fetch without Referer (works for hosts that dislike server-side Referer)
+    if (!result) {
+      result = await fetchImageBuffer(rawUrl, undefined, 4500);
+    }
+
+    if (result) {
+      if (imageCache.size > 250) {
         const firstKey = imageCache.keys().next().value;
         if (firstKey) imageCache.delete(firstKey);
       }
       imageCache.set(rawUrl, {
-        expiresAt: now + 60 * 60 * 1000,
-        contentType,
-        buf,
+        expiresAt: now + 2 * 60 * 60 * 1000,
+        contentType: result.contentType,
+        buf: result.buf,
       });
 
-      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Type', result.contentType);
       res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
-      return res.send(buf);
-    } finally {
-      clearTimeout(timer);
+      return res.send(result.buf);
     }
+
+    // Attempt 3: Redirect browser directly to rawUrl (with referrerPolicy="no-referrer" on <img>, browser loads from user's residential IP)
+    return res.redirect(302, rawUrl);
   } catch {
+    if (rawUrl && /^https?:\/\//i.test(rawUrl)) {
+      return res.redirect(302, rawUrl);
+    }
     return res.status(502).send('Image proxy error');
   }
 });
@@ -161,23 +212,70 @@ function stripSeasonSuffix(title: string): string {
     .trim();
 }
 
+const STOP_WORDS = new Set([
+  'the',
+  'of',
+  'in',
+  'to',
+  'and',
+  'no',
+  'wa',
+  'ga',
+  'ni',
+  'wo',
+  'season',
+  'part',
+  'episode',
+  'sub',
+  'indo',
+  'subtitle',
+  'indonesia',
+]);
+
 function normalizeWords(input: string): string[] {
   return input
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((w) => w.length >= 2);
+    .filter((w) => w.length >= 2 && !STOP_WORDS.has(w));
 }
 
-function isConfidentTitleMatch(query: string, candidateTitles: Array<string | null | undefined>): boolean {
+function isConfidentTitleMatch(
+  query: string,
+  candidateTitles: Array<string | null | undefined>
+): boolean {
+  const qNormFull = stripSeasonSuffix(query)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
   const qWords = normalizeWords(query);
-  if (qWords.length === 0) return false;
+  if (qWords.length === 0 || !qNormFull) return false;
+
   for (const cand of candidateTitles) {
     if (!cand) continue;
+    const cNormFull = stripSeasonSuffix(cand)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+    if (!cNormFull) continue;
+
+    // Exact normalized title match
+    if (qNormFull === cNormFull) return true;
+
     const cWords = normalizeWords(cand);
     if (cWords.length === 0) continue;
+
     const overlap = qWords.filter((w) => cWords.includes(w)).length;
-    if (overlap >= Math.min(2, qWords.length) || overlap / qWords.length >= 0.5) {
+    // For short titles (1-2 significant words), require ALL words to match and similar length
+    if (qWords.length <= 2) {
+      if (overlap === qWords.length && cWords.length <= qWords.length + 1) {
+        return true;
+      }
+      continue;
+    }
+
+    // For longer titles (3+ words), require at least 75% word overlap in both directions
+    const qRatio = overlap / qWords.length;
+    const cRatio = overlap / cWords.length;
+    if (qRatio >= 0.75 && cRatio >= 0.6) {
       return true;
     }
   }
@@ -186,18 +284,21 @@ function isConfidentTitleMatch(query: string, candidateTitles: Array<string | nu
 
 async function fetchHdArtwork(
   title: string,
-  altTitle?: string
+  altTitle?: string,
+  expectedType?: 'donghua' | 'anime'
 ): Promise<{ bannerImage: string; coverExtraLarge: string }> {
   const cleanMain = cleanTitle(title || '');
   const stripped = stripSeasonSuffix(cleanMain);
   const candidates = Array.from(
-    new Set([cleanMain, stripped, altTitle?.split(',')[0]?.trim() || ''].filter((s) => s.length >= 2))
+    new Set(
+      [cleanMain, stripped, altTitle?.split(',')[0]?.trim() || ''].filter((s) => s.length >= 2)
+    )
   );
   if (candidates.length === 0) {
     return { bannerImage: '', coverExtraLarge: '' };
   }
 
-  const cacheKey = candidates[0].toLowerCase();
+  const cacheKey = `${expectedType || 'any'}:${candidates[0].toLowerCase()}`;
   const cached = hdArtworkCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     return { bannerImage: cached.bannerImage, coverExtraLarge: cached.coverExtraLarge };
@@ -220,22 +321,29 @@ async function fetchHdArtwork(
         },
         body: JSON.stringify({
           query:
-            'query ($search: String) { Page(page: 1, perPage: 3) { media(search: $search, type: ANIME, isAdult: false, sort: POPULARITY_DESC) { title { romaji english native } synonyms bannerImage coverImage { extraLarge large } } } }',
+            'query ($search: String) { Page(page: 1, perPage: 5) { media(search: $search, type: ANIME, isAdult: false, sort: POPULARITY_DESC) { countryOfOrigin title { romaji english native } synonyms bannerImage coverImage { extraLarge large } } } }',
           variables: { search: query },
         }),
       });
       if (!resp.ok) continue;
       const json = (await resp.json()) as any;
       const list = json?.data?.Page?.media || [];
-      const matched =
-        list.find((m: any) =>
-          isConfidentTitleMatch(query, [
-            m?.title?.english,
-            m?.title?.romaji,
-            m?.title?.native,
-            ...(Array.isArray(m?.synonyms) ? m.synonyms : []),
-          ])
-        ) || list[0];
+
+      // Strictly filter by countryOfOrigin and confident title match — NEVER fall back to list[0]!
+      const matched = list.find((m: any) => {
+        if (expectedType === 'donghua' && m?.countryOfOrigin && m.countryOfOrigin !== 'CN') {
+          return false;
+        }
+        if (expectedType === 'anime' && m?.countryOfOrigin === 'CN') {
+          return false;
+        }
+        return isConfidentTitleMatch(query, [
+          m?.title?.english,
+          m?.title?.romaji,
+          m?.title?.native,
+          ...(Array.isArray(m?.synonyms) ? m.synonyms : []),
+        ]);
+      });
 
       if (matched) {
         if (!bestBanner && matched.bannerImage) bestBanner = matched.bannerImage;
@@ -282,7 +390,7 @@ async function fetchJsonWithCache<T = any>(
       try {
         const json = await enqueueUpstream(async () => {
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 11000);
+          const timeout = setTimeout(() => controller.abort(), 10000);
           try {
             const resp = await fetch(url, {
               signal: controller.signal,
@@ -316,13 +424,12 @@ async function fetchJsonWithCache<T = any>(
         lastError = err;
         if (err?.status === 403) break;
         if (attempt === 0) {
-          const delay = err?.status === 429 ? 1600 : 400;
+          const delay = err?.status === 429 ? 1500 : 350;
           await new Promise((r) => setTimeout(r, delay));
         }
       }
     }
 
-    // Stale cache fallback so transient upstream rate limits never empty a page
     if (cached?.data) {
       return cached.data as T;
     }
@@ -373,21 +480,32 @@ async function getAnimeHomeData(forceRefresh = false) {
   return sanka || { data: { ongoing: { animeList: [] }, completed: { animeList: [] } } };
 }
 
-async function getDonghuaDetailData(id: string, epHint = ''): Promise<{ id: string; data: any } | null> {
+async function getDonghuaDetailData(
+  id: string,
+  epHint = ''
+): Promise<{ id: string; data: any } | null> {
   let resolvedId = id;
-  let d = await fetchSankaOrNull<any>(`/donghua/detail/${encodeURIComponent(resolvedId)}`, 20 * 60 * 1000);
+  let d = await fetchSankaOrNull<any>(
+    `/donghua/detail/${encodeURIComponent(resolvedId)}`,
+    20 * 60 * 1000
+  );
   if (d?.title) return { id: resolvedId, data: d };
 
   if (epHint) {
-    const epInfo = await fetchSankaOrNull<any>(`/donghua/episode/${encodeURIComponent(epHint)}`, 20 * 60 * 1000);
+    const epInfo = await fetchSankaOrNull<any>(
+      `/donghua/episode/${encodeURIComponent(epHint)}`,
+      20 * 60 * 1000
+    );
     if (epInfo?.donghua_details?.slug) {
       resolvedId = epInfo.donghua_details.slug;
-      const resolved = await fetchSankaOrNull<any>(`/donghua/detail/${encodeURIComponent(resolvedId)}`, 20 * 60 * 1000);
+      const resolved = await fetchSankaOrNull<any>(
+        `/donghua/detail/${encodeURIComponent(resolvedId)}`,
+        20 * 60 * 1000
+      );
       if (resolved?.title) return { id: resolvedId, data: resolved };
     }
   }
 
-  // Fallback directly to live Donghive HTML scraper
   const direct = await scrapeDonghiveDetail(id, epHint);
   if (direct?.title) {
     return { id: direct.slug || id, data: direct };
@@ -407,33 +525,73 @@ async function getAnimeDetailData(id: string): Promise<{ id: string; data: any }
 }
 
 async function getDonghuaEpisodeData(episodeId: string): Promise<any | null> {
-  const sanka = await fetchSankaOrNull<any>(`/donghua/episode/${encodeURIComponent(episodeId)}`, 30 * 60 * 1000);
-  if (sanka?.streaming?.servers?.length || sanka?.streaming?.main_url?.url) {
-    return sanka;
+  const [sanka, scraped] = await Promise.allSettled([
+    fetchSankaOrNull<any>(`/donghua/episode/${encodeURIComponent(episodeId)}`, 15 * 60 * 1000),
+    scrapeDonghiveEpisode(episodeId),
+  ]);
+  const sVal = sanka.status === 'fulfilled' ? sanka.value : null;
+  const dVal = scraped.status === 'fulfilled' ? scraped.value : null;
+
+  if (sVal && dVal) {
+    const mergedServers = [
+      ...(Array.isArray(sVal.streaming?.servers) ? sVal.streaming.servers : []),
+      ...(Array.isArray(dVal.streaming?.servers) ? dVal.streaming.servers : []),
+    ];
+    return {
+      ...dVal,
+      ...sVal,
+      streaming: {
+        main_url: sVal.streaming?.main_url?.url ? sVal.streaming.main_url : dVal.streaming?.main_url,
+        servers: mergedServers,
+      },
+      donghua_details: {
+        ...dVal.donghua_details,
+        ...sVal.donghua_details,
+        poster: sVal.donghua_details?.poster || dVal.donghua_details?.poster || '',
+      },
+    };
   }
-  return await scrapeDonghiveEpisode(episodeId);
+  return sVal || dVal || null;
 }
 
 async function getAnimeEpisodeData(episodeId: string): Promise<any | null> {
-  const sanka = await fetchSankaOrNull<any>(`/episode/${encodeURIComponent(episodeId)}`, 30 * 60 * 1000);
-  if (sanka?.data?.title || sanka?.data?.server?.qualities?.length) {
-    return sanka.data;
+  const [sanka, scraped] = await Promise.allSettled([
+    fetchSankaOrNull<any>(`/episode/${encodeURIComponent(episodeId)}`, 15 * 60 * 1000),
+    scrapeOtakudesuEpisode(episodeId),
+  ]);
+  const sVal = sanka.status === 'fulfilled' ? sanka.value?.data : null;
+  const dVal = scraped.status === 'fulfilled' ? scraped.value : null;
+
+  if (sVal && dVal) {
+    const sQualities = Array.isArray(sVal.server?.qualities) ? sVal.server.qualities : [];
+    const dQualities = Array.isArray(dVal.server?.qualities) ? dVal.server.qualities : [];
+    return {
+      ...dVal,
+      ...sVal,
+      poster: sVal.poster || dVal.poster || '',
+      defaultStreamingUrl: sVal.defaultStreamingUrl || dVal.defaultStreamingUrl || '',
+      server: {
+        qualities: [...dQualities, ...sQualities],
+      },
+    };
   }
-  return await scrapeOtakudesuEpisode(episodeId);
+  return sVal || dVal || null;
 }
 
 function cleanDonghuaSeriesSlug(episodeSlug: string): string {
   return episodeSlug
     .replace(/-episode-\d+.*$/i, '')
     .replace(/-subtitle-indonesia$/i, '')
-    .replace(/-tamat$/i, '');
+    .replace(/-sub-indo$/i, '')
+    .replace(/-tamat$/i, '')
+    .replace(/-end$/i, '');
 }
 
 function cleanTitle(raw: string): string {
-  return raw
-    .replace(/\s*Subtitle Indonesia/i, '')
-    .replace(/\s*Sub Indo/i, '')
-    .replace(/\s*\[SVIP\]\s*/i, '')
+  return String(raw || '')
+    .replace(/\s*Subtitle Indonesia/gi, '')
+    .replace(/\s*Sub Indo/gi, '')
+    .replace(/\s*\[SVIP\]\s*/gi, '')
     .trim();
 }
 
@@ -450,22 +608,37 @@ function deterministicScore(seed: string): string {
   for (let i = 0; i < seed.length; i++) {
     h = (h * 31 + seed.charCodeAt(i)) % 1000;
   }
-  const score = 7.2 + (h % 210) / 100;
+  const score = 7.3 + (h % 200) / 100;
   return score.toFixed(2);
 }
 
+// Keep season/part/movie numbers intact so Season 1, Season 2, Season 5 never collide or swap posters
 function normalizePosterKey(raw: string): string {
-  return raw
+  return String(raw || '')
     .toLowerCase()
-    .replace(/\b(season|part|cour|sub|indo|subtitle|indonesia)\b/gi, ' ')
+    .replace(/\b(sub|indo|subtitle|indonesia)\b/gi, ' ')
     .replace(/[^a-z0-9]/g, '');
 }
 
-function rememberPoster(key: string, poster?: string) {
-  if (key && poster && /^https?:\/\//i.test(poster)) {
-    slugPosterMap.set(key.toLowerCase(), poster);
-    const norm = normalizePosterKey(key);
-    if (norm.length >= 3) slugPosterMap.set(`norm:${norm}`, poster);
+const authoritativePosterKeys = new Set<string>();
+
+function rememberPoster(key: string, poster?: string, authoritative = false) {
+  if (key && isValidHttpImageUrl(poster)) {
+    const cleanUrl = String(poster).trim();
+    const lowerKey = key.toLowerCase();
+    const normKey = `norm:${normalizePosterKey(key)}`;
+
+    if (authoritative || !slugPosterMap.has(lowerKey) || !authoritativePosterKeys.has(lowerKey)) {
+      slugPosterMap.set(lowerKey, cleanUrl);
+      if (authoritative) authoritativePosterKeys.add(lowerKey);
+    }
+    if (
+      normalizePosterKey(key).length >= 3 &&
+      (authoritative || !slugPosterMap.has(normKey) || !authoritativePosterKeys.has(normKey))
+    ) {
+      slugPosterMap.set(normKey, cleanUrl);
+      if (authoritative) authoritativePosterKeys.add(normKey);
+    }
   }
 }
 
@@ -493,33 +666,39 @@ async function enrichMissingPosters(items: any[]): Promise<any[]> {
     }
   }
   const missing = items.filter((x) => !x.poster && x.title);
+  if (missing.length === 0) return items;
+
   const BATCH_SIZE = 10;
   for (let i = 0; i < missing.length; i += BATCH_SIZE) {
     const batch = missing.slice(i, i + BATCH_SIZE);
     await Promise.allSettled(
       batch.map(async (m) => {
         try {
-          const hd = await fetchHdArtwork(m.title);
-          if (hd.coverExtraLarge) {
-            m.poster = proxyPoster(hd.coverExtraLarge);
-            rememberPoster(m.id, hd.coverExtraLarge);
-            rememberPoster(m.title, hd.coverExtraLarge);
-            return;
-          }
+          // 1. First try upstream detail page so we get the exact authentic poster
           if (m.type === 'donghua') {
-            const d = (await getDonghuaDetailData(m.id))?.data;
-            if (d?.poster) {
+            const d = (await getDonghuaDetailData(m.id, m.episodeId || ''))?.data;
+            if (isValidHttpImageUrl(d?.poster)) {
               m.poster = proxyPoster(d.poster);
-              rememberPoster(m.id, d.poster);
-              rememberPoster(m.title, d.poster);
+              rememberPoster(m.id, d.poster, true);
+              rememberPoster(m.title, d.poster, true);
+              return;
             }
           } else {
             const a = (await getAnimeDetailData(m.id))?.data;
-            if (a?.poster) {
+            if (isValidHttpImageUrl(a?.poster)) {
               m.poster = proxyPoster(a.poster);
-              rememberPoster(m.id, a.poster);
-              rememberPoster(m.title, a.poster);
+              rememberPoster(m.id, a.poster, true);
+              rememberPoster(m.title, a.poster, true);
+              return;
             }
+          }
+
+          // 2. Fallback to strict AniList match only if upstream detail had no poster
+          const hd = await fetchHdArtwork(m.title, undefined, m.type);
+          if (hd.coverExtraLarge) {
+            m.poster = proxyPoster(hd.coverExtraLarge);
+            rememberPoster(m.id, hd.coverExtraLarge, false);
+            rememberPoster(m.title, hd.coverExtraLarge, false);
           }
         } catch {
           // Ignore individual timeout
@@ -535,58 +714,126 @@ function isFrameBlockedHost(url?: string): boolean {
   return (
     u.includes('desustream.net') ||
     u.includes('desustream.com') ||
+    u.includes('desustream.info') ||
     u.includes('ondesuhd') ||
-    u.includes('odcdn')
+    u.includes('odcdn') ||
+    u.includes('blogger.com/video.g') ||
+    u === 'about:blank'
   );
 }
 
-// GET /api/stream/home
+function detectStreamType(url: string): 'mp4' | 'hls' | 'embed' {
+  const lower = String(url || '').toLowerCase();
+  if (/\.m3u8(\?|$)/i.test(lower)) return 'hls';
+  if (
+    /\.mp4(\?|$)/i.test(lower) ||
+    lower.includes('googlevideo.com/videoplayback') ||
+    lower.includes('pixeldrain.com/api/file/')
+  ) {
+    return 'mp4';
+  }
+  return 'embed';
+}
+
+// GET /api/stream/home — Auto-updates live every day & every 90s with multi-page global Donghua & Anime
 router.get('/home', async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === '1';
-    const [animeRes, donghuaRes] = await Promise.allSettled([
+    const [
+      animeRes,
+      donghuaRes,
+      donghuaCat1,
+      donghuaCat2,
+      donghuaCat3,
+      donghuaCompCat1,
+      donghuaCompCat2,
+      animeCat1,
+      animeCat2,
+      animeCat3,
+      animeCompCat1,
+      animeCompCat2,
+    ] = await Promise.allSettled([
       getAnimeHomeData(forceRefresh),
       getDonghuaHomeData(forceRefresh),
+      scrapeDonghiveCatalog(1, 'ongoing'),
+      scrapeDonghiveCatalog(2, 'ongoing'),
+      scrapeDonghiveCatalog(3, 'ongoing'),
+      scrapeDonghiveCatalog(1, 'completed'),
+      scrapeDonghiveCatalog(2, 'completed'),
+      scrapeOtakudesuCatalog(1),
+      scrapeOtakudesuCatalog(2),
+      scrapeOtakudesuCatalog(3),
+      scrapeOtakudesuCompleteCatalog(1),
+      scrapeOtakudesuCompleteCatalog(2),
     ]);
 
-    const animeOngoing =
+    const animeOngoingRaw =
       animeRes.status === 'fulfilled' ? animeRes.value?.data?.ongoing?.animeList || [] : [];
-    const animeCompleted =
+    const animeOngoing = [
+      ...animeOngoingRaw,
+      ...(animeCat1.status === 'fulfilled' ? animeCat1.value || [] : []),
+      ...(animeCat2.status === 'fulfilled' ? animeCat2.value || [] : []),
+      ...(animeCat3.status === 'fulfilled' ? animeCat3.value || [] : []),
+    ];
+
+    const animeCompletedRaw =
       animeRes.status === 'fulfilled' ? animeRes.value?.data?.completed?.animeList || [] : [];
+    const animeCompleted = [
+      ...animeCompletedRaw,
+      ...(animeCompCat1.status === 'fulfilled' ? animeCompCat1.value || [] : []),
+      ...(animeCompCat2.status === 'fulfilled' ? animeCompCat2.value || [] : []),
+    ];
+
     const donghuaLatest =
       donghuaRes.status === 'fulfilled' ? donghuaRes.value?.latest_release || [] : [];
-    const donghuaCompleted =
+    const donghuaCompletedRaw =
       donghuaRes.status === 'fulfilled' ? donghuaRes.value?.completed_donghua || [] : [];
+    const donghuaCompleted = [
+      ...(donghuaCat1.status === 'fulfilled' ? donghuaCat1.value || [] : []),
+      ...(donghuaCat2.status === 'fulfilled' ? donghuaCat2.value || [] : []),
+      ...(donghuaCat3.status === 'fulfilled' ? donghuaCat3.value || [] : []),
+      ...donghuaCompletedRaw,
+      ...(donghuaCompCat1.status === 'fulfilled' ? donghuaCompCat1.value || [] : []),
+      ...(donghuaCompCat2.status === 'fulfilled' ? donghuaCompCat2.value || [] : []),
+    ];
 
-    // Resolve real series slugs for top donghua latest episodes so zero cards lead to empty details
     const normalizedDonghuaLatest = await Promise.all(
       donghuaLatest.map(async (item: any, idx: number) => {
         let seriesSlug = cleanDonghuaSeriesSlug(item.slug || '');
-        const title = cleanTitle(item.title || '').replace(/\s*Episode\s*\d+.*$/i, '').trim();
-        rememberPoster(seriesSlug, item.poster);
-        rememberPoster(title, item.poster);
+        const { cleanSeriesTitle, episodeLabel } = parseSeriesAndEpisode(
+          item.title || '',
+          item.current_episode || 'Ep Baru'
+        );
+        let rawPoster = isValidHttpImageUrl(item.poster) ? item.poster : '';
+        rememberPoster(seriesSlug, rawPoster);
+        rememberPoster(cleanSeriesTitle, rawPoster);
 
         if (idx < 8 && item.slug) {
           try {
             const epInfo = await getDonghuaEpisodeData(item.slug);
             if (epInfo?.donghua_details?.slug) {
               seriesSlug = epInfo.donghua_details.slug;
-              rememberPoster(seriesSlug, epInfo.donghua_details.poster || item.poster);
+              if (!rawPoster && isValidHttpImageUrl(epInfo.donghua_details.poster)) {
+                rawPoster = epInfo.donghua_details.poster;
+              }
+              rememberPoster(seriesSlug, rawPoster, true);
             }
           } catch {
             // Keep cleanDonghuaSeriesSlug fallback
           }
         }
 
+        const finalPoster = rawPoster || lookupPoster(seriesSlug, cleanSeriesTitle);
         return {
           id: seriesSlug,
           episodeId: item.slug,
           type: 'donghua' as const,
-          title: title || cleanTitle(item.title || ''),
-          episodeLabel: item.current_episode || 'Ep Baru',
-          poster: proxyPoster(item.poster),
+          title: cleanSeriesTitle,
+          episodeLabel,
+          rawPoster: finalPoster,
+          poster: proxyPoster(finalPoster),
           status: item.status || 'Ongoing',
-          rating: deterministicScore(seriesSlug || item.title || 'dh'),
+          rating: deterministicScore(seriesSlug || cleanSeriesTitle || 'dh'),
           isNew: true,
           releaseDate: 'Hari ini',
         };
@@ -594,31 +841,41 @@ router.get('/home', async (req, res) => {
     );
 
     const normalizedAnimeOngoing = animeOngoing.map((item: any) => {
-      rememberPoster(item.animeId, item.poster);
-      rememberPoster(cleanTitle(item.title || ''), item.poster);
+      const { cleanSeriesTitle, episodeLabel } = parseSeriesAndEpisode(
+        item.title || '',
+        item.episodes ? `Ep ${item.episodes}` : 'Ongoing'
+      );
+      const rawPoster = isValidHttpImageUrl(item.poster) ? item.poster : '';
+      rememberPoster(item.animeId, rawPoster);
+      rememberPoster(cleanSeriesTitle, rawPoster);
+      const resolvedRaw = rawPoster || lookupPoster(item.animeId, cleanSeriesTitle);
       return {
         id: item.animeId,
         episodeId: '',
         type: 'anime' as const,
-        title: cleanTitle(item.title || ''),
-        episodeLabel: item.episodes ? `Ep ${item.episodes}` : 'Ongoing',
-        poster: proxyPoster(item.poster),
+        title: cleanSeriesTitle,
+        episodeLabel,
+        rawPoster: resolvedRaw,
+        poster: proxyPoster(resolvedRaw),
         status: 'Ongoing',
-        rating: deterministicScore(item.animeId || item.title || 'an'),
+        rating: item.score || deterministicScore(item.animeId || cleanSeriesTitle || 'an'),
         isNew: true,
         releaseDate: item.latestReleaseDate || item.releaseDay || 'Terbaru',
       };
     });
 
     const normalizedAnimeCompleted = animeCompleted.map((item: any) => {
-      rememberPoster(item.animeId, item.poster);
+      const { cleanSeriesTitle } = parseSeriesAndEpisode(item.title || '');
+      const rawPoster = isValidHttpImageUrl(item.poster) ? item.poster : '';
+      rememberPoster(item.animeId, rawPoster);
+      rememberPoster(cleanSeriesTitle, rawPoster);
       return {
         id: item.animeId,
         episodeId: '',
         type: 'anime' as const,
-        title: cleanTitle(item.title || ''),
+        title: cleanSeriesTitle,
         episodeLabel: item.episodes ? `${item.episodes} Eps` : 'Tamat',
-        poster: proxyPoster(item.poster),
+        poster: proxyPoster(rawPoster || lookupPoster(item.animeId, cleanSeriesTitle)),
         status: 'Completed',
         rating: item.score || deterministicScore(item.animeId || 'cmp'),
         isNew: false,
@@ -627,18 +884,24 @@ router.get('/home', async (req, res) => {
     });
 
     const normalizedDonghuaCompleted = donghuaCompleted.map((item: any) => {
-      rememberPoster(item.slug, item.poster);
+      const { cleanSeriesTitle, episodeLabel } = parseSeriesAndEpisode(
+        item.title || '',
+        item.current_episode || item.type || 'Full Ep'
+      );
+      const rawPoster = isValidHttpImageUrl(item.poster) ? item.poster : '';
+      rememberPoster(item.slug, rawPoster);
+      rememberPoster(cleanSeriesTitle, rawPoster);
       return {
         id: item.slug,
         episodeId: '',
         type: 'donghua' as const,
-        title: cleanTitle(item.title || ''),
-        episodeLabel: item.type || 'Donghua',
-        poster: proxyPoster(item.poster),
+        title: cleanSeriesTitle,
+        episodeLabel,
+        poster: proxyPoster(rawPoster || lookupPoster(item.slug, cleanSeriesTitle)),
         status: item.status || 'Completed',
         rating: deterministicScore(item.slug || 'dhc'),
-        isNew: false,
-        releaseDate: 'Completed',
+        isNew: !String(item.status || '').toLowerCase().includes('comp'),
+        releaseDate: item.status || 'Completed',
       };
     });
 
@@ -655,25 +918,37 @@ router.get('/home', async (req, res) => {
     ];
 
     const heroDetails = await Promise.allSettled(
-      heroCandidates.map(async (c) => {
+      heroCandidates.map(async (c: any) => {
         if (c.type === 'donghua') {
           const resolved = await getDonghuaDetailData(c.id, c.episodeId || '');
           const d = resolved?.data;
           if (!d?.title) throw new Error('Empty donghua detail');
           const resolvedId = resolved?.id || c.id;
-          const cleanName = cleanTitle(d.title || c.title);
-          const hd = await fetchHdArtwork(cleanName, d.alter_title);
-          const hdPoster = proxyPoster(hd.coverExtraLarge || d.poster) || c.poster;
-          const hdBackdrop = hd.bannerImage
+          const { cleanSeriesTitle: cleanName } = parseSeriesAndEpisode(d.title || c.title);
+          const hd = await fetchHdArtwork(cleanName, d.alter_title, 'donghua');
+
+          // CRITICAL: Always prioritize d.poster -> c.rawPoster (from home card) -> lookupPoster -> AniList
+          const authenticPosterRaw = isValidHttpImageUrl(d.poster)
+            ? d.poster
+            : isValidHttpImageUrl(c.rawPoster)
+            ? c.rawPoster
+            : lookupPoster(resolvedId, cleanName) || hd.coverExtraLarge;
+          rememberPoster(resolvedId, authenticPosterRaw);
+          rememberPoster(cleanName, authenticPosterRaw);
+
+          const finalPoster = proxyPoster(authenticPosterRaw) || c.poster;
+          const finalBackdrop = hd.bannerImage
             ? proxyPoster(hd.bannerImage)
-            : proxyPoster(hd.coverExtraLarge || d.cover || d.poster) || c.poster;
+            : proxyPoster(d.cover || authenticPosterRaw || hd.coverExtraLarge) || finalPoster;
+
           return {
             id: resolvedId,
             episodeId: d.latest_episode?.slug || d.episodes_list?.[0]?.slug || c.episodeId,
             type: 'donghua' as const,
             title: cleanName,
-            poster: hdPoster,
-            backdrop: hdBackdrop,
+            episodeLabel: c.episodeLabel || 'Ongoing',
+            poster: finalPoster,
+            backdrop: finalBackdrop,
             hasWideBanner: Boolean(hd.bannerImage),
             rating: d.rating || c.rating,
             status: (d.status || 'ONGOING').toUpperCase(),
@@ -683,27 +958,41 @@ router.get('/home', async (req, res) => {
             genres: cleanGenreList(Array.isArray(d.genres) ? d.genres : [], ['Action', 'Fantasy']),
           };
         }
+
         const resolved = await getAnimeDetailData(c.id);
         const data = resolved?.data || {};
         if (!data.title) throw new Error('Empty anime detail');
         const resolvedId = resolved?.id || c.id;
-        const cleanName = cleanTitle(data.title || c.title);
-        const hd = await fetchHdArtwork(cleanName, data.japanese);
-        const hdPoster = proxyPoster(hd.coverExtraLarge || data.poster) || c.poster;
-        const hdBackdrop = hd.bannerImage
+        const { cleanSeriesTitle: cleanName } = parseSeriesAndEpisode(data.title || c.title);
+        const hd = await fetchHdArtwork(cleanName, data.japanese, 'anime');
+
+        // CRITICAL: Always prioritize data.poster -> c.rawPoster (from home card) -> lookupPoster -> AniList
+        const authenticPosterRaw = isValidHttpImageUrl(data.poster)
+          ? data.poster
+          : isValidHttpImageUrl(c.rawPoster)
+          ? c.rawPoster
+          : lookupPoster(resolvedId, cleanName) || hd.coverExtraLarge;
+        rememberPoster(resolvedId, authenticPosterRaw);
+        rememberPoster(cleanName, authenticPosterRaw);
+
+        const finalPoster = proxyPoster(authenticPosterRaw) || c.poster;
+        const finalBackdrop = hd.bannerImage
           ? proxyPoster(hd.bannerImage)
-          : proxyPoster(hd.coverExtraLarge || data.poster) || c.poster;
+          : proxyPoster(authenticPosterRaw || hd.coverExtraLarge) || finalPoster;
+
         const synopsisText =
           Array.isArray(data.synopsis?.paragraphs) && data.synopsis.paragraphs.length > 0
             ? data.synopsis.paragraphs.join(' ')
             : `Tonton ${cleanName} subtitle Indonesia kualitas HD hanya di ZoneStream.`;
+
         return {
           id: resolvedId,
           episodeId: data.episodeList?.[0]?.episodeId || '',
           type: 'anime' as const,
           title: cleanName,
-          poster: hdPoster,
-          backdrop: hdBackdrop,
+          episodeLabel: c.episodeLabel || 'Ongoing',
+          poster: finalPoster,
+          backdrop: finalBackdrop,
           hasWideBanner: Boolean(hd.bannerImage),
           rating: data.score || c.rating,
           status: (data.status || 'ONGOING').toUpperCase(),
@@ -719,21 +1008,20 @@ router.get('/home', async (req, res) => {
     const rawHeroSlides = heroDetails
       .filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled')
       .map((r) => r.value)
-      .filter((h) => h && h.title);
+      .filter((h) => h && h.title && h.poster);
 
-    // Put widescreen HD banner slides first so slide #1 renders razor-sharp edge-to-edge
     const heroSlides = [...rawHeroSlides].sort(
       (a, b) => Number(Boolean(b.hasWideBanner)) - Number(Boolean(a.hasWideBanner))
     );
 
-    const uniqueLatestEpisodes = dedupeCatalogItems(latestEpisodes);
-    const uniqueDonghuaList = dedupeCatalogItems([
-      ...normalizedDonghuaLatest,
-      ...normalizedDonghuaCompleted,
-    ]);
-    const uniqueAnimeList = dedupeCatalogItems([
-      ...normalizedAnimeOngoing,
-      ...normalizedAnimeCompleted,
+    const [uniqueLatestEpisodes, uniqueDonghuaList, uniqueAnimeList] = await Promise.all([
+      enrichMissingPosters(dedupeCatalogItems(latestEpisodes)),
+      enrichMissingPosters(
+        dedupeCatalogItems([...normalizedDonghuaLatest, ...normalizedDonghuaCompleted])
+      ),
+      enrichMissingPosters(
+        dedupeCatalogItems([...normalizedAnimeOngoing, ...normalizedAnimeCompleted])
+      ),
     ]);
 
     res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=60');
@@ -761,56 +1049,158 @@ router.get('/home', async (req, res) => {
 });
 
 function dedupeCatalogItems(items: any[]): any[] {
-  const seen = new Set<string>();
+  const seenIds = new Set<string>();
+  const seenTitles = new Map<string, number>();
   const out: any[] = [];
+
   for (const item of items) {
     if (!item?.id) continue;
-    const key = `${item.type}:${String(item.id).toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const idKey = `${item.type}:${String(item.id).toLowerCase()}`;
+    if (seenIds.has(idKey)) continue;
+
+    const normTitleKey = `${item.type}:${String(item.title || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')}`;
+
+    if (normTitleKey.length > 8 && seenTitles.has(normTitleKey)) {
+      const existingIdx = seenTitles.get(normTitleKey)!;
+      const existing = out[existingIdx];
+      // If existing was an al-* global entry and the new one is a direct local provider slug, prefer local slug while keeping HD poster
+      if (String(existing.id).startsWith('al-') && !String(item.id).startsWith('al-')) {
+        out[existingIdx] = {
+          ...item,
+          poster: item.poster || existing.poster,
+          rating: item.rating || existing.rating,
+          episodeLabel:
+            item.episodeLabel && item.episodeLabel !== 'Ongoing' && item.episodeLabel !== 'Anime'
+              ? item.episodeLabel
+              : existing.episodeLabel,
+        };
+      } else if (!existing.poster && item.poster) {
+        existing.poster = item.poster;
+      }
+      seenIds.add(idKey);
+      continue;
+    }
+
+    seenIds.add(idKey);
+    if (normTitleKey.length > 8) {
+      seenTitles.set(normTitleKey, out.length);
+    }
     out.push(item);
   }
   return out;
 }
 
+function scoreSearchRelevance(item: any, normalizedQ: string, rawQ: string): number {
+  const title = String(item?.title || '').toLowerCase().trim();
+  const alt = String(item?.altTitle || '').toLowerCase().trim();
+  const nq = normalizedQ.toLowerCase().trim();
+  const rq = rawQ.toLowerCase().trim();
+  if (!title) return 0;
+
+  let score = 0;
+  for (const q of [nq, rq]) {
+    if (!q) continue;
+    if (title === q || alt === q) score = Math.max(score, 1000);
+    else if (title.startsWith(`${q} `) || title.startsWith(`${q}:`) || title.startsWith(q))
+      score = Math.max(score, 850);
+    else if (title.includes(q) || alt.includes(q)) score = Math.max(score, 650);
+    else {
+      const qWords = q.split(/\s+/).filter((w) => w.length >= 2);
+      const matchedWords = qWords.filter((w) => title.includes(w) || alt.includes(w)).length;
+      if (qWords.length > 0 && matchedWords > 0) {
+        score = Math.max(score, Math.round((matchedWords / qWords.length) * 500));
+      }
+    }
+  }
+
+  // Boost main series over side movies when query doesn't ask for movie
+  if (!nq.includes('movie') && !nq.includes('film') && item.status !== 'Movie') {
+    score += 25;
+  }
+  const numericRating = parseFloat(String(item.rating || '0'));
+  if (Number.isFinite(numericRating)) {
+    score += numericRating;
+  }
+  return score;
+}
+
+function mapGlobalAniListCard(g: any) {
+  const rawPoster = isValidHttpImageUrl(g.poster) ? g.poster : '';
+  rememberPoster(g.id, rawPoster);
+  rememberPoster(g.title, rawPoster);
+  return {
+    id: g.id,
+    type: g.type as 'donghua' | 'anime',
+    title: g.title,
+    altTitle: g.altTitle || '',
+    poster: proxyPoster(rawPoster),
+    status: g.status || 'Ongoing',
+    rating: g.rating || deterministicScore(g.id),
+    episodeLabel: g.episodeLabel || 'Ongoing',
+    isNew: Boolean(g.isNew),
+  };
+}
+
 function mapDonghuaCatalogCard(d: any, fallbackLabel = 'Donghua') {
-  const t = cleanTitle(d.title || '');
-  rememberPoster(d.slug, d.poster);
-  rememberPoster(t, d.poster);
-  const resolvedPoster = d.poster || lookupPoster(d.slug, t);
+  const { cleanSeriesTitle: t, episodeLabel } = parseSeriesAndEpisode(
+    d.title || '',
+    d.current_episode || d.type || fallbackLabel
+  );
+  const rawPoster = isValidHttpImageUrl(d.poster) ? d.poster : '';
+  rememberPoster(d.slug, rawPoster);
+  rememberPoster(t, rawPoster);
+  const resolvedPoster = rawPoster || lookupPoster(d.slug, t);
   return {
     id: d.slug,
     type: 'donghua' as const,
     title: t,
     poster: proxyPoster(resolvedPoster),
     status: d.status || 'Ongoing',
-    rating: deterministicScore(d.slug || d.title || 'dh'),
-    episodeLabel: d.current_episode || d.type || fallbackLabel,
+    rating: deterministicScore(d.slug || t || 'dh'),
+    episodeLabel,
     isNew: !String(d.status || '').toLowerCase().includes('comp'),
   };
 }
 
 function mapAnimeCatalogCard(a: any, defaultStatus = 'Ongoing') {
-  const t = cleanTitle(a.title || '');
-  rememberPoster(a.animeId, a.poster);
-  rememberPoster(t, a.poster);
-  const resolvedPoster = a.poster || lookupPoster(a.animeId, t);
   const status = a.status || defaultStatus;
   const isCompleted = String(status).toLowerCase().includes('comp') || Boolean(a.score);
+  const rawEpLabel = a.episodes
+    ? isCompleted && defaultStatus === 'Completed'
+      ? `${a.episodes} Eps`
+      : `Ep ${a.episodes}`
+    : status;
+  const { cleanSeriesTitle: t, episodeLabel } = parseSeriesAndEpisode(a.title || '', rawEpLabel);
+  const rawPoster = isValidHttpImageUrl(a.poster) ? a.poster : '';
+  rememberPoster(a.animeId, rawPoster);
+  rememberPoster(t, rawPoster);
+  const resolvedPoster = rawPoster || lookupPoster(a.animeId, t);
   return {
     id: a.animeId,
     type: 'anime' as const,
     title: t,
     poster: proxyPoster(resolvedPoster),
     status,
-    rating: a.score || deterministicScore(a.animeId || a.title || 'an'),
-    episodeLabel: a.episodes
-      ? isCompleted && defaultStatus === 'Completed'
-        ? `${a.episodes} Eps`
-        : `Ep ${a.episodes}`
-      : status,
+    rating: a.score || deterministicScore(a.animeId || t || 'an'),
+    episodeLabel,
     isNew: !isCompleted,
   };
+}
+
+const GUARANTEED_CLOUD_STREAMS = [
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+  'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+];
+
+function getGuaranteedCloudBackup(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = (h * 31 + seed.charCodeAt(i)) % GUARANTEED_CLOUD_STREAMS.length;
+  }
+  return GUARANTEED_CLOUD_STREAMS[Math.abs(h) % GUARANTEED_CLOUD_STREAMS.length];
 }
 
 // GET /api/stream/catalog
@@ -821,40 +1211,70 @@ router.get('/catalog', async (req, res) => {
     const q = String(req.query.q || '').trim();
     const page = Math.max(1, Number(req.query.page) || 1);
 
+    const effectiveType =
+      genre === 'donghua' || genre === 'anime' || genre === 'movie' || genre === 'completed'
+        ? genre
+        : type;
+
     if (q) {
-      const [animeSearch, donghuaSearch] = await Promise.allSettled([
-        type === 'donghua'
-          ? Promise.resolve(null)
-          : (async () => {
-              const s = await fetchSankaOrNull<any>(`/search/${encodeURIComponent(q)}`);
-              if (s?.data?.animeList?.length) return s;
-              const direct = await scrapeOtakudesuSearch(q);
-              return { data: { animeList: direct } };
-            })(),
-        type === 'anime'
-          ? Promise.resolve(null)
-          : (async () => {
-              const s = await fetchSankaOrNull<any>(`/donghua/search/${encodeURIComponent(q)}`);
-              if (s?.data?.length) return s;
-              const direct = await scrapeDonghiveSearch(q);
-              return { data: direct };
-            })(),
-      ]);
+      const normalizedQ = normalizeSearchQuery(q);
+      const [animeSanka, animeDirect, animeDirectNorm, donghuaSanka, donghuaDirect, globalHits] =
+        await Promise.allSettled([
+          effectiveType === 'donghua'
+            ? Promise.resolve(null)
+            : fetchSankaOrNull<any>(`/search/${encodeURIComponent(normalizedQ)}`),
+          effectiveType === 'donghua' ? Promise.resolve([]) : scrapeOtakudesuSearch(q),
+          effectiveType === 'donghua' || normalizedQ.toLowerCase() === q.toLowerCase()
+            ? Promise.resolve([])
+            : scrapeOtakudesuSearch(normalizedQ),
+          effectiveType === 'anime'
+            ? Promise.resolve(null)
+            : fetchSankaOrNull<any>(`/donghua/search/${encodeURIComponent(normalizedQ)}`),
+          effectiveType === 'anime' ? Promise.resolve([]) : scrapeDonghiveSearch(normalizedQ),
+          searchGlobalAniList(q, effectiveType),
+        ]);
 
       const results: any[] = [];
-      if (donghuaSearch.status === 'fulfilled' && Array.isArray(donghuaSearch.value?.data)) {
-        for (const d of donghuaSearch.value.data) {
-          if (!d.slug) continue;
-          results.push(mapDonghuaCatalogCard(d));
+
+      const aList = [
+        ...(animeSanka.status === 'fulfilled' && Array.isArray(animeSanka.value?.data?.animeList)
+          ? animeSanka.value.data.animeList
+          : []),
+        ...(animeDirectNorm.status === 'fulfilled' && Array.isArray(animeDirectNorm.value)
+          ? animeDirectNorm.value
+          : []),
+        ...(animeDirect.status === 'fulfilled' && Array.isArray(animeDirect.value)
+          ? animeDirect.value
+          : []),
+      ];
+      for (const a of aList) {
+        if (!a?.animeId) continue;
+        results.push(mapAnimeCatalogCard(a, a.status || 'Ongoing'));
+      }
+
+      const dList = [
+        ...(donghuaSanka.status === 'fulfilled' && Array.isArray(donghuaSanka.value?.data)
+          ? donghuaSanka.value.data
+          : []),
+        ...(donghuaDirect.status === 'fulfilled' && Array.isArray(donghuaDirect.value)
+          ? donghuaDirect.value
+          : []),
+      ];
+      for (const d of dList) {
+        if (!d?.slug) continue;
+        results.push(mapDonghuaCatalogCard(d));
+      }
+
+      if (globalHits.status === 'fulfilled' && Array.isArray(globalHits.value)) {
+        for (const g of globalHits.value) {
+          results.push(mapGlobalAniListCard(g));
         }
       }
-      if (animeSearch.status === 'fulfilled' && animeSearch.value?.data?.animeList) {
-        for (const a of animeSearch.value.data.animeList) {
-          if (!a.animeId) continue;
-          results.push(mapAnimeCatalogCard(a, a.status || 'Ongoing'));
-        }
-      }
+
       const unique = await enrichMissingPosters(dedupeCatalogItems(results));
+      unique.sort(
+        (a, b) => scoreSearchRelevance(b, normalizedQ, q) - scoreSearchRelevance(a, normalizedQ, q)
+      );
       return res.json({ ok: true, items: unique, hasMore: false });
     }
 
@@ -866,66 +1286,88 @@ router.get('/catalog', async (req, res) => {
       genre !== 'movie' &&
       genre !== 'completed'
     ) {
-      const [animeGenre, donghuaGenre] = await Promise.allSettled([
-        (async () => {
-          const s = await fetchSankaOrNull<any>(`/genre/${encodeURIComponent(genre)}?page=${page}`);
-          if (s?.data?.animeList?.length) return s;
-          const direct = await scrapeOtakudesuCatalog(page, genre);
-          return { data: { animeList: direct } };
-        })(),
-        (async () => {
-          const s = await fetchSankaOrNull<any>(`/donghua/genres/${encodeURIComponent(genre)}/${page}`);
-          if (s?.data?.length) return s;
-          const direct = await scrapeDonghiveCatalog(page, undefined, genre);
-          return { data: direct };
-        })(),
-      ]);
+      const p1 = (page - 1) * 2 + 1;
+      const p2 = p1 + 1;
+      const [animeGenre1, animeGenre2, donghuaGenre1, donghuaGenre2, globalGenre] =
+        await Promise.allSettled([
+          (async () => {
+            const s = await fetchSankaOrNull<any>(`/genre/${encodeURIComponent(genre)}?page=${p1}`);
+            if (s?.data?.animeList?.length) return s.data.animeList;
+            return await scrapeOtakudesuCatalog(p1, genre);
+          })(),
+          scrapeOtakudesuCatalog(p2, genre),
+          (async () => {
+            const s = await fetchSankaOrNull<any>(
+              `/donghua/genres/${encodeURIComponent(genre)}/${p1}`
+            );
+            if (s?.data?.length) return s.data;
+            return await scrapeDonghiveCatalog(p1, undefined, genre);
+          })(),
+          scrapeDonghiveCatalog(p2, undefined, genre),
+          browseGlobalAniList(page, type, genre),
+        ]);
 
-      const dItems =
-        donghuaGenre.status === 'fulfilled' && Array.isArray(donghuaGenre.value?.data)
-          ? donghuaGenre.value.data.filter((d: any) => d.slug).map((d: any) => mapDonghuaCatalogCard(d))
-          : [];
-      const aItems =
-        animeGenre.status === 'fulfilled' && animeGenre.value?.data?.animeList
-          ? animeGenre.value.data.animeList
-              .filter((a: any) => a.animeId)
-              .map((a: any) => mapAnimeCatalogCard(a, 'Anime'))
+      const dItems = [
+        ...(donghuaGenre1.status === 'fulfilled' ? donghuaGenre1.value || [] : []),
+        ...(donghuaGenre2.status === 'fulfilled' ? donghuaGenre2.value || [] : []),
+      ]
+        .filter((d: any) => d?.slug)
+        .map((d: any) => mapDonghuaCatalogCard(d));
+
+      const aItems = [
+        ...(animeGenre1.status === 'fulfilled' ? animeGenre1.value || [] : []),
+        ...(animeGenre2.status === 'fulfilled' ? animeGenre2.value || [] : []),
+      ]
+        .filter((a: any) => a?.animeId)
+        .map((a: any) => mapAnimeCatalogCard(a, 'Anime'));
+
+      const gItems =
+        globalGenre.status === 'fulfilled'
+          ? (globalGenre.value || []).map(mapGlobalAniListCard)
           : [];
 
       const items: any[] = [];
-      const maxLen = Math.max(dItems.length, aItems.length);
+      const maxLen = Math.max(dItems.length, aItems.length, gItems.length);
       for (let i = 0; i < maxLen; i++) {
-        if (dItems[i]) items.push(dItems[i]);
-        if (aItems[i]) items.push(aItems[i]);
+        if (type !== 'anime' && dItems[i]) items.push(dItems[i]);
+        if (type !== 'donghua' && aItems[i]) items.push(aItems[i]);
+        if (gItems[i]) items.push(gItems[i]);
       }
       const unique = await enrichMissingPosters(dedupeCatalogItems(items));
       return res.json({ ok: true, items: unique, hasMore: unique.length >= 12 });
     }
 
-    const effectiveType =
-      genre === 'donghua' || genre === 'anime' || genre === 'movie' || genre === 'completed'
-        ? genre
-        : type;
+    const p1 = (page - 1) * 3 + 1;
+    const p2 = p1 + 1;
+    const p3 = p1 + 2;
 
     if (effectiveType === 'donghua') {
-      const [ongoingRes, completedRes] = await Promise.allSettled([
-        (async () => {
-          const dRes = await fetchSankaOrNull<any>(`/donghua/ongoing/${page}`);
-          const list = dRes?.ongoing_donghua || dRes?.data || [];
-          return list.length ? list : await scrapeDonghiveCatalog(page);
-        })(),
-        scrapeDonghiveCatalog(page, 'completed'),
-      ]);
+      const [ongoing1, ongoing2, ongoing3, completed1, completed2, completed3, globalDonghua] =
+        await Promise.allSettled([
+          (async () => {
+            const dRes = await fetchSankaOrNull<any>(`/donghua/ongoing/${p1}`);
+            const list = dRes?.ongoing_donghua || dRes?.data || [];
+            return list.length ? list : await scrapeDonghiveCatalog(p1, 'ongoing');
+          })(),
+          scrapeDonghiveCatalog(p2, 'ongoing'),
+          scrapeDonghiveCatalog(p3, 'ongoing'),
+          scrapeDonghiveCatalog(p1, 'completed'),
+          scrapeDonghiveCatalog(p2, 'completed'),
+          scrapeDonghiveCatalog(p3, 'completed'),
+          browseGlobalAniList(page, 'donghua'),
+        ]);
 
       const items: any[] = [];
-      if (ongoingRes.status === 'fulfilled') {
-        for (const d of ongoingRes.value || []) {
-          if (d.slug) items.push(mapDonghuaCatalogCard(d));
+      for (const r of [ongoing1, ongoing2, ongoing3, completed1, completed2, completed3]) {
+        if (r.status === 'fulfilled') {
+          for (const d of r.value || []) {
+            if (d?.slug) items.push(mapDonghuaCatalogCard(d));
+          }
         }
       }
-      if (completedRes.status === 'fulfilled') {
-        for (const d of completedRes.value || []) {
-          if (d.slug) items.push(mapDonghuaCatalogCard(d));
+      if (globalDonghua.status === 'fulfilled') {
+        for (const g of globalDonghua.value || []) {
+          items.push(mapGlobalAniListCard(g));
         }
       }
       const unique = await enrichMissingPosters(dedupeCatalogItems(items));
@@ -933,24 +1375,39 @@ router.get('/catalog', async (req, res) => {
     }
 
     if (effectiveType === 'anime') {
-      const [ongoingRes, completedRes] = await Promise.allSettled([
-        (async () => {
-          const aRes = await fetchSankaOrNull<any>(`/ongoing-anime?page=${page}`);
-          const list = aRes?.data?.animeList || [];
-          return list.length ? list : await scrapeOtakudesuCatalog(page);
-        })(),
-        scrapeOtakudesuCompleteCatalog(page),
-      ]);
+      const [ongoing1, ongoing2, ongoing3, completed1, completed2, completed3, globalAnime] =
+        await Promise.allSettled([
+          (async () => {
+            const aRes = await fetchSankaOrNull<any>(`/ongoing-anime?page=${p1}`);
+            const list = aRes?.data?.animeList || [];
+            return list.length ? list : await scrapeOtakudesuCatalog(p1);
+          })(),
+          scrapeOtakudesuCatalog(p2),
+          scrapeOtakudesuCatalog(p3),
+          scrapeOtakudesuCompleteCatalog(p1),
+          scrapeOtakudesuCompleteCatalog(p2),
+          scrapeOtakudesuCompleteCatalog(p3),
+          browseGlobalAniList(page, 'anime'),
+        ]);
 
       const items: any[] = [];
-      if (ongoingRes.status === 'fulfilled') {
-        for (const a of ongoingRes.value || []) {
-          if (a.animeId) items.push(mapAnimeCatalogCard(a, 'Ongoing'));
+      for (const r of [ongoing1, ongoing2, ongoing3]) {
+        if (r.status === 'fulfilled') {
+          for (const a of r.value || []) {
+            if (a?.animeId) items.push(mapAnimeCatalogCard(a, 'Ongoing'));
+          }
         }
       }
-      if (completedRes.status === 'fulfilled') {
-        for (const a of completedRes.value || []) {
-          if (a.animeId) items.push(mapAnimeCatalogCard(a, 'Completed'));
+      for (const r of [completed1, completed2, completed3]) {
+        if (r.status === 'fulfilled') {
+          for (const a of r.value || []) {
+            if (a?.animeId) items.push(mapAnimeCatalogCard(a, 'Completed'));
+          }
+        }
+      }
+      if (globalAnime.status === 'fulfilled') {
+        for (const g of globalAnime.value || []) {
+          items.push(mapGlobalAniListCard(g));
         }
       }
       const unique = await enrichMissingPosters(dedupeCatalogItems(items));
@@ -958,105 +1415,192 @@ router.get('/catalog', async (req, res) => {
     }
 
     if (effectiveType === 'completed') {
-      const [dComp, aComp] = await Promise.allSettled([
-        scrapeDonghiveCatalog(page, 'completed'),
-        scrapeOtakudesuCompleteCatalog(page),
-      ]);
+      const [dComp1, dComp2, dComp3, aComp1, aComp2, aComp3, globalComp] =
+        await Promise.allSettled([
+          scrapeDonghiveCatalog(p1, 'completed'),
+          scrapeDonghiveCatalog(p2, 'completed'),
+          scrapeDonghiveCatalog(p3, 'completed'),
+          scrapeOtakudesuCompleteCatalog(p1),
+          scrapeOtakudesuCompleteCatalog(p2),
+          scrapeOtakudesuCompleteCatalog(p3),
+          browseGlobalAniList(page, 'completed'),
+        ]);
 
-      const dItems =
-        dComp.status === 'fulfilled'
-          ? dComp.value.filter((d: any) => d.slug).map((d: any) => mapDonghuaCatalogCard({ ...d, status: 'Completed' }, 'Tamat'))
-          : [];
-      const aItems =
-        aComp.status === 'fulfilled'
-          ? aComp.value.filter((a: any) => a.animeId).map((a: any) => mapAnimeCatalogCard(a, 'Completed'))
+      const dItems = [
+        ...(dComp1.status === 'fulfilled' ? dComp1.value || [] : []),
+        ...(dComp2.status === 'fulfilled' ? dComp2.value || [] : []),
+        ...(dComp3.status === 'fulfilled' ? dComp3.value || [] : []),
+      ]
+        .filter((d: any) => d?.slug)
+        .map((d: any) => mapDonghuaCatalogCard({ ...d, status: 'Completed' }, 'Tamat'));
+
+      const aItems = [
+        ...(aComp1.status === 'fulfilled' ? aComp1.value || [] : []),
+        ...(aComp2.status === 'fulfilled' ? aComp2.value || [] : []),
+        ...(aComp3.status === 'fulfilled' ? aComp3.value || [] : []),
+      ]
+        .filter((a: any) => a?.animeId)
+        .map((a: any) => mapAnimeCatalogCard(a, 'Completed'));
+
+      const gItems =
+        globalComp.status === 'fulfilled'
+          ? (globalComp.value || []).map(mapGlobalAniListCard)
           : [];
 
       const items: any[] = [];
-      const maxLen = Math.max(dItems.length, aItems.length);
+      const maxLen = Math.max(dItems.length, aItems.length, gItems.length);
       for (let i = 0; i < maxLen; i++) {
         if (dItems[i]) items.push(dItems[i]);
         if (aItems[i]) items.push(aItems[i]);
+        if (gItems[i]) items.push(gItems[i]);
       }
       const unique = await enrichMissingPosters(dedupeCatalogItems(items));
       return res.json({ ok: true, items: unique, hasMore: unique.length >= 12 });
     }
 
     if (effectiveType === 'movie') {
-      const [mRes, aRes] = await Promise.allSettled([
-        (async () => {
-          const s = await fetchSankaOrNull<any>(`/donghua/search/movie`);
-          if (s?.data?.length) return s;
-          return { data: await scrapeDonghiveSearch('movie') };
-        })(),
-        (async () => {
-          const s = await fetchSankaOrNull<any>(`/search/movie`);
-          if (s?.data?.animeList?.length) return s;
-          return { data: { animeList: await scrapeOtakudesuSearch('movie') } };
-        })(),
-      ]);
+      const [mSanka, mDirect, mOva, aSanka, aDirect, aOva, globalMovies] =
+        await Promise.allSettled([
+          fetchSankaOrNull<any>(`/donghua/search/movie`),
+          scrapeDonghiveSearch('movie'),
+          scrapeDonghiveSearch('special'),
+          fetchSankaOrNull<any>(`/search/movie`),
+          scrapeOtakudesuSearch('movie'),
+          scrapeOtakudesuSearch('ova'),
+          browseGlobalAniList(page, 'movie'),
+        ]);
       const items: any[] = [];
-      if (mRes.status === 'fulfilled') {
-        for (const d of mRes.value?.data || []) {
-          if (!d.slug) continue;
-          const card = mapDonghuaCatalogCard(d, 'Movie');
-          items.push({ ...card, status: d.status || 'Movie', episodeLabel: 'Movie', isNew: false });
+      const dMovies = [
+        ...(mSanka.status === 'fulfilled' && Array.isArray(mSanka.value?.data)
+          ? mSanka.value.data
+          : []),
+        ...(mDirect.status === 'fulfilled' && Array.isArray(mDirect.value) ? mDirect.value : []),
+        ...(mOva.status === 'fulfilled' && Array.isArray(mOva.value) ? mOva.value : []),
+      ];
+      for (const d of dMovies) {
+        if (!d?.slug) continue;
+        const card = mapDonghuaCatalogCard(d, 'Movie');
+        items.push({
+          ...card,
+          status: d.status || 'Movie',
+          episodeLabel: 'Movie',
+          isNew: false,
+        });
+      }
+
+      const aMovies = [
+        ...(aSanka.status === 'fulfilled' && Array.isArray(aSanka.value?.data?.animeList)
+          ? aSanka.value.data.animeList
+          : []),
+        ...(aDirect.status === 'fulfilled' && Array.isArray(aDirect.value) ? aDirect.value : []),
+        ...(aOva.status === 'fulfilled' && Array.isArray(aOva.value) ? aOva.value : []),
+      ];
+      for (const a of aMovies) {
+        if (!a?.animeId) continue;
+        const card = mapAnimeCatalogCard(a, 'Movie');
+        items.push({
+          ...card,
+          status: a.status || 'Movie',
+          episodeLabel: 'Movie',
+          isNew: false,
+        });
+      }
+
+      if (globalMovies.status === 'fulfilled') {
+        for (const g of globalMovies.value || []) {
+          items.push(mapGlobalAniListCard(g));
         }
       }
-      if (aRes.status === 'fulfilled') {
-        for (const a of aRes.value?.data?.animeList || []) {
-          if (!a.animeId) continue;
-          const card = mapAnimeCatalogCard(a, 'Movie');
-          items.push({ ...card, status: a.status || 'Movie', episodeLabel: 'Movie', isNew: false });
-        }
-      }
+
       const unique = await enrichMissingPosters(dedupeCatalogItems(items));
-      return res.json({ ok: true, items: unique, hasMore: false });
+      return res.json({ ok: true, items: unique, hasMore: unique.length >= 12 });
     }
 
-    // Default: "all" — fetch both Ongoing AND Completed for both Anime & Donghua for a rich, full catalog
-    const [aOngoing, dOngoing, aComp, dComp] = await Promise.allSettled([
+    const [
+      aOngoing1,
+      aOngoing2,
+      aOngoing3,
+      dOngoing1,
+      dOngoing2,
+      dOngoing3,
+      aComp1,
+      aComp2,
+      dComp1,
+      dComp2,
+      globalAll,
+    ] = await Promise.allSettled([
       (async () => {
-        const s = await fetchSankaOrNull<any>(`/ongoing-anime?page=${page}`);
+        const s = await fetchSankaOrNull<any>(`/ongoing-anime?page=${p1}`);
         if (s?.data?.animeList?.length) return s.data.animeList;
-        return await scrapeOtakudesuCatalog(page);
+        return await scrapeOtakudesuCatalog(p1);
       })(),
+      scrapeOtakudesuCatalog(p2),
+      scrapeOtakudesuCatalog(p3),
       (async () => {
-        const s = await fetchSankaOrNull<any>(`/donghua/ongoing/${page}`);
+        const s = await fetchSankaOrNull<any>(`/donghua/ongoing/${p1}`);
         const list = s?.ongoing_donghua || s?.data || [];
         if (list.length) return list;
-        return await scrapeDonghiveCatalog(page);
+        return await scrapeDonghiveCatalog(p1, 'ongoing');
       })(),
-      scrapeOtakudesuCompleteCatalog(page),
-      scrapeDonghiveCatalog(page, 'completed'),
+      scrapeDonghiveCatalog(p2, 'ongoing'),
+      scrapeDonghiveCatalog(p3, 'ongoing'),
+      scrapeOtakudesuCompleteCatalog(p1),
+      scrapeOtakudesuCompleteCatalog(p2),
+      scrapeDonghiveCatalog(p1, 'completed'),
+      scrapeDonghiveCatalog(p2, 'completed'),
+      browseGlobalAniList(page, 'all'),
     ]);
 
     const dAll = [
-      ...(dOngoing.status === 'fulfilled' ? dOngoing.value || [] : []).map((d: any) =>
+      ...(dOngoing1.status === 'fulfilled' ? dOngoing1.value || [] : []).map((d: any) =>
         mapDonghuaCatalogCard(d)
       ),
-      ...(dComp.status === 'fulfilled' ? dComp.value || [] : []).map((d: any) =>
+      ...(dOngoing2.status === 'fulfilled' ? dOngoing2.value || [] : []).map((d: any) =>
+        mapDonghuaCatalogCard(d)
+      ),
+      ...(dOngoing3.status === 'fulfilled' ? dOngoing3.value || [] : []).map((d: any) =>
+        mapDonghuaCatalogCard(d)
+      ),
+      ...(dComp1.status === 'fulfilled' ? dComp1.value || [] : []).map((d: any) =>
+        mapDonghuaCatalogCard(d)
+      ),
+      ...(dComp2.status === 'fulfilled' ? dComp2.value || [] : []).map((d: any) =>
         mapDonghuaCatalogCard(d)
       ),
     ].filter((x) => x.id);
 
     const aAll = [
-      ...(aOngoing.status === 'fulfilled' ? aOngoing.value || [] : []).map((a: any) =>
+      ...(aOngoing1.status === 'fulfilled' ? aOngoing1.value || [] : []).map((a: any) =>
         mapAnimeCatalogCard(a, 'Ongoing')
       ),
-      ...(aComp.status === 'fulfilled' ? aComp.value || [] : []).map((a: any) =>
+      ...(aOngoing2.status === 'fulfilled' ? aOngoing2.value || [] : []).map((a: any) =>
+        mapAnimeCatalogCard(a, 'Ongoing')
+      ),
+      ...(aOngoing3.status === 'fulfilled' ? aOngoing3.value || [] : []).map((a: any) =>
+        mapAnimeCatalogCard(a, 'Ongoing')
+      ),
+      ...(aComp1.status === 'fulfilled' ? aComp1.value || [] : []).map((a: any) =>
+        mapAnimeCatalogCard(a, 'Completed')
+      ),
+      ...(aComp2.status === 'fulfilled' ? aComp2.value || [] : []).map((a: any) =>
         mapAnimeCatalogCard(a, 'Completed')
       ),
     ].filter((x) => x.id);
 
+    const gAll =
+      globalAll.status === 'fulfilled'
+        ? (globalAll.value || []).map(mapGlobalAniListCard)
+        : [];
+
     const interleaved: any[] = [];
-    const maxLen = Math.max(dAll.length, aAll.length);
+    const maxLen = Math.max(dAll.length, aAll.length, gAll.length);
     for (let i = 0; i < maxLen; i++) {
       if (dAll[i]) interleaved.push(dAll[i]);
       if (aAll[i]) interleaved.push(aAll[i]);
+      if (gAll[i]) interleaved.push(gAll[i]);
     }
-      const unique = await enrichMissingPosters(dedupeCatalogItems(interleaved));
-    return res.json({ ok: true, items: unique, hasMore: unique.length >= 20 });
+    const unique = await enrichMissingPosters(dedupeCatalogItems(interleaved));
+    return res.json({ ok: true, items: unique, hasMore: unique.length >= 16 });
   } catch (err) {
     console.error('[Stream Catalog Error]', err);
     return res.status(502).json({ error: 'Gagal memuat katalog' });
@@ -1067,7 +1611,7 @@ router.get('/catalog', async (req, res) => {
 router.get('/schedule', async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === '1';
-    const fullScheduleCacheKey = '__full_enriched_schedule_v2__';
+    const fullScheduleCacheKey = '__full_enriched_schedule_v3__';
     const cachedFull = cache.get(fullScheduleCacheKey);
     if (!forceRefresh && cachedFull && cachedFull.expiresAt > Date.now()) {
       return res.json({ ok: true, schedule: cachedFull.data });
@@ -1145,8 +1689,12 @@ router.get('/schedule', async (req, res) => {
         const day = entry.day || 'Random';
         const list = map.get(day) || [];
         for (const item of entry.donghua_list || []) {
-          const t = cleanTitle(item.title || '');
-          const poster = item.poster || lookupPoster(item.slug, t);
+          const { cleanSeriesTitle: t, episodeLabel } = parseSeriesAndEpisode(
+            item.title || '',
+            item.episodeLabel || 'Donghua'
+          );
+          const rawPoster = isValidHttpImageUrl(item.poster) ? item.poster : '';
+          const poster = rawPoster || lookupPoster(item.slug, t);
           rememberPoster(item.slug, poster);
           rememberPoster(t, poster);
           list.push({
@@ -1154,7 +1702,7 @@ router.get('/schedule', async (req, res) => {
             type: 'donghua',
             title: t,
             poster,
-            episodeLabel: item.episodeLabel || 'Donghua',
+            episodeLabel,
             rating: deterministicScore(item.slug || 'schd'),
           });
         }
@@ -1167,8 +1715,11 @@ router.get('/schedule', async (req, res) => {
         const day = entry.day || 'Random';
         const list = map.get(day) || [];
         for (const item of entry.anime_list || []) {
-          const t = cleanTitle(item.anime_name || item.title || '');
-          const poster = item.poster || lookupPoster(item.slug, t);
+          const { cleanSeriesTitle: t } = parseSeriesAndEpisode(
+            item.anime_name || item.title || ''
+          );
+          const rawPoster = isValidHttpImageUrl(item.poster) ? item.poster : '';
+          const poster = rawPoster || lookupPoster(item.slug, t);
           rememberPoster(item.slug, poster);
           rememberPoster(t, poster);
           list.push({
@@ -1184,7 +1735,6 @@ router.get('/schedule', async (req, res) => {
       }
     }
 
-    // Enrich ALL remaining schedule items missing posters (via AniList HD cover + detail fallback)
     const allItems = Array.from(map.values()).flat();
     const missing = allItems.filter((x) => !x.poster);
     const BATCH_SIZE = 10;
@@ -1193,27 +1743,28 @@ router.get('/schedule', async (req, res) => {
       await Promise.allSettled(
         batch.map(async (m) => {
           try {
-            const hd = await fetchHdArtwork(m.title);
+            if (m.type === 'donghua') {
+              const d = (await getDonghuaDetailData(m.id))?.data;
+              if (isValidHttpImageUrl(d?.poster)) {
+                m.poster = d.poster;
+                rememberPoster(m.id, d.poster, true);
+                rememberPoster(m.title, d.poster, true);
+                return;
+              }
+            } else {
+              const a = (await getAnimeDetailData(m.id))?.data;
+              if (isValidHttpImageUrl(a?.poster)) {
+                m.poster = a.poster;
+                rememberPoster(m.id, a.poster, true);
+                rememberPoster(m.title, a.poster, true);
+                return;
+              }
+            }
+            const hd = await fetchHdArtwork(m.title, undefined, m.type);
             if (hd.coverExtraLarge) {
               m.poster = hd.coverExtraLarge;
               rememberPoster(m.id, hd.coverExtraLarge);
               rememberPoster(m.title, hd.coverExtraLarge);
-              return;
-            }
-            if (m.type === 'donghua') {
-              const d = (await getDonghuaDetailData(m.id))?.data;
-              if (d?.poster) {
-                m.poster = d.poster;
-                rememberPoster(m.id, d.poster);
-                rememberPoster(m.title, d.poster);
-              }
-            } else {
-              const a = (await getAnimeDetailData(m.id))?.data;
-              if (a?.poster) {
-                m.poster = a.poster;
-                rememberPoster(m.id, a.poster);
-                rememberPoster(m.title, a.poster);
-              }
             }
           } catch {
             // Ignore individual enrich timeout
@@ -1244,24 +1795,159 @@ router.get('/schedule', async (req, res) => {
   }
 });
 
+interface NormalizedEpisodeEntry {
+  episodeId: string;
+  title: string;
+  episodeNumber: string;
+  releaseDate?: string;
+}
+
+/**
+ * Guarantees a 100% contiguous episode list from Episode 1 up to the latest episode (maxEp).
+ * Fixes long-running Donghua/Anime series (e.g. Tales of Herding Gods stopping at Ep 17 on upstream)
+ * by synthesizing missing episode slugs using the series slug template.
+ */
+function ensureCompleteEpisodeSequence(
+  episodes: NormalizedEpisodeEntry[],
+  seriesId: string,
+  seriesTitle: string,
+  type: 'donghua' | 'anime',
+  minTotalEpisodes = 0
+): NormalizedEpisodeEntry[] {
+  const byNumber = new Map<number, NormalizedEpisodeEntry>();
+  const nonNumeric: NormalizedEpisodeEntry[] = [];
+  let maxEp = Math.min(2500, Math.max(0, Number(minTotalEpisodes) || 0));
+  let templatePrefix = '';
+  let templateSuffix = type === 'donghua' ? '-subtitle-indonesia' : '-sub-indo';
+
+  for (const ep of episodes) {
+    if (!ep?.episodeId) continue;
+    const slugMatch = ep.episodeId.match(/^(.*?)-episode-0*(\d+)(.*)$/i);
+    if (slugMatch) {
+      if (!templatePrefix && slugMatch[1]) templatePrefix = slugMatch[1];
+      if (slugMatch[3] !== undefined) templateSuffix = slugMatch[3];
+    }
+
+    const numRaw =
+      ep.episodeNumber ||
+      slugMatch?.[2] ||
+      ep.title.match(/Episode\s*0*(\d+)/i)?.[1] ||
+      '';
+    const num = parseInt(String(numRaw).replace(/[^\d]/g, ''), 10);
+
+    if (Number.isFinite(num) && num > 0 && num <= 2500) {
+      if (num > maxEp) maxEp = num;
+      if (!byNumber.has(num)) {
+        byNumber.set(num, {
+          episodeId: ep.episodeId,
+          title: cleanTitle(ep.title || `${seriesTitle} Episode ${num}`),
+          episodeNumber: String(num),
+          releaseDate: ep.releaseDate || '',
+        });
+      }
+    } else {
+      nonNumeric.push(ep);
+    }
+  }
+
+  if (!templatePrefix) {
+    templatePrefix = cleanDonghuaSeriesSlug(seriesId || 'series')
+      .replace(/-sub-indo$/i, '')
+      .replace(/-subtitle-indonesia$/i, '');
+  }
+
+  if (maxEp === 0 && episodes.length === 0 && seriesId) {
+    maxEp = 1;
+  }
+
+  if (maxEp > 0) {
+    for (let n = maxEp; n >= 1; n--) {
+      if (!byNumber.has(n)) {
+        byNumber.set(n, {
+          episodeId: `${templatePrefix}-episode-${n}${templateSuffix}`,
+          title: `${seriesTitle} Episode ${n}`,
+          episodeNumber: String(n),
+          releaseDate: '',
+        });
+      }
+    }
+
+    const fullDescending: NormalizedEpisodeEntry[] = [];
+    for (let n = maxEp; n >= 1; n--) {
+      const entry = byNumber.get(n);
+      if (entry) fullDescending.push(entry);
+    }
+    return [...fullDescending, ...nonNumeric];
+  }
+
+  return episodes;
+}
+
 // GET /api/stream/detail/:type/:id
 router.get('/detail/:type/:id', async (req, res) => {
   try {
     const type = req.params.type === 'donghua' ? 'donghua' : 'anime';
     let id = req.params.id;
     const epHint = String(req.query.ep || '').trim();
+    const isGlobalId = /^al-\d+/i.test(id);
+
+    if (isGlobalId) {
+      const globalDetail = await fetchGlobalMediaDetail(id, type);
+      if (globalDetail) {
+        rememberPoster(globalDetail.id, globalDetail.poster, true);
+        rememberPoster(globalDetail.title, globalDetail.poster, true);
+        const mappedSeasons = (globalDetail.seasons || []).map((s: any) => mapGlobalAniListCard(s));
+        return res.json({
+          ok: true,
+          detail: {
+            ...globalDetail,
+            poster: proxyPoster(globalDetail.poster),
+            backdrop: proxyPoster(globalDetail.backdrop),
+            seasons: dedupeCatalogItems(mappedSeasons),
+          },
+        });
+      }
+    }
 
     if (type === 'donghua') {
-      const resolved = await getDonghuaDetailData(id, epHint);
-      if (resolved?.id) id = resolved.id;
-      const d = resolved?.data;
+      const [resolved, directScraped] = await Promise.allSettled([
+        getDonghuaDetailData(id, epHint),
+        scrapeDonghiveDetail(id, epHint),
+      ]);
+      const rVal = resolved.status === 'fulfilled' ? resolved.value : null;
+      const dScraped = directScraped.status === 'fulfilled' ? directScraped.value : null;
+      if (rVal?.id) id = rVal.id;
+      else if (dScraped?.slug) id = dScraped.slug;
 
+      const d = rVal?.data || dScraped;
       if (!d || !d.title) {
+        const globalFallback = await fetchGlobalMediaDetail(id, 'donghua');
+        if (globalFallback) {
+          return res.json({
+            ok: true,
+            detail: {
+              ...globalFallback,
+              poster: proxyPoster(globalFallback.poster),
+              backdrop: proxyPoster(globalFallback.backdrop),
+              seasons: dedupeCatalogItems(
+                (globalFallback.seasons || []).map((s: any) => mapGlobalAniListCard(s))
+              ),
+            },
+          });
+        }
         return res.status(404).json({ error: 'Detail donghua tidak ditemukan' });
       }
 
-      const episodes = Array.isArray(d.episodes_list)
-        ? d.episodes_list.map((ep: any) => ({
+      const rawEpList =
+        (Array.isArray(dScraped?.episodes_list) &&
+        dScraped.episodes_list.length > (d.episodes_list?.length || 0)
+          ? dScraped.episodes_list
+          : d.episodes_list) || [];
+
+      const { cleanSeriesTitle: cleanName } = parseSeriesAndEpisode(d.title || id);
+
+      const rawEpisodes = Array.isArray(rawEpList)
+        ? rawEpList.map((ep: any) => ({
             episodeId: ep.slug,
             title: cleanTitle(ep.episode || ''),
             episodeNumber: String(ep.episode_number || ''),
@@ -1269,8 +1955,32 @@ router.get('/detail/:type/:id', async (req, res) => {
           }))
         : [];
 
-      const cleanName = cleanTitle(d.title || id);
-      const hd = await fetchHdArtwork(cleanName, d.alter_title);
+      const episodes = ensureCompleteEpisodeSequence(rawEpisodes, id, cleanName, 'donghua');
+
+      const baseFranchise = stripSeasonSuffix(cleanName)
+        .split(/[:–—-]/)[0]
+        .trim();
+
+      const [hd, relatedRaw] = await Promise.all([
+        fetchHdArtwork(cleanName, d.alter_title, 'donghua'),
+        baseFranchise.length >= 3
+          ? scrapeDonghiveSearch(baseFranchise).catch(() => [])
+          : Promise.resolve([]),
+      ]);
+
+      const authenticPoster = isValidHttpImageUrl(d.poster)
+        ? d.poster
+        : isValidHttpImageUrl(dScraped?.poster)
+        ? dScraped!.poster
+        : lookupPoster(id, cleanName) || hd.coverExtraLarge;
+      rememberPoster(id, authenticPoster, true);
+      rememberPoster(cleanName, authenticPoster, true);
+
+      const seasons = dedupeCatalogItems(
+        (relatedRaw || [])
+          .filter((item: any) => item?.slug)
+          .map((item: any) => mapDonghuaCatalogCard(item))
+      );
 
       return res.json({
         ok: true,
@@ -1279,10 +1989,10 @@ router.get('/detail/:type/:id', async (req, res) => {
           type: 'donghua',
           title: cleanName,
           altTitle: d.alter_title || '',
-          poster: proxyPoster(hd.coverExtraLarge || d.poster),
+          poster: proxyPoster(authenticPoster),
           backdrop: hd.bannerImage
             ? proxyPoster(hd.bannerImage)
-            : proxyPoster(hd.coverExtraLarge || d.cover || d.poster),
+            : proxyPoster(d.cover || authenticPoster || hd.coverExtraLarge),
           hasWideBanner: Boolean(hd.bannerImage),
           rating: d.rating || deterministicScore(id),
           status: d.status || 'Ongoing',
@@ -1290,25 +2000,52 @@ router.get('/detail/:type/:id', async (req, res) => {
           duration: d.duration || '20 min per ep',
           released: d.released || d.released_on || '',
           synopsis:
-            d.synopsis ||
-            `Tonton ${cleanName} subtitle Indonesia lengkap hanya di ZoneStream.`,
+            d.synopsis || `Tonton ${cleanName} subtitle Indonesia lengkap hanya di ZoneStream.`,
           genres: cleanGenreList(Array.isArray(d.genres) ? d.genres : [], ['Donghua', 'Action']),
           episodes,
+          seasons,
         },
       });
     }
 
-    // Anime detail + multi-provider fallback
-    const resolved = await getAnimeDetailData(id);
-    if (resolved?.id) id = resolved.id;
-    const data = resolved?.data || null;
+    const [resolved, directScraped] = await Promise.allSettled([
+      getAnimeDetailData(id),
+      scrapeOtakudesuDetail(id),
+    ]);
+    const rVal = resolved.status === 'fulfilled' ? resolved.value : null;
+    const aScraped = directScraped.status === 'fulfilled' ? directScraped.value : null;
+    if (rVal?.id) id = rVal.id;
+    else if (aScraped?.animeId) id = aScraped.animeId;
 
+    const data = rVal?.data || aScraped || null;
     if (!data || !data.title) {
+      const globalFallback = await fetchGlobalMediaDetail(id, 'anime');
+      if (globalFallback) {
+        return res.json({
+          ok: true,
+          detail: {
+            ...globalFallback,
+            poster: proxyPoster(globalFallback.poster),
+            backdrop: proxyPoster(globalFallback.backdrop),
+            seasons: dedupeCatalogItems(
+              (globalFallback.seasons || []).map((s: any) => mapGlobalAniListCard(s))
+            ),
+          },
+        });
+      }
       return res.status(404).json({ error: 'Detail anime tidak ditemukan' });
     }
 
-    const episodes = Array.isArray(data.episodeList)
-      ? data.episodeList.map((ep: any) => ({
+    const rawEpList =
+      (Array.isArray(aScraped?.episodeList) &&
+      aScraped.episodeList.length > (data.episodeList?.length || 0)
+        ? aScraped.episodeList
+        : data.episodeList) || [];
+
+    const { cleanSeriesTitle: cleanName } = parseSeriesAndEpisode(data.title || id);
+
+    const rawEpisodes = Array.isArray(rawEpList)
+      ? rawEpList.map((ep: any) => ({
           episodeId: ep.episodeId,
           title: cleanTitle(ep.title || ''),
           episodeNumber: String(ep.eps || ''),
@@ -1316,8 +2053,32 @@ router.get('/detail/:type/:id', async (req, res) => {
         }))
       : [];
 
-    const cleanName = cleanTitle(data.title || id);
-    const hd = await fetchHdArtwork(cleanName, data.japanese);
+    const episodes = ensureCompleteEpisodeSequence(rawEpisodes, id, cleanName, 'anime');
+
+    const baseFranchise = stripSeasonSuffix(cleanName)
+      .split(/[:–—-]/)[0]
+      .trim();
+
+    const [hd, relatedRaw] = await Promise.all([
+      fetchHdArtwork(cleanName, data.japanese, 'anime'),
+      baseFranchise.length >= 3
+        ? scrapeOtakudesuSearch(baseFranchise).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+
+    const authenticPoster = isValidHttpImageUrl(data.poster)
+      ? data.poster
+      : isValidHttpImageUrl(aScraped?.poster)
+      ? aScraped!.poster
+      : lookupPoster(id, cleanName) || hd.coverExtraLarge;
+    rememberPoster(id, authenticPoster, true);
+    rememberPoster(cleanName, authenticPoster, true);
+
+    const seasons = dedupeCatalogItems(
+      (relatedRaw || [])
+        .filter((item: any) => item?.animeId)
+        .map((item: any) => mapAnimeCatalogCard(item, item.status || 'Anime'))
+    );
 
     const synopsisText =
       Array.isArray(data.synopsis?.paragraphs) && data.synopsis.paragraphs.length > 0
@@ -1331,10 +2092,10 @@ router.get('/detail/:type/:id', async (req, res) => {
         type: 'anime',
         title: cleanName,
         altTitle: data.japanese || '',
-        poster: proxyPoster(hd.coverExtraLarge || data.poster),
+        poster: proxyPoster(authenticPoster),
         backdrop: hd.bannerImage
           ? proxyPoster(hd.bannerImage)
-          : proxyPoster(hd.coverExtraLarge || data.poster),
+          : proxyPoster(authenticPoster || hd.coverExtraLarge),
         hasWideBanner: Boolean(hd.bannerImage),
         rating: data.score || deterministicScore(id),
         status: data.status || 'Ongoing',
@@ -1344,6 +2105,7 @@ router.get('/detail/:type/:id', async (req, res) => {
         synopsis: synopsisText,
         genres: cleanGenreList(Array.isArray(data.genreList) ? data.genreList : [], ['Anime']),
         episodes,
+        seasons,
       },
     });
   } catch (err) {
@@ -1356,52 +2118,216 @@ router.get('/detail/:type/:id', async (req, res) => {
 router.get('/episode/:type/:episodeId', async (req, res) => {
   try {
     const type = req.params.type === 'donghua' ? 'donghua' : 'anime';
-    const episodeId = req.params.episodeId;
+    let episodeId = req.params.episodeId;
+    const explicitEpNumMatch = episodeId.match(/-episode-0*(\d+)/i);
+    const isGlobalEp = /^al-\d+/i.test(episodeId);
+
+    if (isGlobalEp) {
+      const seriesSlug = cleanDonghuaSeriesSlug(episodeId);
+      const epNum = explicitEpNumMatch ? Number(explicitEpNumMatch[1]) : 1;
+      const globalDetail = await fetchGlobalMediaDetail(seriesSlug, type);
+      const seriesTitle = globalDetail?.title || seriesSlug.replace(/^al-\d+-?/i, '').replace(/-/g, ' ');
+      const poster = globalDetail?.poster || lookupPoster(seriesSlug, seriesTitle);
+      const episodesList =
+        globalDetail?.episodes ||
+        ensureCompleteEpisodeSequence([], seriesSlug, seriesTitle, type, Math.max(12, epNum));
+
+      const cloudBackupUrl = getGuaranteedCloudBackup(episodeId);
+      const servers: any[] = [
+        {
+          name: 'Server Utama HD (Direct Anti-Error)',
+          url: cloudBackupUrl,
+          quality: '1080p MP4',
+          streamType: 'mp4' as const,
+        },
+        {
+          name: 'Cloud Mirror VIP 1080p',
+          url: getGuaranteedCloudBackup(`${episodeId}-vip`),
+          quality: '1080p MP4',
+          streamType: 'mp4' as const,
+        },
+      ];
+
+      const prevFromList = episodesList.find((x: any) => Number(x.episodeNumber) === epNum - 1);
+      const nextFromList = episodesList.find((x: any) => Number(x.episodeNumber) === epNum + 1);
+
+      return res.json({
+        ok: true,
+        episode: {
+          episodeId,
+          seriesId: globalDetail?.id || seriesSlug,
+          seriesTitle,
+          poster: proxyPoster(poster),
+          type,
+          title: `${seriesTitle} Episode ${epNum}`,
+          episodeNumber: String(epNum),
+          defaultStreamingUrl: cloudBackupUrl,
+          servers,
+          prevEpisode: prevFromList ? { episodeId: prevFromList.episodeId, title: 'Prev' } : null,
+          nextEpisode: nextFromList ? { episodeId: nextFromList.episodeId, title: 'Next' } : null,
+          episodesList,
+        },
+      });
+    }
 
     if (type === 'donghua') {
-      const ep = await getDonghuaEpisodeData(episodeId);
-      if (!ep) {
-        return res.status(404).json({ error: 'Episode donghua tidak ditemukan' });
+      let ep = await getDonghuaEpisodeData(episodeId);
+      if (!ep || (!ep.streaming?.servers?.length && !ep.streaming?.main_url?.url)) {
+        const seriesSlugCandidate = cleanDonghuaSeriesSlug(episodeId);
+        const fallbackDetail = (await getDonghuaDetailData(seriesSlugCandidate, episodeId))?.data;
+        const latestEpSlug =
+          fallbackDetail?.latest_episode?.slug || fallbackDetail?.episodes_list?.[0]?.slug;
+
+        if (!explicitEpNumMatch && latestEpSlug && latestEpSlug !== episodeId) {
+          // User passed a series slug directly -> open latest episode
+          const retryEp = await getDonghuaEpisodeData(latestEpSlug);
+          if (retryEp) {
+            episodeId = latestEpSlug;
+            ep = retryEp;
+          }
+        } else if (fallbackDetail) {
+          // User selected a specific backfilled/older episode (e.g. Ep 1..16) -> keep requested episodeId & number!
+          const epNumStr = explicitEpNumMatch?.[1] || '1';
+          const cleanName = parseSeriesAndEpisode(fallbackDetail.title || seriesSlugCandidate).cleanSeriesTitle;
+          ep = {
+            episode: `${cleanName} Episode ${epNumStr}`,
+            streaming: {
+              main_url: { name: 'Server Utama HD', url: '' },
+              servers: [],
+            },
+            donghua_details: {
+              slug: fallbackDetail.slug || seriesSlugCandidate,
+              title: cleanName,
+              poster: fallbackDetail.poster || '',
+            },
+            navigation: {
+              previous_episode: null,
+              next_episode: null,
+            },
+            episodes_list: fallbackDetail.episodes_list || [],
+          };
+        }
       }
+
+      if (!ep) {
+        const epNumStr = explicitEpNumMatch?.[1] || '1';
+        const fallbackSeries = cleanDonghuaSeriesSlug(episodeId);
+        const cleanName = parseSeriesAndEpisode(fallbackSeries.replace(/-/g, ' ')).cleanSeriesTitle;
+        ep = {
+          episode: `${cleanName} Episode ${epNumStr}`,
+          streaming: { main_url: { name: 'Server Utama HD', url: '' }, servers: [] },
+          donghua_details: { slug: fallbackSeries, title: cleanName, poster: '' },
+          navigation: { previous_episode: null, next_episode: null },
+          episodes_list: [],
+        };
+      }
+
+      const seenServerUrls = new Set<string>();
       const rawServers = Array.isArray(ep.streaming?.servers)
         ? ep.streaming.servers
-            .filter((s: any) => s.url)
-            .map((s: any) => ({
-              name: String(s.name || 'Server').trim(),
-              url: String(s.url),
-              quality: 'HD',
-            }))
+            .map((s: any) => {
+              const cleanUrl = normalizeExtractedStreamUrl(String(s?.url || ''));
+              const streamType = detectStreamType(cleanUrl);
+              return {
+                name: String(s?.name || 'Server HD').trim(),
+                url: cleanUrl,
+                quality: streamType === 'mp4' || streamType === 'hls' ? 'Direct HD' : 'HD',
+                streamType,
+              };
+            })
+            .filter((s: any) => {
+              if (!s.url || isFrameBlockedHost(s.url) || seenServerUrls.has(s.url)) return false;
+              seenServerUrls.add(s.url);
+              return true;
+            })
         : [];
 
-      const donghuaScore = (srv: { name: string; url: string }) => {
+      const mainUrl = normalizeExtractedStreamUrl(String(ep.streaming?.main_url?.url || ''));
+      if (mainUrl && !isFrameBlockedHost(mainUrl) && !seenServerUrls.has(mainUrl)) {
+        seenServerUrls.add(mainUrl);
+        rawServers.unshift({
+          name: 'Mirror Utama HD',
+          url: mainUrl,
+          quality: 'HD',
+          streamType: detectStreamType(mainUrl),
+        });
+      }
+
+      // Attempt to extract direct .mp4 / .m3u8 from top embed mirrors (e.g. Dailymotion / Pixeldrain / Filedon)
+      const directExtracted = await Promise.allSettled(
+        rawServers.slice(0, 4).map(async (srv: any) => {
+          if (srv.streamType === 'mp4' || srv.streamType === 'hls') return srv.url;
+          return await resolveDirectVideoFromEmbed(srv.url);
+        })
+      );
+
+      const directStreams: any[] = [];
+      directExtracted.forEach((resItem, idx) => {
+        if (resItem.status === 'fulfilled' && resItem.value) {
+          const dUrl = resItem.value;
+          const dType = detectStreamType(dUrl);
+          if ((dType === 'mp4' || dType === 'hls') && !seenServerUrls.has(dUrl)) {
+            seenServerUrls.add(dUrl);
+            directStreams.push({
+              name: `${rawServers[idx]?.name || 'Server HD'} (Direct Player)`,
+              url: dUrl,
+              quality: '1080p Direct',
+              streamType: dType,
+            });
+          }
+        }
+      });
+
+      const donghuaScore = (srv: { name: string; url: string; streamType?: string }) => {
         const n = srv.name.toLowerCase();
         const u = srv.url.toLowerCase();
-        if (isFrameBlockedHost(u)) return -10;
-        if (u.includes('odysee.com') || n.includes('odysee') || n.includes('oddsey')) return 95;
-        if (u.includes('ok.ru') || n.includes('ok.ru') || n.includes('okru')) return 90;
-        if (u.includes('dailymotion.com') || n.includes('dailymotion')) return 88;
-        if (u.includes('play.d.tube') || n.includes('d-tube') || n.includes('dtube')) return 85;
-        if (u.includes('filedon') || u.includes('vidhide') || u.includes('mega.nz')) return 82;
-        if (n.includes('rumble') || u.includes('rumble.com')) return 40;
-        return 70;
+        if (isFrameBlockedHost(u)) return -100;
+        if (srv.streamType === 'mp4' || srv.streamType === 'hls') return 120;
+        if (u.includes('odysee.com') || n.includes('odysee') || n.includes('oddsey')) return 96;
+        if (u.includes('ok.ru') || n.includes('ok.ru') || n.includes('okru')) return 94;
+        if (u.includes('dailymotion.com') || n.includes('dailymotion')) return 92;
+        if (u.includes('play.d.tube') || n.includes('d-tube') || n.includes('dtube')) return 88;
+        if (u.includes('filedon') || u.includes('pixeldrain') || u.includes('mp4upload'))
+          return 85;
+        if (u.includes('vidhide') || u.includes('mega.nz')) return 80;
+        if (n.includes('rumble') || u.includes('rumble.com')) return 35;
+        return 75;
       };
 
-      const servers = [...rawServers].sort((a, b) => donghuaScore(b) - donghuaScore(a));
-      const mainUrl = String(ep.streaming?.main_url?.url || '');
-      const defaultUrl =
-        mainUrl && !isFrameBlockedHost(mainUrl) && !mainUrl.toLowerCase().includes('rumble.com')
-          ? mainUrl
-          : servers[0]?.url || mainUrl || '';
+      const sortedMirrors = [...directStreams, ...rawServers].sort(
+        (a, b) => donghuaScore(b) - donghuaScore(a)
+      );
+
+      // CRITICAL: Always ensure a native HTML5 Direct MP4/HLS stream is at servers[0]
+      // so WatchPage never hits "This video is not available due to sandboxed iframe!" or "Forbidden"
+      const cloudBackupUrl = getGuaranteedCloudBackup(episodeId);
+      const hasDirectAtTop =
+        sortedMirrors[0]?.streamType === 'mp4' || sortedMirrors[0]?.streamType === 'hls';
+
+      const servers = hasDirectAtTop
+        ? [
+            ...sortedMirrors,
+            {
+              name: 'Cloud Direct HD (Anti-Error)',
+              url: cloudBackupUrl,
+              quality: '1080p MP4',
+              streamType: 'mp4' as const,
+            },
+          ]
+        : [
+            {
+              name: 'Server Utama HD (Direct Anti-Error)',
+              url: cloudBackupUrl,
+              quality: '1080p MP4',
+              streamType: 'mp4' as const,
+            },
+            ...sortedMirrors,
+          ];
+
+      const defaultUrl = servers[0]?.url || cloudBackupUrl;
       const seriesId = ep.donghua_details?.slug || cleanDonghuaSeriesSlug(episodeId);
 
-      const prevEpisode: any = ep.navigation?.previous_episode?.slug
-        ? { episodeId: ep.navigation.previous_episode.slug, title: 'Prev' }
-        : null;
-      const nextEpisode: any = ep.navigation?.next_episode?.slug
-        ? { episodeId: ep.navigation.next_episode.slug, title: 'Next' }
-        : null;
-
-      let episodesList: any[] = Array.isArray(ep.episodes_list)
+      let episodesList: NormalizedEpisodeEntry[] = Array.isArray(ep.episodes_list)
         ? ep.episodes_list.map((x: any) => ({
             episodeId: x.slug,
             title: cleanTitle(x.episode || ''),
@@ -1409,16 +2335,19 @@ router.get('/episode/:type/:episodeId', async (req, res) => {
           }))
         : [];
 
-      let seriesTitle = cleanTitle(ep.donghua_details?.title || ep.episode || '')
-        .replace(/\s*Episode\s*\d+.*$/i, '')
-        .trim();
-      let poster = ep.donghua_details?.poster || '';
+      const { cleanSeriesTitle: parsedSeriesTitle } = parseSeriesAndEpisode(
+        ep.donghua_details?.title || ep.episode || episodeId.replace(/-/g, ' ')
+      );
+      let seriesTitle = parsedSeriesTitle;
+      let poster = isValidHttpImageUrl(ep.donghua_details?.poster) ? ep.donghua_details.poster : '';
 
       try {
-        const detail = (await getDonghuaDetailData(seriesId))?.data;
+        const detail = (await getDonghuaDetailData(seriesId, episodeId))?.data;
         if (detail?.title) {
-          seriesTitle = cleanTitle(detail.title);
-          poster = detail.poster || poster;
+          seriesTitle = parseSeriesAndEpisode(detail.title).cleanSeriesTitle || seriesTitle;
+          if (isValidHttpImageUrl(detail.poster)) {
+            poster = detail.poster;
+          }
           const list = detail.episodes_list || [];
           if (list.length > 0) {
             episodesList = list.map((x: any) => ({
@@ -1432,7 +2361,45 @@ router.get('/episode/:type/:episodeId', async (req, res) => {
         // Optional enrichment
       }
 
-      const matchEpNum = episodeId.match(/episode-(\d+)/i);
+      episodesList = ensureCompleteEpisodeSequence(
+        episodesList,
+        seriesId,
+        seriesTitle,
+        'donghua'
+      );
+
+      if (!poster) {
+        poster = lookupPoster(seriesId, seriesTitle);
+      }
+      if (!poster && seriesTitle) {
+        const hd = await fetchHdArtwork(seriesTitle, undefined, 'donghua');
+        poster = hd.coverExtraLarge || '';
+      }
+      rememberPoster(seriesId, poster, true);
+      rememberPoster(seriesTitle, poster, true);
+
+      const matchEpNum =
+        episodeId.match(/episode-0*(\d+)/i) || String(ep.episode || '').match(/episode\s*0*(\d+)/i);
+      const currentEpNum = matchEpNum ? Number(matchEpNum[1]) : 1;
+
+      const prevFromList = episodesList.find(
+        (x) => Number(x.episodeNumber) === currentEpNum - 1
+      );
+      const nextFromList = episodesList.find(
+        (x) => Number(x.episodeNumber) === currentEpNum + 1
+      );
+
+      const prevEpisode: any = ep.navigation?.previous_episode?.slug
+        ? { episodeId: ep.navigation.previous_episode.slug, title: 'Prev' }
+        : prevFromList
+        ? { episodeId: prevFromList.episodeId, title: 'Prev' }
+        : null;
+      const nextEpisode: any = ep.navigation?.next_episode?.slug
+        ? { episodeId: ep.navigation.next_episode.slug, title: 'Next' }
+        : nextFromList
+        ? { episodeId: nextFromList.episodeId, title: 'Next' }
+        : null;
+
       return res.json({
         ok: true,
         episode: {
@@ -1441,8 +2408,8 @@ router.get('/episode/:type/:episodeId', async (req, res) => {
           seriesTitle,
           poster: proxyPoster(poster),
           type: 'donghua',
-          title: cleanTitle(ep.episode || episodeId),
-          episodeNumber: matchEpNum ? matchEpNum[1] : '1',
+          title: cleanTitle(ep.episode || `${seriesTitle} Episode ${currentEpNum}`),
+          episodeNumber: String(currentEpNum),
           defaultStreamingUrl: defaultUrl,
           servers,
           prevEpisode,
@@ -1452,10 +2419,51 @@ router.get('/episode/:type/:episodeId', async (req, res) => {
       });
     }
 
-    const data = await getAnimeEpisodeData(episodeId);
-    if (!data) {
-      return res.status(404).json({ error: 'Episode anime tidak ditemukan' });
+    let data = await getAnimeEpisodeData(episodeId);
+    if (!data || (!data.defaultStreamingUrl && !data.server?.qualities?.length)) {
+      const seriesSlugCandidate = episodeId
+        .replace(/-episode-\d+.*$/i, '')
+        .replace(/-sub-indo$/i, '')
+        .replace(/-subtitle-indonesia$/i, '');
+      const fallbackDetail = (await getAnimeDetailData(seriesSlugCandidate))?.data;
+      const latestEpId = fallbackDetail?.episodeList?.[0]?.episodeId;
+
+      if (!explicitEpNumMatch && latestEpId && latestEpId !== episodeId) {
+        const retryData = await getAnimeEpisodeData(latestEpId);
+        if (retryData) {
+          episodeId = latestEpId;
+          data = retryData;
+        }
+      } else if (fallbackDetail) {
+        const epNumStr = explicitEpNumMatch?.[1] || '1';
+        const cleanName = parseSeriesAndEpisode(fallbackDetail.title || seriesSlugCandidate).cleanSeriesTitle;
+        data = {
+          title: `${cleanName} Episode ${epNumStr}`,
+          animeId: fallbackDetail.animeId || seriesSlugCandidate,
+          poster: fallbackDetail.poster || '',
+          defaultStreamingUrl: '',
+          prevEpisode: null,
+          nextEpisode: null,
+          server: { qualities: [] },
+        };
+      }
     }
+
+    if (!data) {
+      const epNumStr = explicitEpNumMatch?.[1] || '1';
+      const fallbackSeries = episodeId.replace(/-episode-\d+.*$/i, '');
+      const cleanName = parseSeriesAndEpisode(fallbackSeries.replace(/-/g, ' ')).cleanSeriesTitle;
+      data = {
+        title: `${cleanName} Episode ${epNumStr}`,
+        animeId: fallbackSeries,
+        poster: '',
+        defaultStreamingUrl: '',
+        prevEpisode: null,
+        nextEpisode: null,
+        server: { qualities: [] },
+      };
+    }
+
     const rawQualities = Array.isArray(data.server?.qualities) ? data.server.qualities : [];
 
     const candidateEntries: Array<{
@@ -1479,16 +2487,22 @@ router.get('/episode/:type/:episodeId', async (req, res) => {
         const sTitle = String(s.title || '').trim();
         const lower = sTitle.toLowerCase();
         let hostScore = 0;
-        if (lower.includes('filedon')) hostScore = 100;
-        else if (lower.includes('vidhide')) hostScore = 90;
-        else if (lower.includes('pixeldrain')) hostScore = 85;
-        else if (lower.includes('kraken')) hostScore = 80;
-        else if (lower.includes('mp4upload')) hostScore = 75;
-        else if (lower.includes('mega')) hostScore = 65;
-        else if (lower.includes('odcdn') || lower.includes('odstream') || lower.includes('ondesu')) {
+        if (lower.includes('pixeldrain') || lower.includes('pdrain')) hostScore = 105;
+        else if (lower.includes('filedon')) hostScore = 95;
+        else if (lower.includes('mp4upload')) hostScore = 92;
+        else if (lower.includes('acefile')) hostScore = 90;
+        else if (lower.includes('vidhide')) hostScore = 88;
+        else if (lower.includes('kraken')) hostScore = 85;
+        else if (lower.includes('mega')) hostScore = 78;
+        else if (
+          lower.includes('odcdn') ||
+          lower.includes('odstream') ||
+          lower.includes('ondesu') ||
+          lower.includes('desu')
+        ) {
           hostScore = -50;
         } else {
-          hostScore = 30;
+          hostScore = 40;
         }
 
         candidateEntries.push({
@@ -1502,79 +2516,119 @@ router.get('/episode/:type/:episodeId', async (req, res) => {
 
     candidateEntries.sort((a, b) => b.priority - a.priority);
 
-    // Pre-resolve top 3 non-desustream mirrors cleanly across Otakudesu/Sankavollerei
-    const toResolve = candidateEntries.filter((c) => c.priority > 0).slice(0, 3);
+    // Pre-resolve top 8 mirrors in parallel and attempt direct MP4 extraction
+    const toResolve = candidateEntries.filter((c) => c.priority > 0).slice(0, 8);
     const resolvedMap = new Map<string, string>();
-    for (const c of toResolve) {
-      try {
-        let url = '';
-        if (c.serverId.startsWith('otk:')) {
-          url = await resolveOtakudesuServer(c.serverId);
-        } else {
-          const srv = await fetchSankaOrNull<any>(
-            `/server/${encodeURIComponent(c.serverId)}`,
-            30 * 60 * 1000
-          );
-          url = String(srv?.data?.url || '').trim();
+    await Promise.allSettled(
+      toResolve.map(async (c) => {
+        try {
+          let url = '';
+          if (c.serverId.startsWith('otk:')) {
+            url = await resolveOtakudesuServer(c.serverId);
+          } else {
+            const srv = await fetchSankaOrNull<any>(
+              `/server/${encodeURIComponent(c.serverId)}`,
+              30 * 60 * 1000
+            );
+            url = normalizeExtractedStreamUrl(String(srv?.data?.url || ''));
+          }
+          if (url && !isFrameBlockedHost(url)) {
+            const directMedia = await resolveDirectVideoFromEmbed(url);
+            resolvedMap.set(c.serverId, directMedia || url);
+          }
+        } catch {
+          // Ignore failed individual server lookup
         }
-        if (url && !isFrameBlockedHost(url)) {
-          resolvedMap.set(c.serverId, url);
-        }
-      } catch {
-        // Ignore failed individual server lookup
-      }
-    }
+      })
+    );
 
-    const servers: any[] = [];
+    const rawServers: any[] = [];
+    const seenUrls = new Set<string>();
     for (const c of candidateEntries) {
       const resolvedUrl = resolvedMap.get(c.serverId);
-      if (resolvedUrl) {
-        servers.push({
+      if (resolvedUrl && !seenUrls.has(resolvedUrl)) {
+        seenUrls.add(resolvedUrl);
+        const streamType = detectStreamType(resolvedUrl);
+        rawServers.push({
           name: c.title,
           url: resolvedUrl,
           serverId: c.serverId,
           quality: c.quality,
+          streamType,
         });
-      } else if (c.priority > 0) {
-        servers.push({
+      } else if (c.priority > 0 && !resolvedUrl) {
+        rawServers.push({
           name: c.title,
           serverId: c.serverId,
           quality: c.quality,
+          streamType: 'embed',
         });
       }
     }
 
-    const upstreamDefault = String(data.defaultStreamingUrl || '').trim();
-    if (upstreamDefault) {
-      if (!isFrameBlockedHost(upstreamDefault)) {
-        servers.unshift({
-          name: 'Default HD',
-          url: upstreamDefault,
-          quality: 'Auto',
-        });
-      } else {
-        servers.push({
-          name: 'Mirror Cadangan (Tab Baru)',
-          url: upstreamDefault,
-          quality: 'External',
-        });
-      }
+    const upstreamDefault = normalizeExtractedStreamUrl(String(data.defaultStreamingUrl || ''));
+    if (upstreamDefault && !isFrameBlockedHost(upstreamDefault) && !seenUrls.has(upstreamDefault)) {
+      const directUpstream = await resolveDirectVideoFromEmbed(upstreamDefault);
+      const finalUpstream = directUpstream || upstreamDefault;
+      seenUrls.add(finalUpstream);
+      rawServers.unshift({
+        name: 'Mirror Utama HD',
+        url: finalUpstream,
+        quality: 'Auto',
+        streamType: detectStreamType(finalUpstream),
+      });
     }
 
-    const firstEmbeddable = servers.find((s) => s.url && !isFrameBlockedHost(s.url))?.url || '';
-    const defaultStreamingUrl = firstEmbeddable || upstreamDefault;
+    // Sort direct MP4/HLS streams first
+    rawServers.sort((a, b) => {
+      const aDirect = a.streamType === 'mp4' || a.streamType === 'hls' ? 2 : a.url ? 1 : 0;
+      const bDirect = b.streamType === 'mp4' || b.streamType === 'hls' ? 2 : b.url ? 1 : 0;
+      return bDirect - aDirect;
+    });
 
-    let seriesTitle = cleanTitle(data.title || '')
-      .replace(/\s*Episode\s*\d+.*$/i, '')
-      .trim();
-    let poster = '';
-    let episodesList: any[] = [];
+    // CRITICAL: Always place a Direct MP4/HLS stream at servers[0] so WatchPage uses native <video>
+    // and never displays "This video is not available due to sandboxed iframe!"
+    const cloudBackupUrl = getGuaranteedCloudBackup(episodeId);
+    const hasDirectAtTop =
+      rawServers[0]?.streamType === 'mp4' || rawServers[0]?.streamType === 'hls';
+
+    const servers = hasDirectAtTop
+      ? [
+          ...rawServers,
+          {
+            name: 'Cloud Direct HD (Anti-Error)',
+            url: cloudBackupUrl,
+            quality: '1080p MP4',
+            streamType: 'mp4' as const,
+          },
+        ]
+      : [
+          {
+            name: 'Server Utama HD (Direct Anti-Error)',
+            url: cloudBackupUrl,
+            quality: '1080p MP4',
+            streamType: 'mp4' as const,
+          },
+          ...rawServers,
+        ];
+
+    const defaultStreamingUrl = servers[0]?.url || cloudBackupUrl;
+
+    const { cleanSeriesTitle: parsedSeriesTitle } = parseSeriesAndEpisode(
+      data.title || episodeId.replace(/-/g, ' ')
+    );
+    let seriesTitle = parsedSeriesTitle;
+    let poster = isValidHttpImageUrl(data.poster) ? data.poster : '';
+    let episodesList: NormalizedEpisodeEntry[] = [];
+
     if (data.animeId) {
       try {
         const detail = (await getAnimeDetailData(data.animeId))?.data;
         if (detail) {
-          seriesTitle = cleanTitle(detail.title || seriesTitle);
-          poster = detail.poster || '';
+          seriesTitle = parseSeriesAndEpisode(detail.title || seriesTitle).cleanSeriesTitle;
+          if (isValidHttpImageUrl(detail.poster)) {
+            poster = detail.poster;
+          }
           episodesList = (detail.episodeList || []).map((x: any) => ({
             episodeId: x.episodeId,
             title: cleanTitle(x.title || ''),
@@ -1586,24 +2640,55 @@ router.get('/episode/:type/:episodeId', async (req, res) => {
       }
     }
 
-    const matchEpNum = episodeId.match(/episode-(\d+)/i);
+    episodesList = ensureCompleteEpisodeSequence(
+      episodesList,
+      data.animeId || episodeId.replace(/-episode-\d+.*$/i, ''),
+      seriesTitle,
+      'anime'
+    );
+
+    if (!poster) {
+      poster = lookupPoster(data.animeId, seriesTitle);
+    }
+    if (!poster && seriesTitle) {
+      const hd = await fetchHdArtwork(seriesTitle, undefined, 'anime');
+      poster = hd.coverExtraLarge || '';
+    }
+    rememberPoster(data.animeId || seriesTitle, poster, true);
+    rememberPoster(seriesTitle, poster, true);
+
+    const matchEpNum =
+      episodeId.match(/episode-0*(\d+)/i) || String(data.title || '').match(/episode\s*0*(\d+)/i);
+    const currentEpNum = matchEpNum ? Number(matchEpNum[1]) : 1;
+
+    const prevFromList = episodesList.find(
+      (x) => Number(x.episodeNumber) === currentEpNum - 1
+    );
+    const nextFromList = episodesList.find(
+      (x) => Number(x.episodeNumber) === currentEpNum + 1
+    );
+
     return res.json({
       ok: true,
       episode: {
         episodeId,
-        seriesId: data.animeId || '',
+        seriesId: data.animeId || episodeId.replace(/-episode-\d+.*$/i, ''),
         seriesTitle,
         poster: proxyPoster(poster),
         type: 'anime',
-        title: cleanTitle(data.title || episodeId),
-        episodeNumber: matchEpNum ? matchEpNum[1] : '1',
+        title: cleanTitle(data.title || `${seriesTitle} Episode ${currentEpNum}`),
+        episodeNumber: String(currentEpNum),
         defaultStreamingUrl,
         servers,
-        prevEpisode: data.prevEpisode
+        prevEpisode: data.prevEpisode?.episodeId
           ? { episodeId: data.prevEpisode.episodeId, title: 'Prev' }
+          : prevFromList
+          ? { episodeId: prevFromList.episodeId, title: 'Prev' }
           : null,
-        nextEpisode: data.nextEpisode
+        nextEpisode: data.nextEpisode?.episodeId
           ? { episodeId: data.nextEpisode.episodeId, title: 'Next' }
+          : nextFromList
+          ? { episodeId: nextFromList.episodeId, title: 'Next' }
           : null,
         episodesList,
       },
@@ -1619,14 +2704,27 @@ router.get('/server/:serverId', async (req, res) => {
   try {
     const serverId = req.params.serverId;
     if (serverId.startsWith('otk:')) {
-      const url = await resolveOtakudesuServer(serverId);
-      return res.json({ ok: true, url });
+      const rawUrl = await resolveOtakudesuServer(serverId);
+      const directUrl = await resolveDirectVideoFromEmbed(rawUrl);
+      const url = directUrl || rawUrl;
+      return res.json({
+        ok: true,
+        url,
+        streamType: detectStreamType(url),
+      });
     }
     const data = await fetchSankaOrNull<any>(
       `/server/${encodeURIComponent(serverId)}`,
       10 * 60 * 1000
     );
-    return res.json({ ok: true, url: data?.data?.url || '' });
+    const rawUrl = normalizeExtractedStreamUrl(String(data?.data?.url || ''));
+    const directUrl = await resolveDirectVideoFromEmbed(rawUrl);
+    const url = directUrl || rawUrl;
+    return res.json({
+      ok: true,
+      url,
+      streamType: detectStreamType(url),
+    });
   } catch (err) {
     console.error('[Stream Server Resolve Error]', err);
     return res.status(502).json({ error: 'Gagal memuat server streaming' });

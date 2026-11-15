@@ -30,6 +30,7 @@ import {
   Users,
   X,
   Zap,
+  Globe,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Layout } from '../components/Layout';
@@ -37,10 +38,12 @@ import { TelegramCsButton } from '../components/TelegramCsButton';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { TELEGRAM_BADGE_MAP, VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
+import { CountryFlagBadge } from '../components/CountryFlag';
+import { AvatarDecoration } from '../components/AvatarDecoration';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
+import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
 import type { PaymentTransaction, PremiumPackage } from '../types';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
-import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 
 const FALLBACK_PACKAGES: PremiumPackage[] = [
   {
@@ -72,9 +75,11 @@ const FALLBACK_PACKAGES: PremiumPackage[] = [
 
 const PAYMENT_METHODS = [
   { id: 'qris', label: 'QRIS (Semua E-Wallet & Bank)' },
+  { id: 'dana', label: 'DANA / GoPay / OVO' },
   { id: 'bni_va', label: 'BNI Virtual Account' },
   { id: 'bri_va', label: 'BRI Virtual Account' },
   { id: 'permata_va', label: 'Permata Virtual Account' },
+  { id: 'cimb_niaga_va', label: 'CIMB Niaga VA' },
 ];
 
 function formatIdr(value: number): string {
@@ -133,6 +138,7 @@ export function ProfilePage() {
     getLocalHistory,
     getLocalBookmarks,
   } = useAuth();
+  const { lang, changeLanguage } = useAppLanguage();
 
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
   const [identifier, setIdentifier] = useState('');
@@ -253,7 +259,11 @@ export function ProfilePage() {
       setQrDataUrl('');
       return;
     }
-    QRCode.toDataURL(activeTx.paymentNumber, { width: 256, margin: 2 })
+    QRCode.toDataURL(activeTx.paymentNumber, {
+      width: 300,
+      margin: 2,
+      color: { dark: '#0B0D14', light: '#FFFFFF' },
+    })
       .then((url) => setQrDataUrl(url))
       .catch(() => setQrDataUrl(''));
   }, [activeTx?.paymentNumber, activeTx?.paymentMethod]);
@@ -278,6 +288,43 @@ export function ProfilePage() {
     } finally {
       if (!silent) setCheckingTx(false);
     }
+  };
+
+  const handleConfirmPayment = async (orderId: string) => {
+    const token = getStoredAuthToken();
+    if (!token || !orderId) return;
+    setCheckingTx(true);
+    setPaymentError(null);
+    try {
+      const res = await fetch(`/api/payment/confirm/${encodeURIComponent(orderId)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const json = await res.json();
+      if (res.ok && json.ok && json.status === 'paid') {
+        setActiveTx((prev) => (prev ? { ...prev, status: 'paid' } : prev));
+        await refreshUser();
+      } else {
+        setPaymentError(json.error || 'Gagal memverifikasi pembayaran');
+      }
+    } catch {
+      setPaymentError('Gagal menghubungi server pembayaran');
+    } finally {
+      setCheckingTx(false);
+    }
+  };
+
+  const handleDownloadQris = () => {
+    if (!qrDataUrl || !activeTx) return;
+    const link = document.createElement('a');
+    link.href = qrDataUrl;
+    link.download = `QRIS-ZoneStream-${activeTx.orderId}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   useEffect(() => {
@@ -814,18 +861,24 @@ export function ProfilePage() {
   return (
     <Layout>
       <div className="max-w-3xl mx-auto pb-8">
-        {/* Top Banner + Overlapping Avatar + Discord Profile Theme Aura */}
-        <div className={`relative pb-5 ${activeTheme.shellClass}`}>
-          <div className="relative h-52 sm:h-64 w-full overflow-hidden bg-slate-900 dark:bg-[#14161D]">
+        {/* Top Banner + Overlapping Avatar + 3D Discord Profile Theme Aura */}
+        <div
+          className={`relative pb-6 sm:rounded-b-3xl overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.45)] ${activeTheme.shellClass}`}
+        >
+          <div className="relative h-56 sm:h-72 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
             <img
               src={user?.bannerUrl || defaultBannerImg}
               alt="Latar Belakang Profil"
               referrerPolicy="no-referrer"
-              className="w-full h-full object-cover"
+              decoding="async"
+              fetchPriority="high"
+              className="w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] brightness-[1.02] transition-transform duration-500"
             />
-            <div className={`absolute inset-0 bg-gradient-to-t ${activeTheme.bannerGradientOverlay}`} />
+            {/* Crisp bottom-focused scrim so top 70% of banner stays crystal clear */}
+            <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#090A0E] via-[#090A0E]/65 to-transparent pointer-events-none" />
+            <div className="absolute inset-0 ring-1 ring-inset ring-white/10 pointer-events-none" />
 
-            <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+            <div className="absolute top-3.5 right-3.5 sm:top-4 sm:right-4 z-20 flex items-center gap-2">
               <TelegramCsButton />
               <div className="lg:hidden">
                 <ThemeToggle compact />
@@ -834,7 +887,7 @@ export function ProfilePage() {
                 <Link
                   to="/profile/edit"
                   aria-label="Edit Foto Profil & Latar Belakang"
-                  className="min-h-[40px] px-3.5 rounded-xl bg-black/55 hover:bg-[#E84A18] border border-white/15 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-lg"
+                  className="min-h-[38px] sm:min-h-[40px] px-3.5 rounded-xl bg-black/65 hover:bg-[#E84A18] border border-white/20 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-[0_8px_20px_rgba(0,0,0,0.5)]"
                 >
                   <Pencil className="w-3.5 h-3.5" />
                   <span>Edit Profil</span>
@@ -843,29 +896,29 @@ export function ProfilePage() {
             </div>
           </div>
 
-          <div className="relative z-10 -mt-16 flex flex-col items-center px-4">
-            <div className="relative">
-              <img
-                src={user?.photoUrl || defaultAvatarImg}
-                alt={user?.name || 'ZoneStream'}
-                referrerPolicy="no-referrer"
-                className={`w-28 h-28 sm:w-32 sm:h-32 rounded-full object-cover bg-white dark:bg-[#181A20] ${borderStyle}`}
-              />
+          <div className="relative z-10 -mt-16 sm:-mt-20 flex flex-col items-center px-4">
+            <AvatarDecoration
+              src={user?.photoUrl}
+              alt={user?.name || 'ZoneStream'}
+              decorationId={user?.activeBorder}
+              size="xl"
+            >
               {user && (
                 <Link
                   to="/profile/edit"
                   aria-label="Ubah Foto Profil"
-                  className="absolute bottom-0 right-0 w-9 h-9 rounded-full bg-[#E84A18] hover:bg-[#F35B2B] text-white flex items-center justify-center border-2 border-[#F5F7FB] dark:border-[#090A0E] shadow-lg transition-colors"
+                  className="absolute bottom-0.5 right-0.5 z-30 w-9 h-9 rounded-full bg-gradient-to-br from-[#FF6B35] to-[#E84A18] hover:from-[#FF7D4D] hover:to-[#F35B2B] text-white flex items-center justify-center border-2 border-[#F5F7FB] dark:border-[#090A0E] shadow-[0_6px_16px_rgba(232,74,24,0.55)] transition-transform active:scale-95"
                 >
                   <Pencil className="w-3.5 h-3.5" />
                 </Link>
               )}
-            </div>
+            </AvatarDecoration>
 
-            <div className="mt-3 flex items-center justify-center gap-1.5 flex-wrap">
-              <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+            <div className="mt-3.5 flex items-center justify-center gap-1.5 flex-wrap">
+              <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
                 {user?.name || 'Memuat...'}
               </h1>
+              <CountryFlagBadge countryCode={user?.countryCode} size="sm" />
               {hasVipBadge && (
                 <VerifiedBadge
                   size="lg"
@@ -881,29 +934,29 @@ export function ProfilePage() {
             {user && (
               <>
                 {user.bio ? (
-                  <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-300 mt-1 text-center max-w-md">
+                  <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-200 mt-1 text-center max-w-md font-medium">
                     {user.bio}
                   </p>
                 ) : null}
                 <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF] mt-0.5">{user.email}</p>
-                <div className="mt-2.5 flex items-center justify-center flex-wrap gap-2">
+                <div className="mt-3 flex items-center justify-center flex-wrap gap-2">
                   <span
-                    className={`px-3 py-1 rounded-full text-xs font-bold inline-flex items-center gap-1.5 ${
+                    className={`px-3.5 py-1 rounded-full text-xs font-extrabold inline-flex items-center gap-1.5 shadow-[0_6px_18px_rgba(0,0,0,0.3)] ${
                       badgePreset?.pillClass ||
                       (isFounderUser
-                        ? 'bg-gradient-to-r from-amber-500 to-[#E84A18] text-white shadow-md shadow-[#E84A18]/25'
+                        ? 'bg-gradient-to-r from-amber-500 via-orange-500 to-[#E84A18] text-white shadow-[#E84A18]/30 ring-1 ring-amber-300/40'
                         : isPremium
-                        ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/25'
+                        ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sky-500/30 ring-1 ring-sky-300/40'
                         : 'bg-white dark:bg-[#1A1D26] text-slate-700 dark:text-gray-200 border border-slate-200 dark:border-white/10')
                     }`}
                   >
                     {hasVipBadge && <BadgeIcon className="w-3.5 h-3.5" />}
                     <span>{user.activeBadge || (isPremium ? 'Verified VIP' : 'Member')}</span>
                   </span>
-                  <span className="px-3 py-1 rounded-full bg-white dark:bg-[#1A1D26] border border-slate-200 dark:border-white/10 text-xs font-semibold text-slate-700 dark:text-gray-200 font-mono-tabular">
+                  <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-800 dark:text-gray-100 font-mono-tabular shadow-sm">
                     Lv. {levelDisplay}
                   </span>
-                  <span className="px-3 py-1 rounded-full bg-white dark:bg-[#1A1D26] border border-slate-200 dark:border-white/10 text-xs font-semibold text-slate-600 dark:text-gray-300 font-mono-tabular">
+                  <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-700 dark:text-gray-200 font-mono-tabular shadow-sm">
                     UID: {user.uid}
                   </span>
                 </div>
@@ -1181,6 +1234,50 @@ export function ProfilePage() {
           </div>
         </div>
 
+        {/* Pengaturan Bahasa Aplikasi & Subtitle (4 Bahasa) */}
+        <div className="px-4 mt-4">
+          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2">
+                <span className="w-7 h-7 rounded-lg bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center">
+                  <Globe className="w-4 h-4" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                    Pengaturan Bahasa &amp; Subtitle (4 Bahasa)
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                    Pilih bahasa antarmuka dan subtitle otomatis saat menonton video
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {APP_LANGUAGES.map((opt) => {
+                const active = lang === opt.code;
+                return (
+                  <button
+                    key={opt.code}
+                    type="button"
+                    onClick={() => changeLanguage(opt.code)}
+                    className={`p-2.5 rounded-xl border text-left transition-all flex items-center gap-2 ${
+                      active
+                        ? 'border-[#E84A18] bg-[#E84A18]/15 text-slate-900 dark:text-white shadow-sm'
+                        : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#1A1D26] dark:hover:bg-[#222634] text-slate-700 dark:text-gray-300'
+                    }`}
+                  >
+                    <CountryFlagBadge countryCode={opt.countryCode} size="sm" />
+                    <div className="min-w-0">
+                      <p className="text-xs font-extrabold truncate">{opt.nativeLabel}</p>
+                      <p className="text-[10px] text-[#E84A18] font-bold truncate">{opt.subLabel}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
         {/* Logout button */}
         {user && (
           <div className="px-4 mt-4 flex justify-end">
@@ -1246,21 +1343,21 @@ export function ProfilePage() {
         </div>
       )}
 
-      {/* Upgrade Premium Checkout Modal (Pakasir Automated QRIS / VA) */}
+      {/* Upgrade Premium Checkout Modal (1-Web In-App QRIS & Virtual Account) */}
       {showUpgradeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
           <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 sm:p-6 shadow-2xl my-auto">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2.5">
-                <span className="w-9 h-9 rounded-full bg-[#E84A18] text-white flex items-center justify-center">
-                  <BadgeCheck className="w-5 h-5" />
+                <span className="w-9 h-9 rounded-full bg-gradient-to-br from-[#FF6B35] to-[#E84A18] text-white flex items-center justify-center shadow-md shadow-[#E84A18]/30">
+                  <QrCode className="w-5 h-5" />
                 </span>
                 <div>
-                  <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-                    ZoneStream VIP · Pembayaran Otomatis
+                  <h3 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                    ZoneStream VIP · QRIS &amp; VA Instan
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                    Powered by Pakasir · Aktivasi Instan Tanpa Admin
+                    Pembayaran Langsung di Dalam Web · Aktivasi Otomatis
                   </p>
                 </div>
               </div>
@@ -1329,7 +1426,7 @@ export function ProfilePage() {
                 </div>
 
                 <p className="text-xs font-bold text-slate-700 dark:text-gray-200 mb-2">
-                  2. Pilih Metode Pembayaran:
+                  2. Pilih Metode Pembayaran (Langsung di Web Ini):
                 </p>
                 <div className="grid grid-cols-2 gap-2 mb-5">
                   {PAYMENT_METHODS.map((m) => (
@@ -1339,7 +1436,7 @@ export function ProfilePage() {
                       onClick={() => setPaymentMethod(m.id)}
                       className={`px-3 py-2.5 rounded-xl border text-xs font-semibold text-left transition-colors ${
                         paymentMethod === m.id
-                          ? 'bg-[#E84A18] border-[#E84A18] text-white'
+                          ? 'bg-[#E84A18] border-[#E84A18] text-white shadow-sm'
                           : 'bg-slate-50 dark:bg-[#1B1E26] border-slate-200 dark:border-white/10 text-slate-700 dark:text-gray-300'
                       }`}
                     >
@@ -1355,7 +1452,11 @@ export function ProfilePage() {
                   className="w-full min-h-[48px] rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/25 transition-all"
                 >
                   <QrCode className="w-4 h-4" />
-                  <span>{creatingTx ? 'Membuat Transaksi Pakasir...' : 'Buat Tagihan Pembayaran'}</span>
+                  <span>
+                    {creatingTx
+                      ? 'Menyiapkan QRIS & Kode Bayar...'
+                      : 'Tampilkan QRIS / Kode Pembayaran Sekarang'}
+                  </span>
                 </button>
               </>
             ) : activeTx.status === 'paid' ? (
@@ -1367,7 +1468,7 @@ export function ProfilePage() {
                   Pembayaran Berhasil Diverifikasi!
                 </h4>
                 <p className="text-xs text-slate-600 dark:text-gray-300 leading-relaxed">
-                  Paket <strong>{activeTx.planName}</strong> telah aktif otomatis. Lencana Verified, bebas iklan, dan <strong>2x EXP</strong> sudah terpasang di akunmu!
+                  Paket <strong>{activeTx.planName}</strong> telah aktif otomatis. Lencana Verified, dekorasi avatar 3D, bebas iklan, dan <strong>2x EXP</strong> sudah terpasang di akunmu!
                 </p>
                 <button
                   type="button"
@@ -1385,14 +1486,25 @@ export function ProfilePage() {
                 <div className="rounded-2xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 p-4 space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-500 dark:text-gray-400">Order ID</span>
-                    <span className="font-mono-tabular font-bold text-slate-900 dark:text-white">
-                      {activeTx.orderId}
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyNumber(activeTx.orderId)}
+                      className="font-mono-tabular font-bold text-slate-900 dark:text-white inline-flex items-center gap-1 hover:text-[#E84A18]"
+                    >
+                      <span>{activeTx.orderId}</span>
+                      <Copy className="w-3 h-3" />
+                    </button>
                   </div>
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-slate-500 dark:text-gray-400">Paket Dipilih</span>
                     <span className="font-bold text-slate-900 dark:text-white">{activeTx.planName}</span>
                   </div>
+                  {activeTx.fee > 0 && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 dark:text-gray-400">Kode Unik Verifikasi</span>
+                      <span className="font-mono-tabular font-bold text-amber-500">+{activeTx.fee}</span>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-200 dark:border-white/10">
                     <span className="font-semibold text-slate-700 dark:text-gray-300">Total Bayar</span>
                     <span className="text-base font-extrabold text-[#E84A18] font-mono-tabular">
@@ -1401,67 +1513,107 @@ export function ProfilePage() {
                   </div>
                 </div>
 
-                {activeTx.paymentMethod === 'qris' && qrDataUrl ? (
-                  <div className="flex flex-col items-center p-4 rounded-2xl bg-white border border-slate-200">
-                    <img
-                      src={qrDataUrl}
-                      alt="QRIS Pembayaran Pakasir"
-                      className="w-52 h-52 object-contain"
-                    />
-                    <p className="text-[11px] font-semibold text-slate-600 mt-2 text-center">
-                      Scan QRIS via GoPay, OVO, DANA, ShopeePay, BCA, BRI, Mandiri, dll.
+                {activeTx.paymentMethod === 'qris' ? (
+                  <div className="flex flex-col items-center p-4 rounded-2xl bg-white border-2 border-[#E84A18]/40 shadow-inner">
+                    <div className="w-full flex items-center justify-between pb-2 mb-2 border-b border-slate-200">
+                      <span className="text-xs font-black tracking-wider text-slate-900">
+                        QRIS · STANDAR PEMBAYARAN NASIONAL
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-700 text-[10px] font-bold">
+                        GPN / INSTAN
+                      </span>
+                    </div>
+                    {qrDataUrl ? (
+                      <img
+                        src={qrDataUrl}
+                        alt="QRIS Pembayaran ZoneStream"
+                        className="w-56 h-56 sm:w-64 sm:h-64 object-contain"
+                      />
+                    ) : (
+                      <div className="w-56 h-56 flex items-center justify-center text-xs text-slate-500">
+                        Membuat QRIS...
+                      </div>
+                    )}
+                    <p className="text-xs font-extrabold text-slate-800 mt-1">
+                      ZONESTREAM VIP OFFICIAL
                     </p>
+                    <p className="text-[11px] font-medium text-slate-500 mt-0.5 text-center">
+                      Scan langsung dari DANA, GoPay, OVO, ShopeePay, BCA, BRI, Mandiri, BNI, SeaBank.
+                    </p>
+                    <div className="mt-3 flex items-center gap-2">
+                      {qrDataUrl && (
+                        <button
+                          type="button"
+                          onClick={handleDownloadQris}
+                          className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold inline-flex items-center gap-1.5"
+                        >
+                          <QrCode className="w-3.5 h-3.5" />
+                          <span>Simpan Gambar QRIS</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleCopyNumber(String(activeTx.totalPayment || activeTx.amount))}
+                        className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-bold inline-flex items-center gap-1"
+                      >
+                        {copiedText ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedText ? 'Tersalin!' : 'Salin Nominal'}</span>
+                      </button>
+                    </div>
                   </div>
-                ) : activeTx.paymentNumber ? (
-                  <div className="rounded-2xl bg-slate-100 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 p-3.5">
-                    <p className="text-[11px] text-slate-500 dark:text-gray-400 mb-1">
-                      Nomor Virtual Account / Kode Pembayaran ({activeTx.paymentMethod.toUpperCase()}):
+                ) : (
+                  <div className="rounded-2xl bg-slate-100 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 p-4 space-y-2.5">
+                    <p className="text-xs font-bold text-slate-700 dark:text-gray-200">
+                      Nomor Pembayaran ({activeTx.paymentMethod.replace(/_/g, ' ').toUpperCase()}):
                     </p>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono-tabular text-base font-extrabold text-slate-900 dark:text-white break-all">
+                    <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-white dark:bg-[#11131A] border border-slate-200 dark:border-white/10">
+                      <span className="font-mono-tabular text-base sm:text-lg font-extrabold text-slate-900 dark:text-white break-all">
                         {activeTx.paymentNumber}
                       </span>
                       <button
                         type="button"
                         onClick={() => handleCopyNumber(activeTx.paymentNumber)}
-                        className="px-3 py-1.5 rounded-lg bg-[#E84A18] text-white text-xs font-bold inline-flex items-center gap-1 shrink-0"
+                        className="px-3.5 py-2 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0"
                       >
                         {copiedText ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                        <span>{copiedText ? 'Tersalin' : 'Salin'}</span>
+                        <span>{copiedText ? 'Tersalin' : 'Salin Nomor'}</span>
                       </button>
                     </div>
-                  </div>
-                ) : (
-                  <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-3.5 text-xs text-amber-700 dark:text-amber-300">
-                    Klik tombol <strong>Bayar via Halaman Pakasir</strong> di bawah untuk menyelesaikan pembayaran dengan QRIS / Virtual Account.
+                    <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                      Selesaikan pembayaran sesuai nominal tepat di atas, lalu klik tombol verifikasi di bawah.
+                    </p>
                   </div>
                 )}
 
                 <div className="space-y-2.5">
-                  <a
-                    href={activeTx.paymentUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full min-h-[46px] rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/25 transition-all"
+                  <button
+                    type="button"
+                    disabled={checkingTx}
+                    onClick={() => handleConfirmPayment(activeTx.orderId)}
+                    className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-[#E84A18] to-[#FF6B35] hover:from-[#F35B2B] hover:to-[#FF7D4D] disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/30 transition-all"
                   >
-                    <ExternalLink className="w-4 h-4" />
-                    <span>Bayar via Halaman Pakasir</span>
-                  </a>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>
+                      {checkingTx
+                        ? 'Memverifikasi Pembayaran...'
+                        : 'Sudah Bayar · Verifikasi & Aktifkan VIP Sekarang'}
+                    </span>
+                  </button>
 
                   <button
                     type="button"
                     disabled={checkingTx}
                     onClick={() => checkTransactionStatus(activeTx.orderId, false)}
-                    className="w-full min-h-[42px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1E222D] dark:hover:bg-[#272C3A] text-slate-800 dark:text-gray-200 font-semibold text-xs flex items-center justify-center gap-2 border border-slate-200 dark:border-white/10"
+                    className="w-full min-h-[40px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1E222D] dark:hover:bg-[#272C3A] text-slate-800 dark:text-gray-200 font-semibold text-xs flex items-center justify-center gap-2 border border-slate-200 dark:border-white/10"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${checkingTx ? 'animate-spin' : ''}`} />
-                    <span>{checkingTx ? 'Memeriksa Status...' : 'Cek Status Pembayaran (Auto-Sync 4s)'}</span>
+                    <span>Cek Status Otomatis (Auto-Sync 4 Detik)</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setActiveTx(null)}
-                    className="w-full py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-gray-400 dark:hover:text-white"
+                    className="w-full py-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-gray-400 dark:hover:text-white"
                   >
                     Ganti Paket / Metode Pembayaran
                   </button>

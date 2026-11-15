@@ -42,6 +42,7 @@ export interface IUser {
   activeBorder: string;
   profileTheme: string;
   statusEmoji: string;
+  countryCode?: string;
   lastWatchDate?: string;
   watchStreak?: number;
   dailyEpisodesWatched?: number;
@@ -106,6 +107,7 @@ const UserSchema = new Schema<IUserDocument>(
     activeBorder: { type: String, default: 'classic' },
     profileTheme: { type: String, default: 'default' },
     statusEmoji: { type: String, default: '' },
+    countryCode: { type: String, default: 'ID' },
     lastWatchDate: { type: String, default: '' },
     watchStreak: { type: Number, default: 0, min: 0 },
     dailyEpisodesWatched: { type: Number, default: 0, min: 0 },

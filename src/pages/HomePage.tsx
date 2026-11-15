@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Bell,
   CalendarDays,
@@ -8,7 +8,6 @@ import {
   Crown,
   Flame,
   Info,
-  MessageCircle,
   Play,
   Plus,
   RefreshCw,
@@ -22,14 +21,20 @@ import {
 import { Link, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { AdsterraBanner728x90 } from '../components/AdsterraAds';
-import { MediaCard } from '../components/MediaCard';
+import { AvatarDecoration } from '../components/AvatarDecoration';
+import { MediaCard, resolveFallbackPosterUrl } from '../components/MediaCard';
 import { TelegramCsButton } from '../components/TelegramCsButton';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
-import { useAuth, AVATAR_BORDER_STYLES } from '../context/AuthContext';
-import type { HeroSlide, MediaCardItem, PublicCommunityUser, ScheduleDay } from '../types';
-import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
+import { CountryFlagBadge } from '../components/CountryFlag';
+import { useAuth } from '../context/AuthContext';
+import type {
+  HeroSlide,
+  MediaCardItem,
+  ScheduleDay,
+  WatchHistoryItem,
+} from '../types';
 import heroFallbackImg from '../assets/images/donghua_hero_fallback_1794755348232.jpg';
 
 const GENRE_FILTERS = [
@@ -49,6 +54,46 @@ function getTodayIndonesianDay(): string {
   return days[new Date().getDay()] || 'Senin';
 }
 
+function normalizeLookupKey(raw?: string): string {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/\b(season|part|cour|episode|ep|sub|indo|subtitle|indonesia)\b/gi, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function ResilientPosterImage({
+  src,
+  alt,
+  className,
+  fallbackSrc = heroFallbackImg,
+}: {
+  src?: string;
+  alt: string;
+  className?: string;
+  fallbackSrc?: string;
+}) {
+  const [stage, setStage] = useState(0);
+
+  useEffect(() => {
+    setStage(0);
+  }, [src]);
+
+  const resolved = resolveFallbackPosterUrl(src, stage) || fallbackSrc;
+
+  return (
+    <img
+      src={resolved}
+      alt={alt}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => {
+        if (stage < 3) setStage((prev) => prev + 1);
+      }}
+      className={className}
+    />
+  );
+}
+
 export function HomePage() {
   const { user, isPremium, getLocalHistory, getLocalBookmarks, toggleBookmark } = useAuth();
   const navigate = useNavigate();
@@ -64,11 +109,18 @@ export function HomePage() {
   const [loading, setLoading] = useState(true);
   const [genreLoading, setGenreLoading] = useState(false);
   const [showNotif, setShowNotif] = useState(false);
+  const [seenNotifIds, setSeenNotifIds] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('zonestream_seen_stream_notifs_v3');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [syncingFeed, setSyncingFeed] = useState(false);
-  const [communitySpotlight, setCommunitySpotlight] = useState<PublicCommunityUser[]>([]);
 
   const history = getLocalHistory();
   const bookmarks = getLocalBookmarks();
@@ -101,15 +153,6 @@ export function HomePage() {
           setTodaySchedule(matched.items.slice(0, 10));
         }
       }
-
-      fetch('/api/social/users?limit=8')
-        .then((r) => r.json())
-        .then((j) => {
-          if (j?.ok && Array.isArray(j.users)) {
-            setCommunitySpotlight(j.users);
-          }
-        })
-        .catch(() => {});
     } catch (err) {
       console.error('Failed loading home stream:', err);
     } finally {
@@ -120,11 +163,55 @@ export function HomePage() {
 
   useEffect(() => {
     loadHome(false);
-    const autoRefresh = setInterval(() => loadHome(true), 2 * 60 * 1000);
+    const autoRefresh = setInterval(() => loadHome(true), 60 * 1000);
     return () => {
       clearInterval(autoRefresh);
     };
   }, [loadHome]);
+
+  const streamNotifItems = useMemo(() => {
+    return latestEpisodes.slice(0, 12).map((ep) => ({
+      ...ep,
+      notifKey: `${ep.type}:${ep.id}:${ep.episodeId || ep.episodeLabel || 'latest'}`,
+    }));
+  }, [latestEpisodes]);
+
+  // Initialize seen notifications so only the newest releases show as unread initially, and update dynamically on new stream updates
+  useEffect(() => {
+    if (streamNotifItems.length === 0) return;
+    try {
+      const initialized = localStorage.getItem('zonestream_seen_stream_init_v3');
+      if (!initialized) {
+        const olderKeys = streamNotifItems.slice(2).map((x) => x.notifKey);
+        localStorage.setItem('zonestream_seen_stream_init_v3', '1');
+        localStorage.setItem('zonestream_seen_stream_notifs_v3', JSON.stringify(olderKeys));
+        setSeenNotifIds(olderKeys);
+      }
+    } catch {
+      // ignore storage quota errors
+    }
+  }, [streamNotifItems]);
+
+  const unreadNotifCount = useMemo(() => {
+    const seenSet = new Set(seenNotifIds);
+    return streamNotifItems.filter((item) => !seenSet.has(item.notifKey)).length;
+  }, [streamNotifItems, seenNotifIds]);
+
+  const markNotificationsAsRead = useCallback(
+    (keysToMark?: string[]) => {
+      const targetKeys = keysToMark || streamNotifItems.map((x) => x.notifKey);
+      setSeenNotifIds((prev) => {
+        const merged = Array.from(new Set([...prev, ...targetKeys])).slice(-200);
+        try {
+          localStorage.setItem('zonestream_seen_stream_notifs_v3', JSON.stringify(merged));
+        } catch {
+          // ignore
+        }
+        return merged;
+      });
+    },
+    [streamNotifItems]
+  );
 
   useEffect(() => {
     if (heroSlides.length <= 1) return;
@@ -133,6 +220,43 @@ export function HomePage() {
     }, 6800);
     return () => clearInterval(timer);
   }, [heroSlides.length]);
+
+  // Build a fast poster lookup index from all loaded feeds so history items with missing posters get their real poster
+  const posterLookupMap = useMemo(() => {
+    const map = new Map<string, string>();
+    const allSources = [
+      ...heroSlides,
+      ...latestEpisodes,
+      ...donghuaList,
+      ...animeList,
+      ...todaySchedule,
+    ];
+    for (const item of allSources) {
+      if (!item?.poster) continue;
+      if (item.id) map.set(item.id.toLowerCase(), item.poster);
+      const normId = normalizeLookupKey(item.id);
+      if (normId.length >= 3) map.set(normId, item.poster);
+      const normTitle = normalizeLookupKey(item.title);
+      if (normTitle.length >= 3) map.set(normTitle, item.poster);
+    }
+    return map;
+  }, [heroSlides, latestEpisodes, donghuaList, animeList, todaySchedule]);
+
+  const resolveHistoryItemPoster = useCallback(
+    (item: WatchHistoryItem): string => {
+      if (item.poster && !item.poster.includes('donghua_hero_fallback')) {
+        return item.poster;
+      }
+      const byId = posterLookupMap.get(String(item.id || '').toLowerCase());
+      if (byId) return byId;
+      const byNormId = posterLookupMap.get(normalizeLookupKey(item.id));
+      if (byNormId) return byNormId;
+      const byNormTitle = posterLookupMap.get(normalizeLookupKey(item.title));
+      if (byNormTitle) return byNormTitle;
+      return item.poster || heroFallbackImg;
+    },
+    [posterLookupMap]
+  );
 
   const handleGenreSelect = async (genreId: string) => {
     setActiveGenre(genreId);
@@ -172,32 +296,26 @@ export function HomePage() {
     : false;
   const displayedEpisodes = filteredEpisodes ?? latestEpisodes;
   const trendingTop = latestEpisodes.slice(0, 10);
-  const borderStyle =
-    AVATAR_BORDER_STYLES[user?.activeBorder || 'classic']?.ringClass ||
-    AVATAR_BORDER_STYLES.classic.ringClass;
   const hasVipBadge = Boolean(user && (user.isVerified || isPremium || user.role === 'founder'));
 
   return (
     <Layout>
       <div className="px-4 sm:px-6 lg:px-8 pt-3 sm:pt-5">
         {/* Top Greeting Header + Inline Search */}
-        <header className="flex items-center justify-between gap-3 mb-4">
-          <Link to="/profile" className="flex items-center gap-2.5 sm:gap-3 min-w-0 group">
-            <img
+        <header className="flex items-center justify-between gap-2 sm:gap-3 mb-4">
+          <Link to="/profile" className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 group">
+            <AvatarDecoration
               src={user?.photoUrl || '/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif'}
               alt={user?.name || 'ZoneStream'}
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                e.currentTarget.src = defaultAvatarImg;
-              }}
-              className={`w-10 h-10 sm:w-11 sm:h-11 rounded-full object-cover shrink-0 transition-transform group-hover:scale-105 ${borderStyle}`}
+              decorationId={user?.activeBorder}
+              size="md"
             />
-            <div className="min-w-0">
-              <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF] leading-tight">
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] sm:text-[11px] text-slate-500 dark:text-[#9CA3AF] leading-tight truncate">
                 {user ? 'Selamat datang kembali,' : 'Selamat datang,'}
               </p>
-              <div className="flex items-center gap-1.5 min-w-0">
-                <h1 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white truncate">
+              <div className="flex items-center gap-1 sm:gap-1.5 min-w-0">
+                <h1 className="text-[13px] sm:text-base font-extrabold text-slate-900 dark:text-white truncate max-w-[135px] xs:max-w-[175px] sm:max-w-none">
                   {user?.name || 'Masuk Akun'}
                 </h1>
                 {hasVipBadge && (
@@ -207,6 +325,7 @@ export function HomePage() {
                     badgeLabel={user?.activeBadge}
                   />
                 )}
+                {user && <CountryFlagBadge countryCode={user.countryCode} size="xs" />}
                 {hasVipBadge && user?.statusEmoji && (
                   <StatusEmojiBadge statusEmoji={user.statusEmoji} size="xs" />
                 )}
@@ -214,8 +333,8 @@ export function HomePage() {
                   <span
                     className={`hidden sm:inline-block px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
                       user?.role === 'founder'
-                        ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300'
-                        : 'bg-sky-500/15 text-sky-600 dark:text-sky-300'
+                        ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30'
+                        : 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border border-sky-500/30'
                     }`}
                   >
                     {user?.role === 'founder' ? 'FOUNDER' : 'VIP'}
@@ -249,8 +368,9 @@ export function HomePage() {
             </Link>
           </div>
 
-          <div className="flex items-center gap-1.5 relative shrink-0">
-            <div className="lg:hidden">
+          <div className="flex items-center gap-1 sm:gap-1.5 relative shrink-0">
+            <div className="lg:hidden flex items-center gap-1 sm:gap-1.5">
+              <TelegramCsButton />
               <ThemeToggle compact />
             </div>
 
@@ -266,14 +386,20 @@ export function HomePage() {
 
             <button
               type="button"
-              onClick={() => setShowNotif((s) => !s)}
+              onClick={() => {
+                const nextOpen = !showNotif;
+                setShowNotif(nextOpen);
+                if (nextOpen && unreadNotifCount > 0) {
+                  markNotificationsAsRead();
+                }
+              }}
               aria-label="Notifikasi rilis baru"
-              className="relative min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-white dark:bg-[#14161E] border border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/50 transition-colors text-[#E84A18]"
+              className="relative h-9 w-9 sm:min-h-[40px] sm:min-w-[40px] flex items-center justify-center rounded-xl bg-white dark:bg-[#14161E] border border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/50 transition-colors text-[#E84A18]"
             >
-              <Bell className="w-5 h-5 fill-[#E84A18]/20" />
-              {latestEpisodes.length > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 rounded-full bg-[#E84A18] text-white text-[10px] font-bold flex items-center justify-center font-mono-tabular shadow">
-                  {Math.min(9, latestEpisodes.length)}
+              <Bell className="w-4 h-4 sm:w-5 sm:h-5 fill-[#E84A18]/20" />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-[#E84A18] text-white text-[10px] font-bold flex items-center justify-center font-mono-tabular shadow animate-pulse">
+                  {unreadNotifCount > 99 ? '99+' : unreadNotifCount}
                 </span>
               )}
             </button>
@@ -282,50 +408,78 @@ export function HomePage() {
               type="button"
               onClick={() => setShowQuickSearch((s) => !s)}
               aria-label="Cari Anime atau Donghua"
-              className="md:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl bg-white dark:bg-[#14161E] border border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/50 transition-colors text-[#E84A18]"
+              className="md:hidden h-9 w-9 sm:min-h-[40px] sm:min-w-[40px] flex items-center justify-center rounded-xl bg-white dark:bg-[#14161E] border border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/50 transition-colors text-[#E84A18]"
             >
-              <Search className="w-5 h-5" />
+              <Search className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
 
-            {/* Notifications Dropdown */}
+            {/* Live Streaming Notifications Dropdown */}
             {showNotif && (
-              <div className="absolute right-0 top-12 z-50 w-72 sm:w-80 rounded-2xl bg-white dark:bg-[#14161F] border border-slate-200 dark:border-white/10 p-3 shadow-2xl">
-                <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-100 dark:border-white/5">
-                  <span className="text-xs font-bold text-slate-900 dark:text-white">
-                    Rilis Terbaru Hari Ini
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowNotif(false)}
-                    className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+              <div className="absolute right-0 top-12 z-50 w-76 sm:w-84 rounded-2xl bg-white dark:bg-[#14161F] border border-slate-200 dark:border-white/10 p-3 shadow-2xl">
+                <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-100 dark:border-white/5">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                      <span className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                        Rilis Terbaru Hari Ini (Live Stream)
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-gray-400 mt-0.5">
+                      Update otomatis setiap ada episode baru rilis
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => loadHome(true)}
+                      disabled={syncingFeed}
+                      title="Sinkronkan rilis terbaru sekarang"
+                      className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-[#E84A18] transition-colors"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${syncingFeed ? 'animate-spin' : ''}`} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowNotif(false)}
+                      className="p-1 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {latestEpisodes.slice(0, 6).map((ep, idx) => (
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
+                  {streamNotifItems.map((ep, idx) => (
                     <Link
                       key={`notif-${ep.type}-${ep.id}-${idx}`}
                       to={`/detail/${ep.type}/${encodeURIComponent(ep.id)}${
                         ep.episodeId ? `?ep=${encodeURIComponent(ep.episodeId)}` : ''
                       }`}
-                      state={{ backTo: '/' }}
-                      onClick={() => setShowNotif(false)}
+                      state={{ backTo: '/', poster: ep.poster, seriesTitle: ep.title }}
+                      onClick={() => {
+                        markNotificationsAsRead([ep.notifKey]);
+                        setShowNotif(false);
+                      }}
                       className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5 transition-colors"
                     >
-                      <img
-                        src={ep.poster || heroFallbackImg}
+                      <ResilientPosterImage
+                        src={ep.poster}
                         alt={ep.title}
-                        referrerPolicy="no-referrer"
                         className="w-10 h-12 rounded-lg object-cover shrink-0 bg-slate-200 dark:bg-[#1F222C]"
                       />
                       <div className="min-w-0 flex-1">
                         <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                           {ep.title}
                         </p>
-                        <p className="text-[11px] text-[#E84A18] font-medium">
-                          {ep.episodeLabel} · {ep.type === 'donghua' ? 'Donghua' : 'Anime'}
-                        </p>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[11px] text-[#E84A18] font-bold">
+                            {ep.episodeLabel} · {ep.type === 'donghua' ? 'Donghua' : 'Anime'}
+                          </span>
+                          {idx < 3 && (
+                            <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-400 text-[9px] font-extrabold uppercase">
+                              LIVE
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </Link>
                   ))}
@@ -358,69 +512,57 @@ export function HomePage() {
           </form>
         )}
 
-        {/* Flagship Cinematic Hero Showcase (HD Wide Banner + Crisp Key-Art Framing) */}
+        {/* Flagship Bstation / Crunchyroll Cinematic Hero Showcase */}
         <section aria-label="Unggulan" className="relative">
           {loading || !activeHero ? (
-            <div className="w-full h-[360px] sm:h-[420px] lg:h-[480px] rounded-3xl bg-slate-200 dark:bg-[#15171F] animate-pulse" />
+            <div className="w-full h-[370px] sm:h-[430px] lg:h-[490px] rounded-3xl bg-slate-200 dark:bg-[#15171F] animate-pulse" />
           ) : (
-            <div className="relative w-full h-[360px] sm:h-[420px] lg:h-[480px] rounded-3xl overflow-hidden bg-[#0D0F15] border border-slate-200 dark:border-white/[0.08] shadow-2xl group">
-              {/* Background Canvas: Razor-sharp edge-to-edge for true HD wide banners, or atmospheric stage + sharp framed key art when slide uses portrait artwork */}
-              {activeHero.hasWideBanner ? (
-                <img
-                  src={activeHero.backdrop || heroFallbackImg}
+            <div className="relative w-full h-[370px] sm:h-[430px] lg:h-[490px] rounded-3xl overflow-hidden bg-[#0B0D14] border border-slate-200 dark:border-white/[0.1] shadow-[0_24px_60px_rgba(0,0,0,0.55)] group">
+              {/* Layer 1: Full-Bleed Atmospheric Cinema Backdrop (Sharp HD on mobile, ambient cinema backdrop on desktop) */}
+              <ResilientPosterImage
+                src={activeHero.backdrop || activeHero.poster}
+                alt={activeHero.title}
+                className={`w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] transition-transform duration-700 group-hover:scale-[1.03] ${
+                  activeHero.hasWideBanner
+                    ? 'opacity-95'
+                    : 'opacity-90 sm:scale-105 sm:blur-sm sm:opacity-75'
+                }`}
+              />
+
+              {/* Layer 2: Ambient Cinema Spotlight Glow on Left + Multi-Stop Scrims */}
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_22%_35%,rgba(232,74,24,0.22),transparent_55%)] z-[1] pointer-events-none" />
+              <div className="absolute inset-0 bg-gradient-to-t from-[#090A0E] via-[#090A0E]/50 to-black/15 z-[2] pointer-events-none" />
+              <div className="absolute inset-0 bg-gradient-to-r from-[#090A0E]/90 via-[#090A0E]/55 sm:via-[#090A0E]/45 to-transparent z-[2] pointer-events-none" />
+
+              {/* Layer 3: Sharp Framed 3D Key-Art Poster Card */}
+              <div className="hidden sm:block absolute right-6 lg:right-[268px] top-7 bottom-9 aspect-[3/4] rounded-2xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/25 z-[3] pointer-events-none bg-[#141722]">
+                <ResilientPosterImage
+                  src={activeHero.poster || activeHero.backdrop}
                   alt={activeHero.title}
-                  referrerPolicy="no-referrer"
-                  onError={(e) => {
-                    e.currentTarget.src = heroFallbackImg;
-                  }}
-                  className="w-full h-full object-cover object-center transition-transform duration-700 group-hover:scale-[1.03]"
+                  className="w-full h-full object-cover contrast-[1.05] saturate-[1.08]"
                 />
-              ) : (
-                <>
-                  <img
-                    src={activeHero.backdrop || activeHero.poster || heroFallbackImg}
-                    alt=""
-                    aria-hidden="true"
-                    referrerPolicy="no-referrer"
-                    onError={(e) => {
-                      e.currentTarget.src = heroFallbackImg;
-                    }}
-                    className="w-full h-full object-cover object-center scale-110 blur-xl opacity-55"
-                  />
-                  {/* Framed Razor-Sharp HD Key Art Poster so portrait art never blurs */}
-                  <div className="absolute right-4 sm:right-8 lg:right-[260px] top-10 sm:top-8 bottom-24 sm:bottom-10 aspect-[3/4] rounded-2xl overflow-hidden shadow-[0_24px_60px_rgba(0,0,0,0.75)] ring-1 ring-white/20 z-[2] pointer-events-none">
-                    <img
-                      src={activeHero.poster || activeHero.backdrop || heroFallbackImg}
-                      alt={activeHero.title}
-                      referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        e.currentTarget.src = heroFallbackImg;
-                      }}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                </>
-              )}
+              </div>
 
-              {/* Cinema Multi-Stop Scrims for >= 7:1 Text Legibility */}
-              <div className="absolute inset-0 bg-gradient-to-t from-[#090A0E] via-[#090A0E]/65 to-black/25 z-[3]" />
-              <div className="absolute inset-0 bg-gradient-to-r from-[#090A0E]/95 via-[#090A0E]/75 sm:via-[#090A0E]/60 to-transparent z-[3]" />
-
-              {/* Top Editorial Status Bar (Zero Pill Clutter) */}
-              <div className="absolute top-4 left-4 sm:top-6 sm:left-8 flex items-center gap-3 z-10">
+              {/* Top Editorial Status Bar */}
+              <div className="absolute top-4 left-4 sm:top-6 sm:left-8 flex items-center flex-wrap gap-2.5 z-10">
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#E84A18] text-white text-[11px] font-bold shadow-lg shadow-[#E84A18]/35 whitespace-nowrap">
                   <Flame className="w-3.5 h-3.5 fill-current" />
                   <span>Unggulan #{currentSlide + 1}</span>
                 </span>
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-bold tracking-wide text-emerald-400 uppercase drop-shadow">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-black/55 backdrop-blur-md border border-white/10 text-[11px] font-bold tracking-wide text-emerald-400 uppercase">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                   <span>{activeHero.status || 'ONGOING'}</span>
                 </span>
+                {activeHero.episodeLabel && (
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-white/10 backdrop-blur-md border border-white/15 text-[11px] font-bold text-amber-300">
+                    {activeHero.episodeLabel}
+                  </span>
+                )}
               </div>
 
               {/* Right Thumbnail Switcher Rail (Desktop lg:) */}
               {heroSlides.length > 1 && (
-                <div className="hidden lg:flex flex-col gap-2 absolute right-6 top-1/2 -translate-y-1/2 z-10">
+                <div className="hidden lg:flex flex-col gap-2 absolute right-5 top-1/2 -translate-y-1/2 z-10">
                   {heroSlides.slice(0, 5).map((slide, idx) => {
                     const active = idx === currentSlide;
                     return (
@@ -431,13 +573,12 @@ export function HomePage() {
                         className={`flex items-center gap-2.5 p-1.5 rounded-xl backdrop-blur-md border transition-all text-left w-56 ${
                           active
                             ? 'bg-[#E84A18]/25 border-[#E84A18] shadow-lg'
-                            : 'bg-black/55 border-white/10 hover:bg-black/80'
+                            : 'bg-black/60 border-white/10 hover:bg-black/80'
                         }`}
                       >
-                        <img
-                          src={slide.poster || heroFallbackImg}
+                        <ResilientPosterImage
+                          src={slide.poster}
                           alt={slide.title}
-                          referrerPolicy="no-referrer"
                           className="w-9 h-12 rounded-lg object-cover shrink-0 bg-[#1A1C24]"
                         />
                         <div className="min-w-0 flex-1">
@@ -448,7 +589,9 @@ export function HomePage() {
                             <Star className="w-2.5 h-2.5 fill-current shrink-0" />
                             <span>{slide.rating}</span>
                             <span className="text-gray-400">·</span>
-                            <span className="text-gray-300 capitalize">{slide.type}</span>
+                            <span className="text-gray-300 capitalize">
+                              {slide.episodeLabel || slide.type}
+                            </span>
                           </p>
                         </div>
                       </button>
@@ -458,32 +601,39 @@ export function HomePage() {
               )}
 
               {/* Bottom Hero Typography & Single-Line Action Bar */}
-              <div className="absolute inset-x-0 bottom-0 p-4 sm:p-7 lg:p-9 max-w-2xl z-10">
+              <div className="absolute inset-x-0 bottom-0 p-4 sm:p-7 lg:p-9 max-w-xl lg:max-w-2xl z-10">
                 <h2 className="text-xl sm:text-3xl lg:text-4xl font-extrabold text-white leading-tight line-clamp-2 mb-1.5 drop-shadow">
                   {activeHero.title}
                 </h2>
 
-                {/* Clean Unboxed Typographic Metadata Line (Zero Genre Pills) */}
                 <p className="text-xs sm:text-sm text-gray-200 flex items-center flex-wrap gap-x-2 gap-y-1 mb-2.5">
                   <span className="inline-flex items-center gap-1 font-bold text-amber-400 font-mono-tabular">
                     <Star className="w-3.5 h-3.5 fill-current" />
                     {activeHero.rating || '8.50'}
                   </span>
                   <span className="text-gray-500">·</span>
-                  <span className="font-semibold text-white capitalize">{activeHero.type}</span>
-                  {activeHero.genres?.filter(Boolean).slice(0, 3).map((g, idx) => (
-                    <span key={`${g}-${idx}`} className="inline-flex items-center gap-2 text-gray-300">
-                      <span className="text-gray-500">·</span>
-                      <span>{g}</span>
-                    </span>
-                  ))}
+                  <span className="font-semibold text-white uppercase text-xs tracking-wider">
+                    {activeHero.type === 'donghua' ? 'Donghua' : 'Anime'}
+                  </span>
+                  {activeHero.genres
+                    ?.filter(Boolean)
+                    .slice(0, 3)
+                    .map((g, idx) => (
+                      <span
+                        key={`${g}-${idx}`}
+                        className="inline-flex items-center gap-2 text-gray-300"
+                      >
+                        <span className="text-gray-500">·</span>
+                        <span>{g}</span>
+                      </span>
+                    ))}
                 </p>
 
-                <p className="text-xs sm:text-sm text-gray-300 line-clamp-2 leading-relaxed mb-4 max-w-xl">
+                <p className="text-xs sm:text-sm text-gray-300 line-clamp-2 leading-relaxed mb-4 max-w-lg">
                   {activeHero.description}
                 </p>
 
-                {/* Single-Row Responsive Action Bar (Zero Wrapping on 375px Mobile) */}
+                {/* Single-Row Responsive Action Bar */}
                 <div className="flex items-center flex-nowrap gap-2 sm:gap-2.5">
                   <Link
                     to={
@@ -491,8 +641,13 @@ export function HomePage() {
                         ? `/watch/${activeHero.type}/${encodeURIComponent(activeHero.episodeId)}`
                         : `/detail/${activeHero.type}/${encodeURIComponent(activeHero.id)}`
                     }
-                    state={{ backTo: '/', adUnlocked: isPremium }}
-                    className="flex-1 sm:flex-none min-h-[44px] px-4 sm:px-6 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/35 transition-all active:scale-[0.98] whitespace-nowrap shrink-0"
+                    state={{
+                      backTo: '/',
+                      adUnlocked: isPremium,
+                      poster: activeHero.poster,
+                      seriesTitle: activeHero.title,
+                    }}
+                    className="flex-1 sm:flex-none min-h-[44px] px-4 sm:px-6 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/35 transition-colors whitespace-nowrap shrink-0"
                   >
                     <Play className="w-4 h-4 fill-current shrink-0" />
                     <span>Tonton Sekarang</span>
@@ -500,7 +655,11 @@ export function HomePage() {
 
                   <Link
                     to={`/detail/${activeHero.type}/${encodeURIComponent(activeHero.id)}`}
-                    state={{ backTo: '/' }}
+                    state={{
+                      backTo: '/',
+                      poster: activeHero.poster,
+                      seriesTitle: activeHero.title,
+                    }}
                     className="min-h-[44px] px-3.5 sm:px-5 rounded-xl bg-white/15 hover:bg-white/25 backdrop-blur-md border border-white/20 text-white text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
                   >
                     <Info className="w-4 h-4 shrink-0" />
@@ -519,7 +678,9 @@ export function HomePage() {
                         status: activeHero.status,
                       })
                     }
-                    aria-label={isHeroBookmarked ? 'Hapus dari Watchlist' : 'Simpan ke Watchlist'}
+                    aria-label={
+                      isHeroBookmarked ? 'Hapus dari Watchlist' : 'Simpan ke Watchlist'
+                    }
                     className={`min-h-[44px] min-w-[44px] sm:px-4 rounded-xl backdrop-blur-md border text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
                       isHeroBookmarked
                         ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-300'
@@ -584,7 +745,7 @@ export function HomePage() {
           )}
         </section>
 
-        {/* Adsterra Banner 728x90 — Dibawah Hero Slider (Hanya untuk user gratis: !user.isPremium) */}
+        {/* Adsterra Banner 728x90 — Dibawah Hero Slider (Hanya untuk user gratis) */}
         {!isPremium && <AdsterraBanner728x90 />}
 
         {/* Kategori Genre */}
@@ -638,41 +799,53 @@ export function HomePage() {
 
           {history.length > 0 ? (
             <div className="flex gap-3.5 overflow-x-auto no-scrollbar pb-1">
-              {history.slice(0, 10).map((item, idx) => (
-                <Link
-                  key={`hist-${item.episodeId}-${idx}`}
-                  to={`/watch/${item.type}/${encodeURIComponent(item.episodeId)}`}
-                  state={{ backTo: '/', adUnlocked: isPremium }}
-                  className="group relative w-56 sm:w-64 aspect-video rounded-2xl overflow-hidden bg-slate-200 dark:bg-[#16181F] border border-slate-200 dark:border-white/[0.06] shrink-0"
-                >
-                  <img
-                    src={item.poster || heroFallbackImg}
-                    alt={item.title}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/35 to-transparent" />
-                  <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span className="w-11 h-11 rounded-full bg-[#E84A18] text-white flex items-center justify-center shadow-xl">
-                      <Play className="w-4 h-4 fill-current ml-0.5" />
-                    </span>
-                  </div>
-                  <div className="absolute inset-x-0 bottom-0 p-3 pb-3.5">
-                    <p className="text-[11px] text-[#F46B3F] font-semibold">
-                      Episode {item.episodeNumber}
-                    </p>
-                    <h3 className="text-xs sm:text-sm font-bold text-white truncate">
-                      {item.title}
-                    </h3>
-                  </div>
-                  <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
-                    <div
-                      className="h-full bg-[#E84A18]"
-                      style={{ width: `${item.progress || 40}%` }}
+              {history.slice(0, 10).map((item, idx) => {
+                const resolvedPoster = resolveHistoryItemPoster(item);
+                return (
+                  <Link
+                    key={`hist-${item.episodeId}-${idx}`}
+                    to={`/watch/${item.type}/${encodeURIComponent(item.episodeId)}`}
+                    state={{
+                      backTo: '/',
+                      adUnlocked: isPremium,
+                      poster: resolvedPoster,
+                      seriesTitle: item.title,
+                    }}
+                    className="group relative w-60 sm:w-68 aspect-video rounded-2xl overflow-hidden bg-slate-900 dark:bg-[#16181F] border border-slate-200 dark:border-white/[0.08] shrink-0 shadow-sm hover:border-[#E84A18]/50 transition-all"
+                  >
+                    <ResilientPosterImage
+                      src={resolvedPoster}
+                      alt={item.title}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
-                  </div>
-                </Link>
-              ))}
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/40 to-transparent" />
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <span className="w-11 h-11 rounded-full bg-[#E84A18] text-white flex items-center justify-center shadow-xl">
+                        <Play className="w-4 h-4 fill-current ml-0.5" />
+                      </span>
+                    </div>
+                    <div className="absolute top-2.5 left-2.5">
+                      <span className="px-2 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 text-[9px] font-bold uppercase tracking-wider text-gray-200">
+                        {item.type === 'donghua' ? 'Donghua' : 'Anime'}
+                      </span>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 p-3 pb-3.5">
+                      <p className="text-[11px] text-[#FF7A4D] font-bold">
+                        Episode {item.episodeNumber}
+                      </p>
+                      <h3 className="text-xs sm:text-sm font-bold text-white truncate">
+                        {item.title}
+                      </h3>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 h-1 bg-white/20">
+                      <div
+                        className="h-full bg-[#E84A18]"
+                        style={{ width: `${item.progress || 45}%` }}
+                      />
+                    </div>
+                  </Link>
+                );
+              })}
             </div>
           ) : (
             <div className="rounded-2xl bg-white dark:bg-gradient-to-r dark:from-[#14161E] dark:via-[#171A24] dark:to-[#1D1518] border border-slate-200 dark:border-white/[0.07] p-4 flex items-center justify-between gap-4 shadow-sm dark:shadow-none">
@@ -725,7 +898,7 @@ export function HomePage() {
                   to={`/detail/${item.type}/${encodeURIComponent(item.id)}${
                     item.episodeId ? `?ep=${encodeURIComponent(item.episodeId)}` : ''
                   }`}
-                  state={{ backTo: '/' }}
+                  state={{ backTo: '/', poster: item.poster, seriesTitle: item.title }}
                   className="group relative flex items-end shrink-0 w-36 sm:w-44"
                 >
                   <span
@@ -735,20 +908,23 @@ export function HomePage() {
                   >
                     {idx + 1}
                   </span>
-                  <div className="relative flex-1 aspect-[3/4] rounded-xl overflow-hidden bg-slate-200 dark:bg-[#16181F] border border-slate-200 dark:border-white/[0.06] shadow-sm dark:shadow-none">
-                    <img
-                      src={item.poster || heroFallbackImg}
+                  <div className="relative flex-1 aspect-[3/4] rounded-xl overflow-hidden bg-slate-900 dark:bg-[#16181F] border border-slate-200 dark:border-white/[0.07] shadow-sm">
+                    <ResilientPosterImage
+                      src={item.poster}
                       alt={item.title}
-                      loading="lazy"
-                      referrerPolicy="no-referrer"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent" />
-                    <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-black/75 text-amber-400 text-[10px] font-bold flex items-center gap-0.5 font-mono-tabular">
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/30 to-transparent" />
+                    <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/75 text-amber-400 text-[10px] font-bold flex items-center gap-0.5 font-mono-tabular">
                       <Star className="w-2.5 h-2.5 fill-current" />
                       {item.rating}
                     </span>
-                    <div className="absolute inset-x-0 bottom-0 p-2">
+                    <div className="absolute inset-x-0 bottom-0 p-2.5">
+                      {item.episodeLabel && (
+                        <p className="text-[10px] font-bold text-[#FF7A4D] truncate mb-0.5">
+                          {item.episodeLabel}
+                        </p>
+                      )}
                       <p className="text-[11px] font-bold text-white line-clamp-2 leading-snug">
                         {item.title}
                       </p>
@@ -807,7 +983,7 @@ export function HomePage() {
             </div>
           ) : (
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
-              {displayedEpisodes.slice(0, 18).map((item, idx) => (
+              {displayedEpisodes.slice(0, 36).map((item, idx) => (
                 <MediaCard key={`latest-${item.type}-${item.id}-${idx}`} item={item} />
               ))}
             </div>
@@ -834,7 +1010,10 @@ export function HomePage() {
             </div>
             <div className="flex gap-3 overflow-x-auto no-scrollbar pb-1">
               {todaySchedule.map((item, idx) => (
-                <div key={`sched-${item.type}-${item.id}-${idx}`} className="w-32 sm:w-40 shrink-0">
+                <div
+                  key={`sched-${item.type}-${item.id}-${idx}`}
+                  className="w-32 sm:w-40 shrink-0"
+                >
                   <MediaCard item={item} />
                 </div>
               ))}
@@ -846,9 +1025,14 @@ export function HomePage() {
         {!loading && donghuaList.length > 0 && activeGenre === 'all' && (
           <section className="mt-8">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
-                Donghua Kultivasi Unggulan
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                  Donghua Kultivasi &amp; Ongoing Lengkap
+                </h2>
+                <span className="px-2 py-0.5 rounded-md bg-[#E84A18]/15 text-[#E84A18] text-[10px] font-bold font-mono-tabular">
+                  {donghuaList.length}+ Judul
+                </span>
+              </div>
               <Link
                 to="/catalog?type=donghua"
                 className="text-xs text-slate-500 dark:text-[#9CA3AF] hover:text-[#E84A18] flex items-center gap-0.5 font-medium whitespace-nowrap"
@@ -858,7 +1042,7 @@ export function HomePage() {
               </Link>
             </div>
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
-              {donghuaList.slice(0, 12).map((item, idx) => (
+              {donghuaList.slice(0, 36).map((item, idx) => (
                 <MediaCard key={`dh-${item.id}-${idx}`} item={item} />
               ))}
             </div>
@@ -869,9 +1053,14 @@ export function HomePage() {
         {!loading && animeList.length > 0 && activeGenre === 'all' && (
           <section className="mt-8">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
-                Anime Ongoing Terbaru
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+                  Anime Ongoing &amp; Tamat Lengkap
+                </h2>
+                <span className="px-2 py-0.5 rounded-md bg-sky-500/15 text-sky-500 text-[10px] font-bold font-mono-tabular">
+                  {animeList.length}+ Judul
+                </span>
+              </div>
               <Link
                 to="/catalog?type=anime"
                 className="text-xs text-slate-500 dark:text-[#9CA3AF] hover:text-[#E84A18] flex items-center gap-0.5 font-medium whitespace-nowrap"
@@ -881,93 +1070,9 @@ export function HomePage() {
               </Link>
             </div>
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
-              {animeList.slice(0, 12).map((item, idx) => (
+              {animeList.slice(0, 36).map((item, idx) => (
                 <MediaCard key={`an-${item.id}-${idx}`} item={item} />
               ))}
-            </div>
-          </section>
-        )}
-
-        {/* Komunitas & Member Aktif Spotlight (Clickable ke Profil Publik & Chat WA) */}
-        {communitySpotlight.length > 0 && (
-          <section className="mt-9">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className="w-7 h-7 rounded-lg bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center">
-                  <Users className="w-4 h-4" />
-                </span>
-                <div>
-                  <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white leading-tight">
-                    Komunitas &amp; Member Aktif
-                  </h2>
-                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                    Klik member untuk lihat profil publik, tambah teman, atau chat gaya WA
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Link
-                  to="/chat"
-                  className="hidden sm:inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#00A884]/15 text-emerald-700 dark:text-emerald-300 text-xs font-bold hover:bg-[#00A884]/25 transition-colors"
-                >
-                  <MessageCircle className="w-3.5 h-3.5" />
-                  <span>Chat WA</span>
-                </Link>
-                <Link
-                  to="/community"
-                  className="text-xs text-slate-500 dark:text-[#9CA3AF] hover:text-[#E84A18] flex items-center gap-0.5 font-medium whitespace-nowrap"
-                >
-                  <span>Cari User</span>
-                  <ChevronRight className="w-4 h-4" />
-                </Link>
-              </div>
-            </div>
-
-            <div className="flex items-stretch gap-3 overflow-x-auto no-scrollbar pb-2">
-              {communitySpotlight.map((member) => {
-                const isF = member.role === 'founder';
-                const hasVip = Boolean(member.isPremium || isF);
-                const mBorder =
-                  AVATAR_BORDER_STYLES[member.activeBorder || 'classic']?.ringClass ||
-                  AVATAR_BORDER_STYLES.classic.ringClass;
-                return (
-                  <Link
-                    key={member.uid}
-                    to={`/u/${member.uid}`}
-                    className="w-44 shrink-0 rounded-2xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/60 p-3.5 shadow-sm hover:shadow-lg transition-all flex flex-col items-center text-center group"
-                  >
-                    <div className="relative">
-                      <img
-                        src={member.photoUrl || defaultAvatarImg}
-                        alt={member.name}
-                        referrerPolicy="no-referrer"
-                        className={`w-14 h-14 rounded-full object-cover group-hover:scale-105 transition-transform ${mBorder}`}
-                      />
-                      {member.isOnline && (
-                        <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#13151C]" />
-                      )}
-                    </div>
-                    <div className="mt-2.5 flex items-center justify-center gap-1 max-w-full">
-                      <span className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
-                        {member.name}
-                      </span>
-                      {hasVip && (
-                        <VerifiedBadge
-                          size="sm"
-                          isFounder={isF}
-                          badgeLabel={member.activeBadge}
-                        />
-                      )}
-                      {hasVip && member.statusEmoji && (
-                        <StatusEmojiBadge statusEmoji={member.statusEmoji} size="xs" />
-                      )}
-                    </div>
-                    <p className="text-[10px] text-slate-500 dark:text-gray-400 font-mono-tabular mt-0.5">
-                      {isF ? 'Lv. ∞' : `Lv. ${member.level}`} · UID {member.uid}
-                    </p>
-                  </Link>
-                );
-              })}
             </div>
           </section>
         )}
@@ -982,10 +1087,10 @@ export function HomePage() {
                 </span>
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
-                    Nonton Tanpa Iklan, 2x EXP, Lencana VIP &amp; Emoji Eksklusif
+                    Nonton Tanpa Iklan, 2x EXP, Dekorasi Avatar Discord &amp; Emoji VIP
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-[#9CA3AF] mt-0.5">
-                    Upgrade ke ZoneStream Premium untuk menghapus iklan 10 detik, gandakan EXP nonton harian, buka edit avatar/banner, dan kirim stiker VIP di komentar.
+                    Upgrade ke ZoneStream Premium untuk menghapus iklan, gandakan EXP harian, buka dekorasi avatar SVG eksklusif, dan kirim stiker VIP di komentar.
                   </p>
                 </div>
               </div>
@@ -1010,16 +1115,28 @@ export function HomePage() {
             <span>ZoneStream Streaming</span>
           </div>
           <div className="flex items-center gap-4">
-            <Link to="/schedule" className="hover:text-slate-900 dark:hover:text-white transition-colors">
+            <Link
+              to="/schedule"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
               Jadwal Rilis
             </Link>
-            <Link to="/catalog" className="hover:text-slate-900 dark:hover:text-white transition-colors">
+            <Link
+              to="/catalog"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
               Katalog
             </Link>
-            <Link to="/library" className="hover:text-slate-900 dark:hover:text-white transition-colors">
+            <Link
+              to="/library"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
               Watchlist
             </Link>
-            <Link to="/profile" className="hover:text-slate-900 dark:hover:text-white transition-colors">
+            <Link
+              to="/profile"
+              className="hover:text-slate-900 dark:hover:text-white transition-colors"
+            >
               Akun
             </Link>
             <TelegramCsButton />

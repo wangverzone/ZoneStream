@@ -19,6 +19,7 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { VerifiedBadge } from '../components/VerifiedBadge';
+import { AvatarDecoration } from '../components/AvatarDecoration';
 import {
   FREE_EMOJIS,
   StatusEmojiBadge,
@@ -26,7 +27,7 @@ import {
   VipStickerCard,
   renderCommentRichText,
 } from '../components/VipEmojis';
-import { AVATAR_BORDER_STYLES, useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/AuthContext';
 import type {
   ChatConversationSummary,
   ChatMessageItem,
@@ -287,14 +288,11 @@ export function ChatPage() {
             <div className="h-16 px-4 bg-slate-50 dark:bg-[#202C33] border-b border-slate-200 dark:border-white/[0.06] flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
                 <Link to="/profile" className="shrink-0">
-                  <img
-                    src={me.photoUrl || defaultAvatarImg}
+                  <AvatarDecoration
+                    src={me.photoUrl}
                     alt={me.name}
-                    referrerPolicy="no-referrer"
-                    className={`w-10 h-10 rounded-full object-cover ${
-                      AVATAR_BORDER_STYLES[me.activeBorder || 'classic']?.ringClass ||
-                      AVATAR_BORDER_STYLES.classic.ringClass
-                    }`}
+                    decorationId={me.activeBorder}
+                    size="sm"
                   />
                 </Link>
                 <div className="min-w-0">
@@ -335,9 +333,6 @@ export function ChatPage() {
               {filteredConvos.map((c) => {
                 const active = c.peer.uid === peerUid;
                 const pVip = Boolean(c.peer.isPremium || c.peer.role === 'founder');
-                const pBorder =
-                  AVATAR_BORDER_STYLES[c.peer.activeBorder || 'classic']?.ringClass ||
-                  AVATAR_BORDER_STYLES.classic.ringClass;
                 return (
                   <Link
                     key={c.peer.uid}
@@ -349,15 +344,16 @@ export function ChatPage() {
                     }`}
                   >
                     <div className="relative shrink-0">
-                      <img
-                        src={c.peer.photoUrl || defaultAvatarImg}
+                      <AvatarDecoration
+                        src={c.peer.photoUrl}
                         alt={c.peer.name}
-                        referrerPolicy="no-referrer"
-                        className={`w-12 h-12 rounded-full object-cover ${pBorder}`}
-                      />
-                      {c.peer.isOnline && (
-                        <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#111B21]" />
-                      )}
+                        decorationId={c.peer.activeBorder}
+                        size="md"
+                      >
+                        {c.peer.isOnline && (
+                          <span className="absolute bottom-0 right-0 z-30 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#111B21]" />
+                        )}
+                      </AvatarDecoration>
                     </div>
 
                     <div className="min-w-0 flex-1">
@@ -529,18 +525,16 @@ export function ChatPage() {
                         className="flex items-center gap-2.5 min-w-0 group"
                       >
                         <div className="relative shrink-0">
-                          <img
-                            src={peer.photoUrl || defaultAvatarImg}
+                          <AvatarDecoration
+                            src={peer.photoUrl}
                             alt={peer.name}
-                            referrerPolicy="no-referrer"
-                            className={`w-10 h-10 rounded-full object-cover ${
-                              AVATAR_BORDER_STYLES[peer.activeBorder || 'classic']?.ringClass ||
-                              AVATAR_BORDER_STYLES.classic.ringClass
-                            }`}
-                          />
-                          {peer.isOnline && (
-                            <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#202C33]" />
-                          )}
+                            decorationId={peer.activeBorder}
+                            size="sm"
+                          >
+                            {peer.isOnline && (
+                              <span className="absolute bottom-0 right-0 z-30 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#202C33]" />
+                            )}
+                          </AvatarDecoration>
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-1">
