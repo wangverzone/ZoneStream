@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="id" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>ZoneStream — Streaming Anime &amp; Donghua Sub Indo</title>
+    <meta
+      name="description"
+      content="Nonton Anime &amp; Donghua subtitle Indonesia terbaru secara real-time dengan tampilan gelap premium di ZoneStream."
+    />
+    <meta property="og:title" content="ZoneStream — Streaming Anime &amp; Donghua Sub Indo" />
+    <meta
+      property="og:description"
+      content="Nonton Anime &amp; Donghua subtitle Indonesia terbaru secara real-time dengan tampilan gelap premium di ZoneStream."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" type="image/jpeg" href="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif" />
+    <link rel="apple-touch-icon" href="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Theme pre-hydration: Mencegah kedipan saat berpindah mode Terang / Gelap -->
+    <script>
+      (function () {
+        try {
+          var saved =
+            localStorage.getItem('zonestream_theme_v1') ||
+            localStorage.getItem('donghive_theme_v1');
+          var root = document.documentElement;
+          if (saved === 'light') {
+            root.classList.remove('dark');
+            root.style.colorScheme = 'light';
+          } else {
+            root.classList.add('dark');
+            root.style.colorScheme = 'dark';
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-[#F5F7FB] text-slate-900 dark:bg-[#090A0E] dark:text-[#F4F5F7] antialiased selection:bg-[#E84A18] selection:text-white transition-colors duration-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

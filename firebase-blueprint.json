@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile synchronized with Firebase Auth and MongoDB",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "displayUid": {
+          "type": "string",
+          "description": "7-digit numeric display UID",
+          "pattern": "^[0-9]{7}$",
+          "maxLength": 7
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 255
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 500000
+        },
+        "level": {
+          "type": "number"
+        },
+        "exp": {
+          "type": "number"
+        },
+        "isPremium": {
+          "type": "boolean"
+        }
+      },
+      "required": ["uid", "email", "name", "level", "exp", "isPremium"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile document"
+    }
+  }
+}

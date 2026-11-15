@@ -1,0 +1,6 @@
+{
+  "name": "Donghive",
+  "description": "Aplikasi streaming Anime & Donghua bertema gelap dengan pembaruan episode real-time, login Google Firebase, sistem level user, dan monetisasi Adsterra.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

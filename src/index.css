@@ -1,0 +1,80 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --bg-canvas: #f5f7fb;
+    --bg-surface: #ffffff;
+    --text-main: #0f172a;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --bg-canvas: #090a0e;
+    --bg-surface: #13151c;
+    --text-main: #f4f5f7;
+  }
+
+  body {
+    font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: var(--bg-canvas);
+    color: var(--text-main);
+    overflow-x: hidden;
+  }
+
+  .font-mono-tabular {
+    font-family: "JetBrains Mono", monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@keyframes vip-float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes vip-glow-spin {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(360deg); }
+}
+
+.animate-vip-float {
+  animation: vip-float 2.6s ease-in-out infinite;
+}
+
+.animate-vip-prism {
+  animation: vip-glow-spin 6s linear infinite;
+}
+
+.wa-wallpaper {
+  background-color: #efeae2;
+  background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px),
+    radial-gradient(rgba(232, 74, 24, 0.04) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 0 0, 12px 12px;
+}
+
+.dark .wa-wallpaper {
+  background-color: #0b141a;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    radial-gradient(rgba(232, 74, 24, 0.045) 1px, transparent 1px);
+  background-size: 24px 24px;
+  background-position: 0 0, 12px 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,1259 @@
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeft,
+  Award,
+  Camera,
+  Check,
+  ChevronRight,
+  Crown,
+  Frame,
+  Image as ImageIcon,
+  KeyRound,
+  Lock,
+  Mail,
+  MessageSquareQuote,
+  Palette,
+  Send,
+  Sparkles,
+  UserPen,
+  X,
+} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Layout } from '../components/Layout';
+import { TELEGRAM_BADGE_PRESETS, VerifiedBadge } from '../components/VerifiedBadge';
+import { StatusEmojiBadge, VIP_EMOJIS } from '../components/VipEmojis';
+import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
+import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
+import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
+import heroFallbackImg from '../assets/images/donghua_hero_fallback_1794755348232.jpg';
+
+const PRESET_BANNERS = [
+  { label: 'Mecha Cyber', src: defaultBannerImg },
+  { label: 'Xianxia Cultivator', src: heroFallbackImg },
+];
+
+function fileToCompressedDataUrl(file: File, maxSize: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(String(reader.result));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = reject;
+      img.src = String(reader.result);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+export function EditProfilePage() {
+  const { user, isPremium, updateProfile } = useAuth();
+  const navigate = useNavigate();
+
+  const avatarInputRef = useRef<HTMLInputElement>(null);
+  const bannerInputRef = useRef<HTMLInputElement>(null);
+
+  const canCustomizePremium = Boolean(isPremium || user?.role === 'founder');
+
+  const [name, setName] = useState(user?.name || '');
+  const [bio, setBio] = useState(user?.bio || '');
+  const [photoUrl, setPhotoUrl] = useState(user?.photoUrl || '');
+  const [bannerUrl, setBannerUrl] = useState(user?.bannerUrl || '');
+  const [activeBorder, setActiveBorder] = useState(user?.activeBorder || 'classic');
+  const [activeBadge, setActiveBadge] = useState(user?.activeBadge || 'Member');
+  const [profileTheme, setProfileTheme] = useState(user?.profileTheme || 'default');
+  const [statusEmoji, setStatusEmoji] = useState(user?.statusEmoji || '');
+
+  const [editingField, setEditingField] = useState<
+    | 'name'
+    | 'bio'
+    | 'badge'
+    | 'status-emoji'
+    | 'theme'
+    | 'border'
+    | 'banner'
+    | 'email'
+    | 'password'
+    | 'premium-lock'
+    | null
+  >(null);
+  const [saving, setSaving] = useState(false);
+  const [savedToast, setSavedToast] = useState(false);
+
+  const [newEmail, setNewEmail] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [otpBusy, setOtpBusy] = useState(false);
+  const [otpFeedback, setOtpFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [previewOtp, setPreviewOtp] = useState<string>('');
+
+  useEffect(() => {
+    if (!user) {
+      navigate('/profile', { replace: true });
+      return;
+    }
+    setName(user.name);
+    setBio(user.bio || '');
+    setPhotoUrl(user.photoUrl);
+    setBannerUrl(user.bannerUrl);
+    setActiveBorder(user.activeBorder || 'classic');
+    setActiveBadge(user.activeBadge || 'Member');
+    setProfileTheme(user.profileTheme || 'default');
+    setStatusEmoji(user.statusEmoji || '');
+  }, [user, navigate]);
+
+  const resetOtpState = () => {
+    setOtpCode('');
+    setNewEmail('');
+    setCurrentPassword('');
+    setNewPassword('');
+    setOtpFeedback(null);
+    setPreviewOtp('');
+  };
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canCustomizePremium) {
+      setEditingField('premium-lock');
+      return;
+    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await fileToCompressedDataUrl(file, 450);
+    setPhotoUrl(dataUrl);
+  };
+
+  const handleBannerUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canCustomizePremium) {
+      setEditingField('premium-lock');
+      return;
+    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await fileToCompressedDataUrl(file, 1200);
+    setBannerUrl(dataUrl);
+    setEditingField(null);
+  };
+
+  const handleSave = async () => {
+    if (!user) return;
+    setSaving(true);
+    const payload: {
+      name: string;
+      bio: string;
+      activeBorder: string;
+      photoUrl?: string;
+      bannerUrl?: string;
+      activeBadge?: string;
+      profileTheme?: string;
+      statusEmoji?: string;
+    } = {
+      name: name.trim() || user.name,
+      bio: bio.trim(),
+      activeBorder,
+    };
+    if (canCustomizePremium) {
+      payload.photoUrl = photoUrl;
+      payload.bannerUrl = bannerUrl;
+      payload.activeBadge = activeBadge;
+      payload.profileTheme = profileTheme;
+      payload.statusEmoji = statusEmoji;
+    }
+    const ok = await updateProfile(payload);
+    setSaving(false);
+    if (ok) {
+      setSavedToast(true);
+      setTimeout(() => {
+        navigate('/profile');
+      }, 650);
+    }
+  };
+
+  const handleSendCode = async (purpose: 'change-email' | 'change-password') => {
+    setOtpBusy(true);
+    setOtpFeedback(null);
+    setPreviewOtp('');
+    try {
+      const token =
+        localStorage.getItem('zonestream_session_token_v1') ||
+        localStorage.getItem('donghive_session_token_v1') ||
+        '';
+      const targetEmail = purpose === 'change-email' ? newEmail.trim() : user?.email || '';
+      const res = await fetch('/api/user/send-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ purpose, targetEmail }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setOtpFeedback({ type: 'err', text: json.error || 'Gagal mengirim kode' });
+      } else {
+        setOtpFeedback({ type: 'ok', text: json.message });
+        if (json.previewCode) setPreviewOtp(json.previewCode);
+      }
+    } catch {
+      setOtpFeedback({ type: 'err', text: 'Gagal terhubung ke server' });
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
+  const handleVerifyChangeEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setOtpBusy(true);
+    setOtpFeedback(null);
+    try {
+      const token =
+        localStorage.getItem('zonestream_session_token_v1') ||
+        localStorage.getItem('donghive_session_token_v1') ||
+        '';
+      const res = await fetch('/api/user/verify-change-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ newEmail, code: otpCode, currentPassword }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setOtpFeedback({ type: 'err', text: json.error || 'Kode verifikasi salah' });
+      } else {
+        setOtpFeedback({ type: 'ok', text: 'Email berhasil diperbarui!' });
+        setTimeout(() => window.location.reload(), 900);
+      }
+    } catch {
+      setOtpFeedback({ type: 'err', text: 'Gagal memverifikasi kode' });
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
+  const handleVerifyChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setOtpBusy(true);
+    setOtpFeedback(null);
+    try {
+      const token =
+        localStorage.getItem('zonestream_session_token_v1') ||
+        localStorage.getItem('donghive_session_token_v1') ||
+        '';
+      const res = await fetch('/api/user/verify-change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ code: otpCode, newPassword }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setOtpFeedback({ type: 'err', text: json.error || 'Kode verifikasi salah' });
+      } else {
+        setOtpFeedback({ type: 'ok', text: 'Password berhasil diubah!' });
+        setTimeout(() => {
+          setEditingField(null);
+          resetOtpState();
+        }, 900);
+      }
+    } catch {
+      setOtpFeedback({ type: 'err', text: 'Gagal mengubah password' });
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
+  const borderStyle =
+    AVATAR_BORDER_STYLES[activeBorder]?.ringClass || AVATAR_BORDER_STYLES.classic.ringClass;
+  const activeThemeDef = PROFILE_THEMES[profileTheme] || PROFILE_THEMES.default;
+  const activeStatusObj = VIP_EMOJIS.find((v) => v.id === statusEmoji);
+  const isFounder = user?.role === 'founder';
+
+  return (
+    <Layout hideBottomNav>
+      <div className="max-w-2xl mx-auto pb-12">
+        <input
+          ref={avatarInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleAvatarUpload}
+          className="hidden"
+        />
+        <input
+          ref={bannerInputRef}
+          type="file"
+          accept="image/*"
+          onChange={handleBannerUpload}
+          className="hidden"
+        />
+
+        {/* Banner Header + Live Discord Theme Preview */}
+        <div className={`relative pb-4 ${activeThemeDef.shellClass}`}>
+          <div className="relative h-52 sm:h-64 w-full overflow-hidden bg-slate-900 dark:bg-[#14161D]">
+            <img
+              src={bannerUrl || defaultBannerImg}
+              alt="Banner Preview"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover"
+            />
+            <div className={`absolute inset-0 bg-gradient-to-t ${activeThemeDef.bannerGradientOverlay}`} />
+
+            <button
+              type="button"
+              onClick={() => navigate('/profile')}
+              aria-label="Kembali ke Profil"
+              className="absolute top-4 left-4 z-20 min-h-[42px] min-w-[42px] rounded-xl bg-black/50 hover:bg-black/75 backdrop-blur-md text-white flex items-center justify-center transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                canCustomizePremium ? setEditingField('banner') : setEditingField('premium-lock')
+              }
+              aria-label="Ganti Latar Belakang Profil"
+              className="absolute bottom-4 right-4 z-20 min-h-[40px] px-3.5 rounded-xl bg-black/65 hover:bg-[#E84A18] border border-white/15 text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-lg cursor-pointer"
+            >
+              {canCustomizePremium ? (
+                <Camera className="w-4 h-4" />
+              ) : (
+                <Lock className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span>{canCustomizePremium ? 'Ganti Latar' : 'Latar (Premium)'}</span>
+            </button>
+          </div>
+
+          {/* Avatar — pointer-events-none on outer wrapper so banner bottom-right button stays clickable */}
+          <div className="relative z-10 -mt-14 flex flex-col items-center px-4 pointer-events-none">
+            <div className="relative pointer-events-auto">
+              <img
+                src={photoUrl || defaultAvatarImg}
+                alt={name}
+                referrerPolicy="no-referrer"
+                className={`w-28 h-28 rounded-full object-cover bg-white dark:bg-[#181A20] ${borderStyle}`}
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  canCustomizePremium
+                    ? avatarInputRef.current?.click()
+                    : setEditingField('premium-lock')
+                }
+                aria-label="Upload Foto Profil"
+                className={`absolute bottom-0 right-0 w-9 h-9 rounded-full text-white flex items-center justify-center shadow-lg border-2 border-[#F5F7FB] dark:border-[#090A0E] transition-colors ${
+                  canCustomizePremium
+                    ? 'bg-[#E84A18] hover:bg-[#F35B2B]'
+                    : 'bg-slate-700 hover:bg-amber-500'
+                }`}
+              >
+                {canCustomizePremium ? (
+                  <Camera className="w-4 h-4" />
+                ) : (
+                  <Lock className="w-4 h-4 text-amber-400" />
+                )}
+              </button>
+            </div>
+
+            <div className="mt-3 flex items-center justify-center gap-1.5 flex-wrap pointer-events-auto">
+              <h1 className="text-xl font-extrabold text-slate-900 dark:text-white">{name}</h1>
+              {canCustomizePremium && (
+                <VerifiedBadge
+                  size="md"
+                  isFounder={isFounder}
+                  badgeLabel={activeBadge}
+                />
+              )}
+              {canCustomizePremium && statusEmoji && (
+                <StatusEmojiBadge statusEmoji={statusEmoji} size="sm" />
+              )}
+            </div>
+            <p className="text-xs text-slate-500 dark:text-[#9CA3AF] mt-0.5 pointer-events-auto">
+              {user?.email} · {isFounder ? 'Lv. ∞' : `Lv. ${user?.level || 1}`} · UID: {user?.uid}
+            </p>
+          </div>
+        </div>
+
+        {/* Settings List Card */}
+        <div className="px-4 mt-6">
+          {!canCustomizePremium && (
+            <div className="mb-4 rounded-2xl bg-amber-50 dark:bg-gradient-to-r dark:from-[#1D1614] dark:to-[#161821] border border-amber-300 dark:border-amber-500/25 p-3.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Crown className="w-5 h-5 text-amber-500 dark:text-amber-400 shrink-0" />
+                <p className="text-xs text-slate-800 dark:text-gray-200 leading-snug">
+                  Upgrade ke <strong className="text-amber-700 dark:text-amber-300">Premium VIP</strong> untuk membuka{' '}
+                  <strong>Tema Discord</strong>, <strong>14 Border VIP</strong>, <strong>Lencana Telegram</strong> &amp; <strong>Emoji Status Nama</strong>.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate('/profile')}
+                className="px-3 py-1.5 rounded-lg bg-[#E84A18] text-white text-[11px] font-bold whitespace-nowrap shrink-0"
+              >
+                Upgrade
+              </button>
+            </div>
+          )}
+
+          <div className="rounded-2xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.06] divide-y divide-slate-200 dark:divide-white/[0.06] overflow-hidden shadow-sm dark:shadow-none">
+            <button
+              type="button"
+              onClick={() => setEditingField('name')}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <UserPen className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">Nama Akun</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span className="truncate max-w-[160px] text-slate-900 dark:text-white font-semibold">
+                  {name}
+                </span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setEditingField('bio')}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <MessageSquareQuote className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">Bio Profil</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span className="truncate max-w-[160px]">{bio || 'Tambah bio...'}</span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                canCustomizePremium
+                  ? avatarInputRef.current?.click()
+                  : setEditingField('premium-lock')
+              }
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Camera className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">Foto Profil</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                {canCustomizePremium ? (
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                    Upload Foto
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold text-xs">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Khusus Premium</span>
+                  </span>
+                )}
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                canCustomizePremium ? setEditingField('banner') : setEditingField('premium-lock')
+              }
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <ImageIcon className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Latar Belakang (Banner)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                {canCustomizePremium ? (
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                    Ubah Latar
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold text-xs">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Khusus Premium</span>
+                  </span>
+                )}
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                canCustomizePremium ? setEditingField('theme') : setEditingField('premium-lock')
+              }
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Palette className="w-5 h-5 text-indigo-500 dark:text-indigo-400" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Tema Profil (Gaya Discord)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                {canCustomizePremium ? (
+                  <span className="text-indigo-600 dark:text-indigo-300 font-semibold truncate max-w-[140px]">
+                    {activeThemeDef.label}
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold text-xs">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Khusus Premium</span>
+                  </span>
+                )}
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setEditingField('border')}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Frame className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Border Avatar (14 Gaya)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span className="truncate max-w-[140px]">
+                  {AVATAR_BORDER_STYLES[activeBorder]?.label || 'Classic Standar'}
+                </span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                canCustomizePremium ? setEditingField('badge') : setEditingField('premium-lock')
+              }
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Award className="w-5 h-5 text-sky-500 dark:text-sky-400" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Lencana Verified (Telegram)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                {canCustomizePremium ? (
+                  <span className="text-sky-600 dark:text-sky-400 font-semibold truncate max-w-[140px]">
+                    {activeBadge}
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold text-xs">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Khusus Premium</span>
+                  </span>
+                )}
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                canCustomizePremium
+                  ? setEditingField('status-emoji')
+                  : setEditingField('premium-lock')
+              }
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Sparkles className="w-5 h-5 text-amber-500 dark:text-amber-400" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Emoji Status Samping Nama
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                {canCustomizePremium ? (
+                  <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-300 font-semibold">
+                    {statusEmoji && <StatusEmojiBadge statusEmoji={statusEmoji} size="xs" />}
+                    <span>{activeStatusObj ? activeStatusObj.label : 'Belum dipasang'}</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400 font-semibold text-xs">
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Khusus Premium</span>
+                  </span>
+                )}
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                resetOtpState();
+                setEditingField('email');
+              }}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Mail className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Ubah Email (Kode OTP Gmail)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span className="truncate max-w-[140px]">{user?.email}</span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                resetOtpState();
+                setEditingField('password');
+              }}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <KeyRound className="w-5 h-5 text-slate-600 dark:text-gray-300" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Ubah Password (Kode Gmail)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span>Verifikasi 6 Digit</span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            disabled={saving}
+            onClick={handleSave}
+            className="mt-6 w-full min-h-[50px] rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/25 transition-all active:scale-[0.98]"
+          >
+            {savedToast ? (
+              <>
+                <Check className="w-4 h-4" />
+                <span>Tersimpan ke MongoDB!</span>
+              </>
+            ) : (
+              <span>{saving ? 'Menyimpan...' : 'Simpan Perubahan Profil'}</span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* Premium Lock Modal */}
+      {editingField === 'premium-lock' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#14161D] border border-amber-400/50 dark:border-amber-500/30 p-6 text-center shadow-2xl">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-br from-[#E84A18] to-amber-500 text-white flex items-center justify-center mb-3 shadow-lg shadow-[#E84A18]/30">
+              <Crown className="w-7 h-7" />
+            </div>
+            <h3 className="text-lg font-extrabold text-slate-900 dark:text-white mb-1.5">
+              Fitur Khusus Premium VIP
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-gray-300 leading-relaxed mb-5">
+              Edit <strong>Foto Profil</strong>, <strong>Latar Belakang</strong>, <strong>Tema Profil Discord</strong>, <strong>Border VIP</strong>, <strong>Lencana Telegram</strong>, dan <strong>Emoji Status Nama</strong> hanya tersedia untuk member <strong>Premium</strong> &amp; <strong>Founder</strong>.
+            </p>
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={() => navigate('/profile')}
+                className="w-full h-11 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white font-bold text-sm"
+              >
+                Upgrade ke Premium Sekarang
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="w-full h-10 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-slate-700 dark:text-gray-300 font-semibold text-xs"
+              >
+                Nanti Saja
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Name Modal */}
+      {editingField === 'name' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">Ubah Nama Akun</h3>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <input
+              type="text"
+              maxLength={40}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-[#E84A18] mb-4"
+            />
+            <button
+              type="button"
+              onClick={() => setEditingField(null)}
+              className="w-full h-11 rounded-xl bg-[#E84A18] text-white font-bold text-sm"
+            >
+              Terapkan
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Bio Modal */}
+      {editingField === 'bio' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">Ubah Bio Profil</h3>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <textarea
+              rows={3}
+              maxLength={160}
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              placeholder="Tulis bio atau kutipan anime/donghua favoritmu..."
+              className="w-full p-3.5 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-[#E84A18] mb-4 resize-none"
+            />
+            <button
+              type="button"
+              onClick={() => setEditingField(null)}
+              className="w-full h-11 rounded-xl bg-[#E84A18] text-white font-bold text-sm"
+            >
+              Terapkan
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Banner Modal (Premium & Founder) */}
+      {editingField === 'banner' && canCustomizePremium && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Ubah Latar Belakang Profil
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => bannerInputRef.current?.click()}
+              className="w-full min-h-[46px] mb-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold flex items-center justify-center gap-2"
+            >
+              <Camera className="w-4 h-4" />
+              <span>Upload Gambar dari Galeri / Perangkat</span>
+            </button>
+
+            <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 mb-2">
+              Atau pilih latar bawaan:
+            </p>
+            <div className="grid grid-cols-2 gap-2.5">
+              {PRESET_BANNERS.map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => {
+                    setBannerUrl(p.src);
+                    setEditingField(null);
+                  }}
+                  className="group relative h-24 rounded-xl overflow-hidden border border-slate-200 dark:border-white/10 hover:border-[#E84A18]"
+                >
+                  <img src={p.src} alt={p.label} className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-black/45 flex items-end p-2">
+                    <span className="text-[11px] font-bold text-white">{p.label}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Discord-Style Profile Theme Modal (Premium & Founder) */}
+      {editingField === 'theme' && canCustomizePremium && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Pilih Tema Profil (Gaya Discord)
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                  Memberi aura cahaya &amp; warna kartu eksklusif di profil Anda
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-2 overflow-y-auto pr-1">
+              {Object.values(PROFILE_THEMES).map((theme) => {
+                const selected = profileTheme === theme.id;
+                return (
+                  <button
+                    key={theme.id}
+                    type="button"
+                    onClick={() => {
+                      setProfileTheme(theme.id);
+                      setEditingField(null);
+                    }}
+                    className={`w-full p-3 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all ${
+                      selected
+                        ? 'bg-[#E84A18]/15 border-[#E84A18] shadow-sm'
+                        : 'bg-slate-50 hover:bg-slate-100 dark:bg-[#1B1E26] dark:hover:bg-[#232732] border-slate-200 dark:border-white/5'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span
+                        className={`w-10 h-10 rounded-xl bg-gradient-to-br ${theme.previewSwatch} shrink-0 border border-white/20 shadow`}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                          {theme.label}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate">
+                          {theme.desc}
+                        </p>
+                      </div>
+                    </div>
+                    {selected && <Check className="w-4 h-4 text-[#E84A18] shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Telegram-Style Verified Badge Modal */}
+      {editingField === 'badge' && canCustomizePremium && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Pilih Lencana Verified (14 Gaya)
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                  Lencana tampil di profil dan kolom komentar Anda
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 overflow-y-auto pr-1">
+              {TELEGRAM_BADGE_PRESETS.map((b) => {
+                const Icon = b.icon;
+                const selected = activeBadge === b.label;
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => {
+                      setActiveBadge(b.label);
+                      setEditingField(null);
+                    }}
+                    className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                      selected
+                        ? 'border-[#E84A18] bg-[#E84A18]/10'
+                        : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#1B1E26] hover:bg-slate-100 dark:hover:bg-[#232732]'
+                    }`}
+                  >
+                    <span
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-bold inline-flex items-center gap-1 ${b.pillClass}`}
+                    >
+                      <Icon className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{b.label}</span>
+                    </span>
+                    {selected && <Check className="w-4 h-4 text-[#E84A18] shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Equippable Status Emoji Modal (Telegram Emoji Status Style) */}
+      {editingField === 'status-emoji' && canCustomizePremium && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Pasang Emoji Eksklusif di Nama
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                  Tampil seperti status emoji Telegram tepat di samping nama Anda
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setStatusEmoji('');
+                setEditingField(null);
+              }}
+              className={`w-full mb-3 h-10 px-3 rounded-xl text-xs font-semibold flex items-center justify-between border ${
+                !statusEmoji
+                  ? 'border-[#E84A18] bg-[#E84A18]/10 text-[#E84A18]'
+                  : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#1B1E26] text-slate-600 dark:text-gray-300'
+              }`}
+            >
+              <span>Tanpa Emoji Status</span>
+              {!statusEmoji && <Check className="w-4 h-4" />}
+            </button>
+
+            <div className="grid grid-cols-2 gap-2 overflow-y-auto pr-1">
+              {VIP_EMOJIS.map((vip) => {
+                const Icon = vip.icon;
+                const selected = statusEmoji === vip.id;
+                return (
+                  <button
+                    key={vip.id}
+                    type="button"
+                    onClick={() => {
+                      setStatusEmoji(vip.id);
+                      setEditingField(null);
+                    }}
+                    className={`p-3 rounded-xl border flex items-center justify-between gap-2 transition-all ${
+                      selected
+                        ? 'border-[#E84A18] bg-[#E84A18]/15'
+                        : `${vip.bgClass} ${vip.borderClass} hover:brightness-110`
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Icon className={`w-5 h-5 shrink-0 ${vip.textClass}`} />
+                      <span className={`text-xs font-bold truncate ${vip.textClass}`}>
+                        {vip.label}
+                      </span>
+                    </div>
+                    {selected && <Check className="w-4 h-4 text-[#E84A18] shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Border Modal (14 Discord-Style Rings) */}
+      {editingField === 'border' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Pilih Border Avatar (14 Gaya)
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                  Bingkai menyala eksklusif ala Discord Nitro untuk foto profilmu
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-2 overflow-y-auto pr-1">
+              {Object.entries(AVATAR_BORDER_STYLES).map(([key, item]) => {
+                const locked = Boolean(item.premiumOnly && !canCustomizePremium);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    disabled={locked}
+                    onClick={() => {
+                      setActiveBorder(key);
+                      setEditingField(null);
+                    }}
+                    className={`w-full h-12 px-3.5 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-between gap-2 ${
+                      activeBorder === key
+                        ? 'bg-[#E84A18] text-white'
+                        : locked
+                        ? 'bg-slate-100 text-slate-400 dark:bg-[#171920] dark:text-gray-500 cursor-not-allowed'
+                        : 'bg-slate-100 text-slate-800 hover:bg-slate-200 dark:bg-[#1B1E26] dark:text-gray-200 dark:hover:bg-[#232732]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span
+                        className={`w-6 h-6 rounded-full bg-gradient-to-tr ${item.previewColor} shrink-0 ring-2 ring-white/25`}
+                      />
+                      <span className="truncate">{item.label}</span>
+                    </div>
+                    {locked ? (
+                      <span className="text-[11px] flex items-center gap-1 text-amber-500 dark:text-amber-400 shrink-0">
+                        <Lock className="w-3.5 h-3.5" /> VIP
+                      </span>
+                    ) : activeBorder === key ? (
+                      <Check className="w-4 h-4 shrink-0" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Email via Email Code Modal */}
+      {editingField === 'email' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Ubah Email dengan Kode Verifikasi
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {otpFeedback && (
+              <div
+                className={`mb-3 p-3 rounded-xl text-xs font-medium ${
+                  otpFeedback.type === 'ok'
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                    : 'bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30'
+                }`}
+              >
+                <p>{otpFeedback.text}</p>
+                {previewOtp && (
+                  <p className="mt-1 font-mono-tabular font-bold text-slate-900 dark:text-white text-sm">
+                    Kode OTP Sementara: {previewOtp}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <form onSubmit={handleVerifyChangeEmail} className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-600 dark:text-gray-300 mb-1">
+                  Alamat Email Gmail Baru
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="email"
+                    required
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    placeholder="emailbaru@gmail.com"
+                    className="flex-1 h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-[#E84A18]"
+                  />
+                  <button
+                    type="button"
+                    disabled={otpBusy || !newEmail.includes('@')}
+                    onClick={() => handleSendCode('change-email')}
+                    className="px-3.5 h-11 rounded-xl bg-slate-900 dark:bg-[#222634] hover:bg-[#E84A18] text-white text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition-colors"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Kirim Kode</span>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-600 dark:text-gray-300 mb-1">
+                  Kode Verifikasi (6 Digit)
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={6}
+                  inputMode="numeric"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                  placeholder="123456"
+                  className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white font-mono-tabular tracking-[0.25em] focus:outline-none focus:border-[#E84A18]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-600 dark:text-gray-300 mb-1">
+                  Password Saat Ini
+                </label>
+                <input
+                  type="password"
+                  required
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  placeholder="Konfirmasi password akun"
+                  className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-[#E84A18]"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={otpBusy}
+                className="w-full h-11 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white font-bold text-sm"
+              >
+                {otpBusy ? 'Memverifikasi...' : 'Verifikasi & Ubah Email'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Change Password via Email Code Modal */}
+      {editingField === 'password' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Ubah Password via Kode Gmail
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500 dark:text-[#9CA3AF] mb-3">
+              Kode verifikasi 6 digit akan dikirim ke email terdaftar:{' '}
+              <strong className="text-slate-900 dark:text-white">{user?.email}</strong>
+            </p>
+
+            {otpFeedback && (
+              <div
+                className={`mb-3 p-3 rounded-xl text-xs font-medium ${
+                  otpFeedback.type === 'ok'
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30'
+                    : 'bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30'
+                }`}
+              >
+                <p>{otpFeedback.text}</p>
+                {previewOtp && (
+                  <p className="mt-1 font-mono-tabular font-bold text-slate-900 dark:text-white text-sm">
+                    Kode OTP Sementara: {previewOtp}
+                  </p>
+                )}
+              </div>
+            )}
+
+            <button
+              type="button"
+              disabled={otpBusy}
+              onClick={() => handleSendCode('change-password')}
+              className="w-full min-h-[42px] mb-4 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-[#222634] dark:hover:bg-[#2C3144] text-white text-xs font-bold flex items-center justify-center gap-2 border border-slate-200 dark:border-white/10"
+            >
+              <Send className="w-3.5 h-3.5 text-[#E84A18]" />
+              <span>Kirim Kode Verifikasi ke {user?.email}</span>
+            </button>
+
+            <form onSubmit={handleVerifyChangePassword} className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-600 dark:text-gray-300 mb-1">
+                  Kode Verifikasi (6 Digit)
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={6}
+                  inputMode="numeric"
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
+                  placeholder="123456"
+                  className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white font-mono-tabular tracking-[0.25em] focus:outline-none focus:border-[#E84A18]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-600 dark:text-gray-300 mb-1">
+                  Password Baru
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Minimal 6 karakter"
+                  className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-[#E84A18]"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={otpBusy}
+                className="w-full h-11 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white font-bold text-sm"
+              >
+                {otpBusy ? 'Memverifikasi...' : 'Verifikasi & Simpan Password'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+    </Layout>
+  );
+}
