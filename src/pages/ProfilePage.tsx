@@ -1853,7 +1853,7 @@ export function ProfilePage() {
 
       {/* Upgrade Premium Checkout Modal (1-Web In-App QRIS & Virtual Account) */}
       {showUpgradeModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
+        <div className="fixed inset-0 z-[100] flex items-start sm:items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-6 pt-16 sm:pt-6 overflow-y-auto">
           <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 sm:p-6 shadow-2xl my-auto">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2.5">
