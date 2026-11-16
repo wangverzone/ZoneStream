@@ -676,7 +676,7 @@ router.get('/status/:orderId', requireAuth, async (req: AuthenticatedRequest, re
   }
 });
 
-// POST /api/payment/confirm/:orderId — Verify payment & activate VIP package
+// POST /api/payment/confirm/:orderId — Strictly verify payment mutation before activating VIP (NEVER auto-ACC unpaid orders)
 router.post('/confirm/:orderId', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
@@ -690,50 +690,22 @@ router.post('/confirm/:orderId', requireAuth, async (req: AuthenticatedRequest, 
       return res.status(404).json({ error: 'Transaksi tidak ditemukan' });
     }
 
-    // 1. Check live Pakasir status first
     const result = await verifyAndSyncPakasirTransaction(tx);
-    if (result.paid) {
-      return res.json({
-        ok: true,
-        status: 'paid',
+    if (!result.paid) {
+      return res.status(402).json({
+        ok: false,
+        status: result.status,
         transaction: result.transaction,
-        user: result.user ? sanitizeUser(result.user) : null,
+        error:
+          'Pembayaran belum terdeteksi masuk di mutasi sistem. Pastikan kamu sudah selesai transfer tepat sesuai Total Bayar (termasuk kode unik), lalu tunggu mutasi terverifikasi otomatis.',
       });
     }
 
-    // 2. If transaction was generated via In-Web Direct QRIS/VA Engine (when Pakasir project is inactive),
-    // verify transfer confirmation after a minimum scan/transfer window
-    if (String(tx.txnId || '').startsWith('DIRECT-')) {
-      const createdMs = tx.createdAt ? new Date(tx.createdAt).getTime() : 0;
-      if (createdMs > 0 && Date.now() - createdMs < 5000) {
-        return res.status(402).json({
-          ok: false,
-          status: 'pending',
-          transaction: tx,
-          error:
-            'Silakan scan QRIS atau transfer sesuai Total Bayar terlebih dahulu, lalu klik tombol verifikasi setelah pembayaran selesai.',
-        });
-      }
-
-      const updatedUser = await activatePremiumFromTransaction(
-        tx,
-        `VERIFIED-${tx.orderId}`
-      );
-      return res.json({
-        ok: true,
-        status: 'paid',
-        transaction: { ...tx, status: 'paid', paidAt: new Date().toISOString() },
-        user: updatedUser ? sanitizeUser(updatedUser) : null,
-      });
-    }
-
-    return res.status(402).json({
-      ok: false,
-      status: result.status,
+    return res.json({
+      ok: true,
+      status: 'paid',
       transaction: result.transaction,
-      error:
-        result.error ||
-        'Pembayaran belum terdeteksi masuk. Silakan transfer terlebih dahulu sebelum verifikasi.',
+      user: result.user ? sanitizeUser(result.user) : null,
     });
   } catch (err) {
     console.error('[Payment Confirm Error]', err);
