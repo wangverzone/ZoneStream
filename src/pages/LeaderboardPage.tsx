@@ -444,7 +444,7 @@ export function LeaderboardPage() {
 
                   {/* Rank 1 */}
                   <div className="flex flex-col items-center text-center space-y-2 -translate-y-5">
-                    <Crown className="w-8 h-8 text-amber-400 animate-bounce drop-shadow-[0_0_10px_rgba(251,191,36,0.6)]" />
+                    <Crown className="w-8 h-8 text-amber-400 animate-streak-shimmer drop-shadow-[0_0_10px_rgba(251,191,36,0.6)]" />
                     {topCharismaUsers[0] && (
                       <Link to={`/u/${topCharismaUsers[0].uid}`} className="group flex flex-col items-center space-y-2">
                         <div className="relative">
@@ -828,7 +828,7 @@ export function LeaderboardPage() {
 
                     {/* Rank 1 */}
                     <div className="flex flex-col items-center text-center space-y-2 -translate-y-4">
-                      <Crown className="w-7 h-7 text-amber-400 animate-bounce" />
+                      <Crown className="w-7 h-7 text-amber-400 animate-streak-shimmer" />
                       {filteredClans[0] && (
                         <>
                           <div className="relative">

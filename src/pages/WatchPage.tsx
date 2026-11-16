@@ -66,7 +66,13 @@ export function WatchPage() {
   const { type = 'donghua', episodeId = '' } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { isPremium, recordWatchHistory, toggleEpisodeBookmark, getLocalEpisodeBookmarks } = useAuth();
+  const {
+    isPremium,
+    loading: authLoading,
+    recordWatchHistory,
+    toggleEpisodeBookmark,
+    getLocalEpisodeBookmarks,
+  } = useAuth();
   const { lang, subLang, changeSubtitle } = useAppLanguage();
   const t = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.id;
 
@@ -123,7 +129,7 @@ export function WatchPage() {
 
   // Periodic 2-minute mid-roll Watch Ads timer strictly for non-VIP users
   useEffect(() => {
-    if (isPremium || !adUnlocked || loading) return;
+    if (authLoading || isPremium || !adUnlocked || loading) return;
     const timer = setInterval(() => {
       setNextAdSeconds((prev) => {
         if (prev <= 1) {
@@ -134,7 +140,7 @@ export function WatchPage() {
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [isPremium, adUnlocked, loading]);
+  }, [authLoading, isPremium, adUnlocked, loading]);
 
   useEffect(() => {
     let active = true;
@@ -385,7 +391,7 @@ export function WatchPage() {
                       : 'Menyiapkan video player HD...'}
                   </span>
                 </div>
-              ) : !adUnlocked && !isPremium ? (
+              ) : !authLoading && !adUnlocked && !isPremium ? (
                 <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-[#12141A]">
                   <p className="text-sm font-bold text-white mb-2">
                     Selesaikan Watch Ads 10 Detik untuk Melanjutkan Video
@@ -759,7 +765,7 @@ export function WatchPage() {
 
       {/* Watch Ads Modal (10s timer + Clean 300x250) on initial start and every 2 minutes for free users */}
       <WatchAdsModal
-        open={!adUnlocked && !isPremium}
+        open={!authLoading && !adUnlocked && !isPremium}
         episodeTitle={stream?.title || 'Memuat Episode...'}
         onUnlock={() => {
           setNextAdSeconds(MIDROLL_INTERVAL_SECONDS);

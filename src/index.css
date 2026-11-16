@@ -101,10 +101,10 @@
 @keyframes streakPulseGlow {
   0%, 100% {
     transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
-    opacity: 0.88;
+    opacity: 0.9;
   }
   50% {
-    transform: translate3d(0, 0, 0) scale3d(1.045, 1.045, 1);
+    transform: translate3d(0, 0, 0) scale3d(1.03, 1.03, 1);
     opacity: 1;
   }
 }
@@ -112,16 +112,16 @@
 @keyframes streakShimmerFloat {
   0%, 100% {
     transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
-    opacity: 0.86;
+    opacity: 0.88;
   }
   50% {
-    transform: translate3d(0, -1.5px, 0) scale3d(1.04, 1.04, 1);
+    transform: translate3d(0, -1px, 0) scale3d(1.025, 1.025, 1);
     opacity: 1;
   }
 }
 
 .animate-streak-spin {
-  animation: streakSpin 9s linear infinite;
+  animation: streakSpin 22s linear infinite;
   transform-origin: 50% 50%;
   will-change: transform;
   backface-visibility: hidden;
@@ -129,7 +129,7 @@
 }
 
 .animate-streak-spin-slow {
-  animation: streakSpin 15s linear infinite;
+  animation: streakSpin 34s linear infinite;
   transform-origin: 50% 50%;
   will-change: transform;
   backface-visibility: hidden;
@@ -137,7 +137,7 @@
 }
 
 .animate-streak-spin-rev {
-  animation: streakSpinReverse 11s linear infinite;
+  animation: streakSpinReverse 26s linear infinite;
   transform-origin: 50% 50%;
   will-change: transform;
   backface-visibility: hidden;
@@ -145,7 +145,7 @@
 }
 
 .animate-streak-pulse {
-  animation: streakPulseGlow 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation: streakPulseGlow 4.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
   transform-origin: 50% 50%;
   will-change: transform, opacity;
   backface-visibility: hidden;
@@ -153,11 +153,33 @@
 }
 
 .animate-streak-shimmer {
-  animation: streakShimmerFloat 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  animation: streakShimmerFloat 4.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
   transform-origin: 50% 50%;
   will-change: transform, opacity;
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
+}
+
+@media (max-width: 767px) {
+  .animate-streak-spin {
+    animation-duration: 28s;
+  }
+
+  .animate-streak-spin-slow {
+    animation-duration: 42s;
+  }
+
+  .animate-streak-spin-rev {
+    animation-duration: 32s;
+  }
+
+  .animate-streak-pulse {
+    animation-duration: 5.2s;
+  }
+
+  .animate-streak-shimmer {
+    animation-duration: 5.8s;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -112,12 +112,12 @@ function enqueueAdsterraBanner(
  * hanya menampilkan sponsor fallback jika script Adsterra benar-benar diblokir adblocker.
  */
 export function AdsterraBanner728x90() {
-  const { isPremium } = useAuth();
+  const { isPremium, loading } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const [fallbackMode, setFallbackMode] = useState(false);
 
   useEffect(() => {
-    if (isPremium || !containerRef.current) return;
+    if (loading || isPremium || !containerRef.current) return;
     setFallbackMode(false);
     return enqueueAdsterraBanner(
       containerRef.current,
@@ -126,9 +126,9 @@ export function AdsterraBanner728x90() {
       90,
       () => setFallbackMode(true)
     );
-  }, [isPremium]);
+  }, [loading, isPremium]);
 
-  if (isPremium) {
+  if (loading || isPremium) {
     return null;
   }
 
@@ -190,12 +190,12 @@ export function AdsterraBanner728x90() {
  * Menjaga slot Adsterra tetap aktif dan hanya fallback bila script diblokir total oleh jaringan/adblock.
  */
 export function AdsterraBanner300x250({ className = '' }: { className?: string }) {
-  const { isPremium } = useAuth();
+  const { isPremium, loading } = useAuth();
   const containerRef = useRef<HTMLDivElement>(null);
   const [fallbackMode, setFallbackMode] = useState(false);
 
   useEffect(() => {
-    if (isPremium || !containerRef.current) return;
+    if (loading || isPremium || !containerRef.current) return;
     setFallbackMode(false);
     return enqueueAdsterraBanner(
       containerRef.current,
@@ -204,9 +204,9 @@ export function AdsterraBanner300x250({ className = '' }: { className?: string }
       250,
       () => setFallbackMode(true)
     );
-  }, [isPremium]);
+  }, [loading, isPremium]);
 
-  if (isPremium) {
+  if (loading || isPremium) {
     return null;
   }
 
@@ -262,7 +262,7 @@ export function AdsterraGlobalManager() {
   const { user, isPremium, loading } = useAuth();
   const location = useLocation();
   const popunderLoadedRef = useRef(false);
-  const premiumActive = Boolean(user?.role === 'founder' || user?.isPremium || isPremium);
+  const premiumActive = Boolean(user?.isPremium || isPremium);
 
   useEffect(() => {
     if (loading) return;

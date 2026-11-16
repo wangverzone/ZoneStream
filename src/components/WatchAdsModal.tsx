@@ -19,12 +19,12 @@ export function WatchAdsModal({
   onClose,
   onUpgrade,
 }: WatchAdsModalProps) {
-  const { isPremium } = useAuth();
+  const { isPremium, loading } = useAuth();
   const navigate = useNavigate();
   const [secondsLeft, setSecondsLeft] = useState(10);
 
   useEffect(() => {
-    if (!open) return;
+    if (loading || !open) return;
     if (isPremium) {
       onUnlock();
       return;
@@ -40,9 +40,9 @@ export function WatchAdsModal({
       });
     }, 1000);
     return () => clearInterval(interval);
-  }, [open, isPremium, onUnlock]);
+  }, [loading, open, isPremium, onUnlock]);
 
-  if (!open || isPremium) return null;
+  if (loading || !open || isPremium) return null;
 
   const progressPercent = ((10 - secondsLeft) / 10) * 100;
 
