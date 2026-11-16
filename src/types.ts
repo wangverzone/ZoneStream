@@ -59,9 +59,35 @@ export interface UserProfile {
   dailyEpisodesWatched?: number;
   totalEpisodesWatched?: number;
   charisma?: number;
+  isBanned?: boolean;
+  banReason?: string;
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
   episodeBookmarks: EpisodeBookmarkItem[];
+}
+
+export interface FounderMonitorUser {
+  uid: string;
+  username: string;
+  email: string;
+  name: string;
+  photoUrl: string;
+  role: 'member' | 'founder';
+  isPremium: boolean;
+  isVerified: boolean;
+  activeBadge: string;
+  activeBorder: string;
+  level: number;
+  countryCode: string;
+  watchStreak: number;
+  isBanned: boolean;
+  bannedAt: string;
+  banReason: string;
+  lastActiveAt: string;
+  lastLoginAt: string;
+  createdAt: string;
+  isOnline: boolean;
+  isRecentlyLoggedIn: boolean;
 }
 
 export interface WatchHistoryReward {
@@ -313,4 +339,29 @@ export interface ChatConversationSummary {
     createdAt: string;
   } | null;
 }
+
+export type UserNotificationType =
+  | 'favorite_episode'
+  | 'comment_reply'
+  | 'comment_like'
+  | 'friend_request'
+  | 'friend_accept'
+  | 'clan_review'
+  | 'system';
+
+export interface UserNotificationItem {
+  _id: string;
+  uid: string;
+  type: UserNotificationType;
+  title: string;
+  message: string;
+  link: string;
+  poster?: string;
+  actorUid?: string;
+  actorName?: string;
+  actorPhoto?: string;
+  isRead: boolean;
+  createdAt: string;
+}
+
 

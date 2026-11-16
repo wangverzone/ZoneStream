@@ -129,6 +129,7 @@ export const UI_TRANSLATIONS: Record<
     navHome: string;
     navSchedule: string;
     navCatalog: string;
+    navLibrary: string;
     navCommunity: string;
     navChat: string;
     navProfile: string;
@@ -147,6 +148,7 @@ export const UI_TRANSLATIONS: Record<
     navHome: 'Home',
     navSchedule: 'Jadwal',
     navCatalog: 'Katalog',
+    navLibrary: 'Library',
     navCommunity: 'Komunitas',
     navChat: 'Chat',
     navProfile: 'Profil',
@@ -164,6 +166,7 @@ export const UI_TRANSLATIONS: Record<
     navHome: 'Home',
     navSchedule: 'Schedule',
     navCatalog: 'Catalog',
+    navLibrary: 'Library',
     navCommunity: 'Community',
     navChat: 'Chat',
     navProfile: 'Profile',
@@ -181,6 +184,7 @@ export const UI_TRANSLATIONS: Record<
     navHome: 'ホーム',
     navSchedule: '配信予定',
     navCatalog: 'カタログ',
+    navLibrary: 'ライブラリ',
     navCommunity: 'コミュニティ',
     navChat: 'チャット',
     navProfile: 'マイページ',
@@ -198,6 +202,7 @@ export const UI_TRANSLATIONS: Record<
     navHome: '首页',
     navSchedule: '更新表',
     navCatalog: '片库',
+    navLibrary: '收藏库',
     navCommunity: '社区',
     navChat: '聊天',
     navProfile: '我的',

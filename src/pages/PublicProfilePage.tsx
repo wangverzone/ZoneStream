@@ -17,10 +17,11 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
-import { TELEGRAM_BADGE_MAP, VerifiedBadge } from '../components/VerifiedBadge';
+import { TELEGRAM_BADGE_MAP, VerifiedBadge, resolveDisplayBadgeLabel } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import { AvatarDecoration } from '../components/AvatarDecoration';
+import { LevelUpCard } from '../components/LevelUpCard';
 import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
 import type { PublicProfileDetail, RelationshipStatus } from '../types';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
@@ -57,33 +58,48 @@ export function PublicProfilePage() {
   const [likeBusy, setLikeBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  const loadProfile = async () => {
+  const loadProfile = async (silent = false) => {
     try {
       const token = getToken();
       const res = await fetch(`/api/social/profile/${encodeURIComponent(uid)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!res.ok) {
-        setNotFound(true);
+        if (!silent) setNotFound(true);
         return;
       }
       const json = await res.json();
       if (json.ok && json.profile) {
         setProfile(json.profile);
         setNotFound(false);
-      } else {
+      } else if (!silent) {
         setNotFound(true);
       }
     } catch {
-      setNotFound(true);
+      if (!silent) setNotFound(true);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => {
     setLoading(true);
-    loadProfile();
+    void loadProfile(false);
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void loadProfile(true);
+      }
+    }, 5000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void loadProfile(true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [uid, viewer?.uid]);
 
   const showToast = (msg: string) => {
@@ -314,16 +330,19 @@ export function PublicProfilePage() {
                     <span className="font-bold text-[#E84A18]">
                       {isTargetFounder ? 'Lv. ∞' : `Lv. ${profile.level}`}
                     </span>
-                    {hasVip && (
-                      <span
-                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                          TELEGRAM_BADGE_MAP.get(profile.activeBadge)?.pillClass ||
-                          'bg-amber-500/20 text-amber-400'
-                        }`}
-                      >
-                        {profile.activeBadge || (isTargetFounder ? 'Verified Founder' : 'VIP')}
-                      </span>
-                    )}
+                    {hasVip && (() => {
+                      const safeBadge = resolveDisplayBadgeLabel(profile.activeBadge, isTargetFounder, hasVip);
+                      return (
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                            TELEGRAM_BADGE_MAP.get(safeBadge)?.pillClass ||
+                            'bg-amber-500/20 text-amber-400'
+                          }`}
+                        >
+                          {safeBadge}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -438,6 +457,15 @@ export function PublicProfilePage() {
                 {profile.bio}
               </p>
             )}
+
+            {/* Real-Time Level Up Progress Card */}
+            <div className="mt-4">
+              <LevelUpCard
+                level={profile.level}
+                exp={profile.exp ?? 0}
+                isFounder={isTargetFounder}
+              />
+            </div>
 
             {/* Quick Community Stats Strip */}
             <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3">

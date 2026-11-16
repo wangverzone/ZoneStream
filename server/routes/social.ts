@@ -21,6 +21,8 @@ import { GroupMessageModel, type IGroupMessage } from '../models/GroupMessage.ts
 import { GlobalMessageModel, type IGlobalMessage } from '../models/GlobalMessage.ts';
 import { ClanModel, type IClan } from '../models/Clan.ts';
 import { UserModel, type IUser } from '../models/User.ts';
+import { createNotification } from '../notifications.ts';
+import { getClanActivitiesRaw, recordClanActivity } from '../clanActivity.ts';
 
 const router = Router();
 
@@ -147,13 +149,57 @@ async function getAllUsersSafe(): Promise<IUser[]> {
   return Object.values(readFallbackUsers());
 }
 
+const CLAN_INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generateClanInviteCode(existingCodes?: Set<string>): string {
+  for (let attempt = 0; attempt < 25; attempt++) {
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += CLAN_INVITE_ALPHABET.charAt(Math.floor(Math.random() * CLAN_INVITE_ALPHABET.length));
+    }
+    if (!existingCodes || !existingCodes.has(code)) {
+      if (existingCodes) existingCodes.add(code);
+      return code;
+    }
+  }
+  return `ZN${Date.now().toString(36).toUpperCase().slice(-6)}`;
+}
+
 async function getAllClansRaw(): Promise<IClan[]> {
   await connectDB();
   if (isDbMongoConnected()) {
     const docs = await ClanModel.find({}).lean();
-    return docs.map((d: any) => ({ ...d, _id: String(d._id) }));
+    const list = docs.map((d: any) => ({ ...d, _id: String(d._id) }));
+    const existingCodes = new Set<string>(
+      list.map((c: any) => String(c.inviteCode || '').trim().toUpperCase()).filter(Boolean)
+    );
+    const missing = list.filter((c: any) => !c.inviteCode);
+    if (missing.length > 0) {
+      await Promise.all(
+        missing.map(async (c: any) => {
+          const code = generateClanInviteCode(existingCodes);
+          c.inviteCode = code;
+          await ClanModel.updateOne({ clanId: c.clanId }, { $set: { inviteCode: code } }).catch(() => {});
+        })
+      );
+    }
+    return list;
   }
-  return readFallbackJson<IClan[]>('clans-v1.json', []);
+  const list = readFallbackJson<IClan[]>('clans-v1.json', []);
+  const existingCodes = new Set<string>(
+    list.map((c) => String(c.inviteCode || '').trim().toUpperCase()).filter(Boolean)
+  );
+  let changed = false;
+  for (const c of list) {
+    if (!c.inviteCode) {
+      c.inviteCode = generateClanInviteCode(existingCodes);
+      changed = true;
+    }
+  }
+  if (changed) {
+    writeFallbackJson('clans-v1.json', list);
+  }
+  return list;
 }
 
 interface UserClanMeta {
@@ -529,6 +575,19 @@ router.post('/friends/request', requireAuth, async (req: AuthenticatedRequest, r
       writeFallbackJson('friendships-v1.json', all);
     }
 
+    const meUser = await findUserByUid(meUid).catch(() => null);
+    await createNotification({
+      uid: targetUid,
+      type: 'friend_request',
+      title: 'Permintaan Pertemanan Baru',
+      message: `${meUser?.name || 'Seseorang'} ingin berteman denganmu di ZoneStream.`,
+      link: `/u/${encodeURIComponent(meUid)}`,
+      actorUid: meUid,
+      actorName: meUser?.name || '',
+      actorPhoto: meUser?.photoUrl || '',
+      dedupeKey: `fr_req:${pairKey}:${meUid}`,
+    });
+
     return res.json({
       ok: true,
       relationship: 'pending_sent',
@@ -569,6 +628,19 @@ router.post('/friends/accept', requireAuth, async (req: AuthenticatedRequest, re
       all[idx].updatedAt = new Date();
       writeFallbackJson('friendships-v1.json', all);
     }
+
+    const meUser = await findUserByUid(meUid).catch(() => null);
+    await createNotification({
+      uid: targetUid,
+      type: 'friend_accept',
+      title: 'Permintaan Teman Diterima',
+      message: `${meUser?.name || 'Pengguna'} menerima permintaan pertemananmu!`,
+      link: `/u/${encodeURIComponent(meUid)}`,
+      actorUid: meUid,
+      actorName: meUser?.name || '',
+      actorPhoto: meUser?.photoUrl || '',
+      dedupeKey: `fr_acc:${pairKey}`,
+    });
 
     return res.json({ ok: true, relationship: 'friend', message: 'Sekarang kalian berteman!' });
   } catch (err) {
@@ -776,6 +848,8 @@ router.post('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest,
     const meUid = req.authUser!.uid;
     const peerUid = String(req.params.peerUid || '').trim();
     const text = String(req.body?.text || '').trim().slice(0, 1200);
+    const mediaUrl = String(req.body?.mediaUrl || '').trim();
+    const mediaType = String(req.body?.mediaType || '').trim();
     const sticker = String(req.body?.sticker || '').trim();
     const replyToId = String(req.body?.replyToId || '').trim();
     const replySenderName = String(req.body?.replySenderName || '').trim().slice(0, 40);
@@ -784,8 +858,8 @@ router.post('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest,
     if (!peerUid || peerUid === meUid) {
       return res.status(400).json({ error: 'Penerima pesan tidak valid.' });
     }
-    if (!text && !sticker) {
-      return res.status(400).json({ error: 'Pesan atau stiker tidak boleh kosong.' });
+    if (!text && !sticker && !mediaUrl) {
+      return res.status(400).json({ error: 'Pesan, foto, atau stiker tidak boleh kosong.' });
     }
 
     const [sender, peer] = await Promise.all([findUserByUid(meUid), findUserByUid(peerUid)]);
@@ -807,6 +881,8 @@ router.post('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest,
         senderUid: meUid,
         recipientUid: peerUid,
         text,
+        mediaUrl,
+        mediaType,
         sticker: cleanSticker,
         replyToId,
         replySenderName,
@@ -822,6 +898,8 @@ router.post('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest,
         senderUid: meUid,
         recipientUid: peerUid,
         text,
+        mediaUrl,
+        mediaType,
         sticker: cleanSticker,
         replyToId,
         replySenderName,
@@ -1204,6 +1282,15 @@ router.get('/global-messages', async (req: AuthenticatedRequest, res) => {
       const sender = userMap.get(m.senderUid);
       const clanMeta = clanMetaMap.get(m.senderUid) || null;
       const rankMeta = rankMetaMap.get(m.senderUid);
+      const isSenderFounder = sender?.role === 'founder';
+      const isSenderPremium = Boolean(sender?.isPremium || isSenderFounder);
+      const rawSenderBadge = sender?.activeBadge || (isSenderFounder ? 'Verified Founder' : 'Member');
+      const safeSenderBadge =
+        !isSenderFounder && String(rawSenderBadge).trim().toLowerCase() === 'verified founder'
+          ? isSenderPremium
+            ? 'Verified VIP'
+            : 'Member'
+          : rawSenderBadge;
       return {
         ...m,
         channel: normalizeGlobalChannel(m.channel),
@@ -1211,8 +1298,8 @@ router.get('/global-messages', async (req: AuthenticatedRequest, res) => {
         senderUsername: sender?.username || '',
         senderPhoto: sender?.photoUrl || m.senderPhoto || '',
         senderRole: sender?.role || 'member',
-        senderIsPremium: Boolean(sender?.isPremium || sender?.role === 'founder'),
-        senderBadge: sender?.activeBadge || 'Member',
+        senderIsPremium: isSenderPremium,
+        senderBadge: safeSenderBadge,
         senderBorder: sender?.activeBorder || 'classic',
         senderStatusEmoji: sender?.statusEmoji || '',
         senderLevel: sender?.level || 1,
@@ -1367,13 +1454,51 @@ router.delete('/global-messages/:messageId', requireAuth, async (req: Authentica
   }
 });
 
+// Helper to find if user is already a member or leader of any clan (strict 1 clan per user)
+async function findUserActiveClan(uid: string): Promise<IClan | null> {
+  if (!uid) return null;
+  const clans = await getAllClansRaw();
+  return (
+    clans.find(
+      (c) =>
+        c.leaderUid === uid ||
+        (Array.isArray(c.members) && c.members.includes(uid))
+    ) || null
+  );
+}
+
+async function removeUserPendingRequestsEverywhere(uid: string, exceptClanId?: string) {
+  if (!uid) return;
+  if (isDbMongoConnected()) {
+    const query: any = exceptClanId ? { clanId: { $ne: exceptClanId } } : {};
+    await ClanModel.updateMany(query, {
+      $pull: { pendingRequests: { uid } },
+    }).catch(() => {});
+  } else {
+    const all = readFallbackJson<any[]>('clans-v1.json', []);
+    let changed = false;
+    for (const c of all) {
+      if (exceptClanId && c.clanId === exceptClanId) continue;
+      if (Array.isArray(c.pendingRequests) && c.pendingRequests.some((r: any) => r.uid === uid)) {
+        c.pendingRequests = c.pendingRequests.filter((r: any) => r.uid !== uid);
+        changed = true;
+      }
+    }
+    if (changed) writeFallbackJson('clans-v1.json', all);
+  }
+}
+
 // Helper to enrich clans in real-time from member stats (Level, Charisma/Likes, Episodes Watched)
-function enrichClansRealtime(clansRaw: any[], users: IUser[]) {
+function enrichClansRealtime(clansRaw: any[], users: IUser[], viewerUid = '') {
   const userMap = new Map(users.map((u) => [u.uid, toCommunityUserSummary(u)]));
 
   return clansRaw
     .map((c) => {
       const memberIds: string[] = Array.isArray(c.members) ? Array.from(new Set(c.members)) : [];
+      if (c.leaderUid && !memberIds.includes(c.leaderUid)) {
+        memberIds.unshift(c.leaderUid);
+      }
+
       let totalLevel = 0;
       let totalCharisma = 0;
       let episodesWatched = 0;
@@ -1395,12 +1520,38 @@ function enrichClansRealtime(clansRaw: any[], users: IUser[]) {
         }
       }
 
+      const rawPending: Array<{ uid: string; requestedAt: string }> = Array.isArray(c.pendingRequests)
+        ? c.pendingRequests.filter((r: any) => r?.uid && !memberIds.includes(r.uid))
+        : [];
+      const isLeaderViewer = Boolean(viewerUid && c.leaderUid === viewerUid);
+      const enrichedPending = isLeaderViewer
+        ? rawPending.map((r) => {
+            const reqUser = userMap.get(r.uid);
+            return {
+              uid: r.uid,
+              requestedAt: r.requestedAt || new Date().toISOString(),
+              name: reqUser?.name || `User ${r.uid}`,
+              username: reqUser?.username || '',
+              photoUrl: reqUser?.photoUrl || '',
+              level: reqUser?.level || 1,
+              role: reqUser?.role || 'member',
+              isPremium: Boolean(reqUser?.isPremium),
+              activeBadge: reqUser?.activeBadge || 'Member',
+            };
+          })
+        : [];
+
       const leader = userMap.get(c.leaderUid);
       const computedLevel = Math.max(1, totalLevel || c.level || 1);
       const realtimeScore = computedLevel * 10 + totalCharisma * 5 + episodesWatched * 3;
+      const maxMem = c.maxMembers || 50;
+      const computedStatus = memberIds.length >= maxMem ? 'Penuh' : 'Persetujuan';
+      const isMemberViewer = Boolean(viewerUid && (c.leaderUid === viewerUid || memberIds.includes(viewerUid)));
 
       return {
         ...c,
+        inviteCode: isMemberViewer ? c.inviteCode || '' : undefined,
+        status: computedStatus,
         leaderName: leader?.name || c.leaderName || 'Leader',
         leaderPhoto: leader?.photoUrl || '',
         avatarUrl: c.avatarUrl || leader?.photoUrl || '',
@@ -1409,8 +1560,11 @@ function enrichClansRealtime(clansRaw: any[], users: IUser[]) {
         episodesWatched,
         members: memberIds,
         membersCount: memberIds.length,
-        maxMembers: c.maxMembers || 50,
+        maxMembers: maxMem,
         memberAvatars: memberProfiles.slice(0, 5),
+        pendingCount: rawPending.length,
+        hasPendingRequest: Boolean(viewerUid && rawPending.some((r) => r.uid === viewerUid)),
+        pendingRequests: enrichedPending,
         realtimeScore,
       };
     })
@@ -1426,7 +1580,7 @@ router.get('/clans', async (req: AuthenticatedRequest, res) => {
     }
 
     const [clansRaw, users] = await Promise.all([getAllClansRaw(), getAllUsersSafe()]);
-    const clans = enrichClansRealtime(clansRaw, users);
+    const clans = enrichClansRealtime(clansRaw, users, viewerUid);
     return res.json({ ok: true, clans });
   } catch (err) {
     console.error('[Social Clans List Error]', err);
@@ -1434,19 +1588,33 @@ router.get('/clans', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// POST /api/social/clans/create — Create clan & auto-rank by real-time stats
+// POST /api/social/clans/create — Create clan (max 1 clan per user enforced)
 router.post('/clans/create', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const meUid = req.authUser!.uid;
+    await connectDB();
+
+    const existingClan = await findUserActiveClan(meUid);
+    if (existingClan) {
+      return res.status(400).json({
+        error: `Kamu sudah tergabung di klan [${existingClan.tag}] ${existingClan.name}. Setiap user hanya bisa bergabung maksimal 1 klan! Keluar terlebih dahulu jika ingin membuat klan baru.`,
+      });
+    }
+
     const creator = await findUserByUid(meUid);
     const creatorSummary = creator ? toCommunityUserSummary(creator) : null;
     const meName = creatorSummary?.name || req.authUser!.username || 'Wibu';
-    const { name, tag, description, status } = req.body;
+    const { name, tag, description } = req.body;
     if (!name || !tag) {
       return res.status(400).json({ error: 'Nama dan Tag Klan wajib diisi' });
     }
 
-    await connectDB();
+    const allExistingClans = await getAllClansRaw();
+    const existingInviteCodes = new Set<string>(
+      allExistingClans.map((c) => String(c.inviteCode || '').trim().toUpperCase()).filter(Boolean)
+    );
+    const inviteCode = generateClanInviteCode(existingInviteCodes);
+
     const clanId = `clan_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const initialLevel = creatorSummary
       ? creatorSummary.role === 'founder'
@@ -1466,7 +1634,9 @@ router.post('/clans/create', requireAuth, async (req: AuthenticatedRequest, res)
         leaderName: meName,
         level: initialLevel,
         members: [meUid],
-        status: status || 'Terbuka',
+        pendingRequests: [],
+        status: 'Persetujuan',
+        inviteCode,
       });
       created = { ...doc.toObject(), _id: String(doc._id) };
     } else {
@@ -1481,13 +1651,27 @@ router.post('/clans/create', requireAuth, async (req: AuthenticatedRequest, res)
         leaderName: meName,
         level: initialLevel,
         members: [meUid],
+        pendingRequests: [],
         maxMembers: 50,
-        status: status || 'Terbuka',
+        status: 'Persetujuan',
+        inviteCode,
         createdAt: new Date().toISOString(),
       };
       all.push(created);
       writeFallbackJson('clans-v1.json', all);
     }
+
+    await removeUserPendingRequestsEverywhere(meUid, clanId);
+
+    void recordClanActivity({
+      clanId,
+      actorUid: meUid,
+      actorName: meName,
+      actorPhoto: creatorSummary?.photoUrl || '',
+      type: 'member_join',
+      title: `Mendirikan Klan [${created.tag}]`,
+      detail: `${meName} menjadi Ketua Klan pertama`,
+    });
 
     return res.status(201).json({
       ok: true,
@@ -1499,7 +1683,7 @@ router.post('/clans/create', requireAuth, async (req: AuthenticatedRequest, res)
   }
 });
 
-// POST /api/social/clans/join — Join clan
+// POST /api/social/clans/join — Request to join clan (requires real-time Leader ACC + max 1 clan per user)
 router.post('/clans/join', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const meUid = req.authUser!.uid;
@@ -1507,33 +1691,210 @@ router.post('/clans/join', requireAuth, async (req: AuthenticatedRequest, res) =
     if (!clanId) return res.status(400).json({ error: 'Clan ID diperlukan' });
 
     await connectDB();
+
+    const existingClan = await findUserActiveClan(meUid);
+    if (existingClan) {
+      if (existingClan.clanId === clanId) {
+        return res.status(400).json({ error: 'Kamu sudah menjadi anggota klan ini.' });
+      }
+      return res.status(400).json({
+        error: `Kamu sudah tergabung di klan [${existingClan.tag}] ${existingClan.name}. Setiap user hanya bisa bergabung di 1 klan saja!`,
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+
     if (isDbMongoConnected()) {
       const clan = await ClanModel.findOne({ clanId });
       if (!clan) return res.status(404).json({ error: 'Klan tidak ditemukan' });
       if (clan.members.length >= (clan.maxMembers || 50)) {
         return res.status(400).json({ error: 'Klan sudah penuh.' });
       }
-      if (!clan.members.includes(meUid)) {
-        clan.members.push(meUid);
+      const pending = Array.isArray(clan.pendingRequests) ? clan.pendingRequests : [];
+      if (pending.some((r: any) => r.uid === meUid)) {
+        return res.json({
+          ok: true,
+          status: 'pending',
+          message: 'Permintaan gabung sudah dikirim. Menunggu ACC ketua klan secara real-time.',
+        });
+      }
+      clan.pendingRequests = [...pending, { uid: meUid, requestedAt: nowIso }];
+      await clan.save();
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === clanId);
+      if (!found) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if ((found.members?.length || 0) >= (found.maxMembers || 50)) {
+        return res.status(400).json({ error: 'Klan sudah penuh.' });
+      }
+      const pending = Array.isArray(found.pendingRequests) ? found.pendingRequests : [];
+      if (!pending.some((r: any) => r.uid === meUid)) {
+        found.pendingRequests = [...pending, { uid: meUid, requestedAt: nowIso }];
+        writeFallbackJson('clans-v1.json', all);
+      }
+    }
+
+    return res.json({
+      ok: true,
+      status: 'pending',
+      message: 'Permintaan gabung dikirim! Menunggu ACC dari ketua klan secara real-time.',
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Gagal mengirim permintaan gabung klan' });
+  }
+});
+
+// POST /api/social/clans/cancel-request — Cancel pending join request
+router.post('/clans/cancel-request', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const { clanId } = req.body;
+    if (!clanId) return res.status(400).json({ error: 'Clan ID diperlukan' });
+
+    await connectDB();
+    if (isDbMongoConnected()) {
+      await ClanModel.updateOne(
+        { clanId },
+        { $pull: { pendingRequests: { uid: meUid } } }
+      );
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === clanId);
+      if (found && Array.isArray(found.pendingRequests)) {
+        found.pendingRequests = found.pendingRequests.filter((r: any) => r.uid !== meUid);
+        writeFallbackJson('clans-v1.json', all);
+      }
+    }
+
+    return res.json({ ok: true, message: 'Permintaan gabung dibatalkan.' });
+  } catch {
+    return res.status(500).json({ error: 'Gagal membatalkan permintaan gabung' });
+  }
+});
+
+// POST /api/social/clans/review — Leader approves (ACC) or rejects join request in real-time
+router.post('/clans/review', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const { clanId, targetUid, action } = req.body || {};
+    const cleanTargetUid = String(targetUid || '').trim();
+    if (!clanId || !cleanTargetUid || (action !== 'accept' && action !== 'reject')) {
+      return res.status(400).json({ error: 'Parameter persetujuan klan tidak valid.' });
+    }
+
+    await connectDB();
+
+    if (isDbMongoConnected()) {
+      const clan = await ClanModel.findOne({ clanId });
+      if (!clan) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if (clan.leaderUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya ketua klan yang dapat ACC atau menolak pendaftar.' });
+      }
+
+      clan.pendingRequests = (Array.isArray(clan.pendingRequests) ? clan.pendingRequests : []).filter(
+        (r: any) => r.uid !== cleanTargetUid
+      );
+
+      if (action === 'accept') {
+        const targetExisting = await findUserActiveClan(cleanTargetUid);
+        if (targetExisting && targetExisting.clanId !== clanId) {
+          await clan.save();
+          return res.status(400).json({
+            error: `User ini sudah tergabung di klan [${targetExisting.tag}] ${targetExisting.name} (maksimal 1 klan per user).`,
+          });
+        }
+        if (clan.members.length >= (clan.maxMembers || 50)) {
+          await clan.save();
+          return res.status(400).json({ error: 'Klan sudah penuh.' });
+        }
+        if (!clan.members.includes(cleanTargetUid)) {
+          clan.members.push(cleanTargetUid);
+        }
+        await clan.save();
+        await removeUserPendingRequestsEverywhere(cleanTargetUid);
+      } else {
         await clan.save();
       }
     } else {
       const all = readFallbackJson<any[]>('clans-v1.json', []);
       const found = all.find((c) => c.clanId === clanId);
       if (!found) return res.status(404).json({ error: 'Klan tidak ditemukan' });
-      if (!found.members.includes(meUid)) {
-        found.members.push(meUid);
-        writeFallbackJson('clans-v1.json', all);
+      if (found.leaderUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya ketua klan yang dapat ACC atau menolak pendaftar.' });
       }
+
+      found.pendingRequests = (Array.isArray(found.pendingRequests) ? found.pendingRequests : []).filter(
+        (r: any) => r.uid !== cleanTargetUid
+      );
+
+      if (action === 'accept') {
+        const targetExisting = all.find(
+          (c) =>
+            c.clanId !== clanId &&
+            (c.leaderUid === cleanTargetUid || (Array.isArray(c.members) && c.members.includes(cleanTargetUid)))
+        );
+        if (targetExisting) {
+          writeFallbackJson('clans-v1.json', all);
+          return res.status(400).json({
+            error: `User ini sudah tergabung di klan [${targetExisting.tag}] ${targetExisting.name} (maksimal 1 klan per user).`,
+          });
+        }
+        if ((found.members?.length || 0) >= (found.maxMembers || 50)) {
+          writeFallbackJson('clans-v1.json', all);
+          return res.status(400).json({ error: 'Klan sudah penuh.' });
+        }
+        if (!found.members.includes(cleanTargetUid)) {
+          found.members.push(cleanTargetUid);
+        }
+        for (const c of all) {
+          if (Array.isArray(c.pendingRequests)) {
+            c.pendingRequests = c.pendingRequests.filter((r: any) => r.uid !== cleanTargetUid);
+          }
+        }
+      }
+      writeFallbackJson('clans-v1.json', all);
     }
 
-    return res.json({ ok: true, message: 'Berhasil bergabung dengan klan!' });
+    if (action === 'accept') {
+      const joinedUser = await findUserByUid(cleanTargetUid);
+      void recordClanActivity({
+        clanId,
+        actorUid: cleanTargetUid,
+        actorName: joinedUser?.name || joinedUser?.username || `User ${cleanTargetUid}`,
+        actorPhoto: joinedUser?.photoUrl || '',
+        type: 'member_join',
+        title: 'Bergabung ke Klan (ACC Ketua)',
+        detail: 'Pengajuan gabung diterima oleh ketua klan',
+      });
+    }
+
+    await createNotification({
+      uid: cleanTargetUid,
+      type: 'clan_review',
+      title: action === 'accept' ? 'Permintaan Klan Di-ACC!' : 'Permintaan Gabung Klan Ditolak',
+      message:
+        action === 'accept'
+          ? 'Ketua klan telah menerima permintaanmu. Kamu resmi bergabung ke klan!'
+          : 'Permintaan bergabung ke klan belum disetujui ketua klan.',
+      link: '/leaderboard',
+      actorUid: meUid,
+    });
+
+    return res.json({
+      ok: true,
+      action,
+      message:
+        action === 'accept'
+          ? 'Permintaan diterima (ACC)! Anggota baru resmi bergabung ke klan.'
+          : 'Permintaan gabung ditolak.',
+    });
   } catch (err) {
-    return res.status(500).json({ error: 'Gagal bergabung dengan klan' });
+    console.error('[Clan Review Error]', err);
+    return res.status(500).json({ error: 'Gagal memproses persetujuan klan' });
   }
 });
 
-// POST /api/social/clans/leave — Leave clan
+// POST /api/social/clans/leave — Leave clan (if leader leaves, transfers leadership or disbands empty clan)
 router.post('/clans/leave', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const meUid = req.authUser!.uid;
@@ -1544,14 +1905,41 @@ router.post('/clans/leave', requireAuth, async (req: AuthenticatedRequest, res) 
     if (isDbMongoConnected()) {
       const clan = await ClanModel.findOne({ clanId });
       if (clan) {
-        clan.members = clan.members.filter((id: string) => id !== meUid);
-        await clan.save();
+        const remaining = clan.members.filter((id: string) => id !== meUid);
+        if (clan.leaderUid === meUid) {
+          if (remaining.length === 0) {
+            await ClanModel.deleteOne({ clanId });
+          } else {
+            const nextLeaderUid = remaining[0];
+            const nextLeader = await findUserByUid(nextLeaderUid);
+            clan.leaderUid = nextLeaderUid;
+            clan.leaderName = nextLeader?.name || nextLeader?.username || 'Ketua Klan';
+            clan.members = remaining;
+            await clan.save();
+          }
+        } else {
+          clan.members = remaining;
+          await clan.save();
+        }
       }
     } else {
-      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      let all = readFallbackJson<any[]>('clans-v1.json', []);
       const found = all.find((c) => c.clanId === clanId);
       if (found) {
-        found.members = found.members.filter((id: string) => id !== meUid);
+        const remaining = (found.members || []).filter((id: string) => id !== meUid);
+        if (found.leaderUid === meUid) {
+          if (remaining.length === 0) {
+            all = all.filter((c) => c.clanId !== clanId);
+          } else {
+            const nextLeaderUid = remaining[0];
+            const nextLeader = await findUserByUid(nextLeaderUid);
+            found.leaderUid = nextLeaderUid;
+            found.leaderName = nextLeader?.name || nextLeader?.username || 'Ketua Klan';
+            found.members = remaining;
+          }
+        } else {
+          found.members = remaining;
+        }
         writeFallbackJson('clans-v1.json', all);
       }
     }
@@ -1559,6 +1947,593 @@ router.post('/clans/leave', requireAuth, async (req: AuthenticatedRequest, res) 
     return res.json({ ok: true, message: 'Berhasil keluar dari klan.' });
   } catch (err) {
     return res.status(500).json({ error: 'Gagal keluar klan' });
+  }
+});
+
+// GET /api/social/clans/invite/:code — Public clan invite preview lookup
+router.get('/clans/invite/:code', async (req, res) => {
+  try {
+    const code = String(req.params.code || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+    if (!code) {
+      return res.status(400).json({ error: 'Kode rekrutmen klan tidak valid.' });
+    }
+
+    const [clansRaw, users] = await Promise.all([getAllClansRaw(), getAllUsersSafe()]);
+    const targetRaw = clansRaw.find(
+      (c) => String(c.inviteCode || '').trim().toUpperCase() === code
+    );
+    if (!targetRaw) {
+      return res.status(404).json({
+        error: 'Kode rekrutmen klan tidak ditemukan atau sudah diganti oleh ketua klan.',
+      });
+    }
+
+    const enrichedList = enrichClansRealtime([targetRaw], users, targetRaw.leaderUid);
+    const clan = enrichedList[0];
+    return res.json({
+      ok: true,
+      clan: {
+        clanId: clan.clanId,
+        name: clan.name,
+        tag: clan.tag,
+        description: clan.description || '',
+        avatarUrl: clan.avatarUrl || '',
+        leaderUid: clan.leaderUid,
+        leaderName: clan.leaderName,
+        leaderPhoto: clan.leaderPhoto || '',
+        level: clan.level || 1,
+        charisma: clan.charisma || 0,
+        membersCount: clan.membersCount || 1,
+        maxMembers: clan.maxMembers || 50,
+        status: clan.status,
+        inviteCode: targetRaw.inviteCode || code,
+      },
+    });
+  } catch (err) {
+    console.error('[Clan Invite Lookup Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat detail undangan klan' });
+  }
+});
+
+// POST /api/social/clans/invite/regenerate — Leader regenerates a new random recruit code
+router.post('/clans/invite/regenerate', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const { clanId } = req.body || {};
+    if (!clanId) return res.status(400).json({ error: 'Clan ID diperlukan' });
+
+    const allClans = await getAllClansRaw();
+    const existingCodes = new Set<string>(
+      allClans.map((c) => String(c.inviteCode || '').trim().toUpperCase()).filter(Boolean)
+    );
+    const nextCode = generateClanInviteCode(existingCodes);
+
+    if (isDbMongoConnected()) {
+      const clan = await ClanModel.findOne({ clanId });
+      if (!clan) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if (clan.leaderUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya ketua klan yang dapat mengacak kode undangan baru.' });
+      }
+      clan.inviteCode = nextCode;
+      await clan.save();
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === clanId);
+      if (!found) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if (found.leaderUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya ketua klan yang dapat mengacak kode undangan baru.' });
+      }
+      found.inviteCode = nextCode;
+      writeFallbackJson('clans-v1.json', all);
+    }
+
+    return res.json({
+      ok: true,
+      inviteCode: nextCode,
+      message: 'Kode rekrutmen acak baru berhasil dibuat! Link lama otomatis nonaktif.',
+    });
+  } catch (err) {
+    console.error('[Clan Invite Regenerate Error]', err);
+    return res.status(500).json({ error: 'Gagal mengacak kode rekrutmen baru' });
+  }
+});
+
+// POST /api/social/clans/join-invite — Auto-join a clan immediately via valid random invite code/link
+router.post('/clans/join-invite', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const rawCode = String(req.body?.inviteCode || '')
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
+    if (!rawCode) {
+      return res.status(400).json({ error: 'Kode rekrutmen klan wajib diisi.' });
+    }
+
+    await connectDB();
+    const allClans = await getAllClansRaw();
+    const targetClan = allClans.find(
+      (c) => String(c.inviteCode || '').trim().toUpperCase() === rawCode
+    );
+    if (!targetClan) {
+      return res.status(404).json({
+        error: 'Kode rekrutmen klan tidak ditemukan atau sudah kedaluwarsa.',
+      });
+    }
+
+    const existingClan = await findUserActiveClan(meUid);
+    if (existingClan) {
+      if (existingClan.clanId === targetClan.clanId) {
+        return res.json({
+          ok: true,
+          alreadyMember: true,
+          clan: {
+            clanId: targetClan.clanId,
+            name: targetClan.name,
+            tag: targetClan.tag,
+            leaderName: targetClan.leaderName,
+            membersCount: targetClan.members?.length || 1,
+            maxMembers: targetClan.maxMembers || 50,
+            inviteCode: targetClan.inviteCode || rawCode,
+          },
+          message: `Kamu sudah menjadi anggota klan [${targetClan.tag}] ${targetClan.name}!`,
+        });
+      }
+      return res.status(400).json({
+        error: `Kamu sudah tergabung di klan [${existingClan.tag}] ${existingClan.name}. Setiap user hanya bisa bergabung di 1 klan saja!`,
+      });
+    }
+
+    let updatedMembersCount = (targetClan.members?.length || 1) + 1;
+
+    if (isDbMongoConnected()) {
+      const doc = await ClanModel.findOne({ clanId: targetClan.clanId });
+      if (!doc) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      const currentMembers = Array.isArray(doc.members) ? doc.members : [];
+      if (currentMembers.length >= (doc.maxMembers || 50)) {
+        return res.status(400).json({ error: `Klan [${doc.tag}] ${doc.name} sudah penuh.` });
+      }
+      if (!currentMembers.includes(meUid)) {
+        doc.members = [...currentMembers, meUid];
+      }
+      doc.pendingRequests = (Array.isArray(doc.pendingRequests) ? doc.pendingRequests : []).filter(
+        (r: any) => r.uid !== meUid
+      );
+      updatedMembersCount = doc.members.length;
+      await doc.save();
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === targetClan.clanId);
+      if (!found) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      const currentMembers = Array.isArray(found.members) ? found.members : [];
+      if (currentMembers.length >= (found.maxMembers || 50)) {
+        return res.status(400).json({ error: `Klan [${found.tag}] ${found.name} sudah penuh.` });
+      }
+      if (!currentMembers.includes(meUid)) {
+        found.members = [...currentMembers, meUid];
+      }
+      found.pendingRequests = (Array.isArray(found.pendingRequests) ? found.pendingRequests : []).filter(
+        (r: any) => r.uid !== meUid
+      );
+      updatedMembersCount = found.members.length;
+      writeFallbackJson('clans-v1.json', all);
+    }
+
+    await removeUserPendingRequestsEverywhere(meUid);
+
+    const joiner = await findUserByUid(meUid);
+    const joinerName = joiner?.name || req.authUser!.username || `User ${meUid}`;
+    void recordClanActivity({
+      clanId: targetClan.clanId,
+      actorUid: meUid,
+      actorName: joinerName,
+      actorPhoto: joiner?.photoUrl || '',
+      type: 'member_join',
+      title: 'Bergabung via Link Rekrut',
+      detail: `${joinerName} langsung bergabung dengan kode undangan acak`,
+    });
+
+    if (targetClan.leaderUid && targetClan.leaderUid !== meUid) {
+      await createNotification({
+        uid: targetClan.leaderUid,
+        type: 'clan_review',
+        title: 'Anggota Baru Gabung via Rekrut!',
+        message: `${joinerName} baru saja otomatis bergabung ke [${targetClan.tag}] ${targetClan.name} lewat kode/link rekrutmen.`,
+        link: '/leaderboard?tab=clans',
+        actorUid: meUid,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      alreadyMember: false,
+      clan: {
+        clanId: targetClan.clanId,
+        name: targetClan.name,
+        tag: targetClan.tag,
+        leaderName: targetClan.leaderName,
+        membersCount: updatedMembersCount,
+        maxMembers: targetClan.maxMembers || 50,
+        inviteCode: targetClan.inviteCode || rawCode,
+      },
+      message: `Selamat! Kamu otomatis bergabung ke klan [${targetClan.tag}] ${targetClan.name}!`,
+    });
+  } catch (err) {
+    console.error('[Clan Invite Auto-Join Error]', err);
+    return res.status(500).json({ error: 'Gagal memproses undangan gabung klan' });
+  }
+});
+
+// GET /api/social/clans/:clanId/activity — Real-time Clan Activity Feed + Most Active Members ranking
+router.get('/clans/:clanId/activity', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const clanId = String(req.params.clanId || '').trim();
+    const filter = String(req.query.filter || 'all').trim();
+    if (!clanId) return res.status(400).json({ error: 'Clan ID diperlukan' });
+
+    const [clansRaw, users] = await Promise.all([getAllClansRaw(), getAllUsersSafe()]);
+    const clan = clansRaw.find((c) => c.clanId === clanId);
+    if (!clan) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+
+    const memberIds: string[] = Array.from(
+      new Set([clan.leaderUid, ...(Array.isArray(clan.members) ? clan.members : [])].filter(Boolean))
+    );
+    const isAuthorized =
+      req.authUser!.role === 'founder' || memberIds.includes(meUid);
+    if (!isAuthorized) {
+      return res.status(403).json({
+        error: 'Hanya anggota dan ketua klan yang dapat melihat Clan Activity Feed.',
+      });
+    }
+
+    const userMap = new Map<string, IUser>(users.map((u) => [u.uid, u]));
+    const allActivities = await getClanActivitiesRaw(clanId, 80);
+
+    // Count missions & level-ups per member from real activity history
+    const memberStatsMap = new Map<string, { missionsCompleted: number; levelUps: number; latestActivityAt: string }>();
+    for (const uid of memberIds) {
+      memberStatsMap.set(uid, { missionsCompleted: 0, levelUps: 0, latestActivityAt: '' });
+    }
+    for (const act of allActivities) {
+      const stats = memberStatsMap.get(act.actorUid) || {
+        missionsCompleted: 0,
+        levelUps: 0,
+        latestActivityAt: '',
+      };
+      if (act.type === 'level_up') stats.levelUps += 1;
+      if (act.type === 'mission_complete') stats.missionsCompleted += 1;
+      if (!stats.latestActivityAt || act.createdAt > stats.latestActivityAt) {
+        stats.latestActivityAt = act.createdAt;
+      }
+      memberStatsMap.set(act.actorUid, stats);
+    }
+
+    const enrichedActivities = allActivities
+      .filter((act) => filter === 'all' || act.type === filter)
+      .slice(0, 50)
+      .map((act) => {
+        const u = userMap.get(act.actorUid);
+        const summary = u ? toCommunityUserSummary(u) : null;
+        return {
+          ...act,
+          actorName: summary?.name || act.actorName,
+          actorPhoto: summary?.photoUrl || act.actorPhoto || '',
+          actorLevel: summary?.role === 'founder' ? 999999 : summary?.level || act.newLevel || 1,
+          actorRole: summary?.role || 'member',
+          isLeader: act.actorUid === clan.leaderUid,
+        };
+      });
+
+    const rawRoleMap: Record<string, string> =
+      clan.memberRoles && typeof clan.memberRoles === 'object' ? (clan.memberRoles as any) : {};
+    const nowMs = Date.now();
+
+    const mostActiveMembers = memberIds
+      .map((uid) => {
+        const rawUser = userMap.get(uid);
+        const summary = rawUser ? toCommunityUserSummary(rawUser) : null;
+        const stats = memberStatsMap.get(uid) || {
+          missionsCompleted: 0,
+          levelUps: 0,
+          latestActivityAt: '',
+        };
+        const episodesWatched = summary?.totalEpisodesWatched || 0;
+        const watchStreak = Number(rawUser?.watchStreak || 0);
+        const dailyEpisodes = Number(rawUser?.dailyEpisodesWatched || 0);
+        const activityScore =
+          stats.levelUps * 8 +
+          stats.missionsCompleted * 4 +
+          watchStreak * 3 +
+          Math.min(episodesWatched, 400);
+
+        const isLeader = uid === clan.leaderUid;
+        const assignedRole = rawRoleMap[uid];
+        const clanRole: 'leader' | 'co_leader' | 'elder' | 'member' = isLeader
+          ? 'leader'
+          : assignedRole === 'co_leader' || assignedRole === 'elder'
+          ? assignedRole
+          : 'member';
+
+        const lastActiveIso =
+          stats.latestActivityAt ||
+          (rawUser?.lastActiveAt ? new Date(rawUser.lastActiveAt).toISOString() : '') ||
+          (rawUser?.lastLoginAt ? new Date(rawUser.lastLoginAt).toISOString() : '');
+        const lastActiveMs = lastActiveIso ? new Date(lastActiveIso).getTime() : 0;
+        const isOnline = Boolean(summary?.isOnline || (lastActiveMs > 0 && nowMs - lastActiveMs < 3 * 60 * 1000));
+        const inactiveDays = lastActiveMs > 0 ? Math.floor((nowMs - lastActiveMs) / 86_400_000) : 99;
+        const isInactive = !isLeader && !isOnline && (inactiveDays >= 3 || (episodesWatched === 0 && stats.missionsCompleted === 0));
+
+        return {
+          uid,
+          name: summary?.name || (isLeader ? clan.leaderName : `User ${uid}`),
+          photoUrl: summary?.photoUrl || '',
+          level: summary?.role === 'founder' ? 999999 : summary?.level || 1,
+          role: summary?.role || 'member',
+          clanRole,
+          isLeader,
+          isOnline,
+          isInactive,
+          inactiveDays: lastActiveMs > 0 ? inactiveDays : null,
+          episodesWatched,
+          dailyEpisodes,
+          watchStreak,
+          missionsCompleted: stats.missionsCompleted,
+          levelUps: stats.levelUps,
+          latestActivityAt: lastActiveIso,
+          activityScore,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.activityScore - a.activityScore ||
+          b.episodesWatched - a.episodesWatched ||
+          b.level - a.level
+      );
+
+    return res.json({
+      ok: true,
+      clanId,
+      activities: enrichedActivities,
+      mostActiveMembers,
+      totalCount: allActivities.length,
+    });
+  } catch (err) {
+    console.error('[Clan Activity Feed Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat Clan Activity Feed' });
+  }
+});
+
+const CLAN_ROLE_LABELS: Record<'leader' | 'co_leader' | 'elder' | 'member', string> = {
+  leader: 'Ketua Klan',
+  co_leader: 'Wakil Ketua (Co-Leader)',
+  elder: 'Tetua Klan (Elder)',
+  member: 'Anggota',
+};
+
+// POST /api/social/clans/promote — Leader assigns clan role or transfers leadership in real-time
+router.post('/clans/promote', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const { clanId, targetUid, newRole } = req.body || {};
+    const cleanTargetUid = String(targetUid || '').trim();
+    const cleanRole = String(newRole || '').trim() as 'leader' | 'co_leader' | 'elder' | 'member';
+
+    if (
+      !clanId ||
+      !cleanTargetUid ||
+      !['leader', 'co_leader', 'elder', 'member'].includes(cleanRole)
+    ) {
+      return res.status(400).json({ error: 'Parameter promosi jabatan klan tidak valid.' });
+    }
+
+    if (cleanTargetUid === meUid) {
+      return res.status(400).json({ error: 'Tidak dapat mengubah jabatan diri sendiri.' });
+    }
+
+    await connectDB();
+    const targetUser = await findUserByUid(cleanTargetUid);
+    const targetName = targetUser?.name || targetUser?.username || `User ${cleanTargetUid}`;
+    let clanTag = '';
+    let clanName = '';
+
+    if (isDbMongoConnected()) {
+      const clan = await ClanModel.findOne({ clanId });
+      if (!clan) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if (clan.leaderUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya Ketua Klan yang dapat mengatur promosi jabatan.' });
+      }
+      if (!clan.members.includes(cleanTargetUid)) {
+        return res.status(400).json({ error: 'Pengguna tersebut bukan anggota klan ini.' });
+      }
+
+      clanTag = clan.tag;
+      clanName = clan.name;
+      const roles: Record<string, any> =
+        clan.memberRoles && typeof clan.memberRoles === 'object' ? { ...clan.memberRoles } : {};
+
+      if (cleanRole === 'leader') {
+        roles[meUid] = 'co_leader';
+        roles[cleanTargetUid] = 'leader';
+        clan.leaderUid = cleanTargetUid;
+        clan.leaderName = targetName;
+      } else {
+        roles[cleanTargetUid] = cleanRole;
+      }
+      clan.memberRoles = roles;
+      clan.markModified('memberRoles');
+      await clan.save();
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === clanId);
+      if (!found) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if (found.leaderUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya Ketua Klan yang dapat mengatur promosi jabatan.' });
+      }
+      if (!Array.isArray(found.members) || !found.members.includes(cleanTargetUid)) {
+        return res.status(400).json({ error: 'Pengguna tersebut bukan anggota klan ini.' });
+      }
+
+      clanTag = found.tag;
+      clanName = found.name;
+      const roles: Record<string, any> =
+        found.memberRoles && typeof found.memberRoles === 'object' ? { ...found.memberRoles } : {};
+
+      if (cleanRole === 'leader') {
+        roles[meUid] = 'co_leader';
+        roles[cleanTargetUid] = 'leader';
+        found.leaderUid = cleanTargetUid;
+        found.leaderName = targetName;
+      } else {
+        roles[cleanTargetUid] = cleanRole;
+      }
+      found.memberRoles = roles;
+      writeFallbackJson('clans-v1.json', all);
+    }
+
+    const roleLabel = CLAN_ROLE_LABELS[cleanRole];
+    void recordClanActivity({
+      clanId,
+      actorUid: cleanTargetUid,
+      actorName: targetName,
+      actorPhoto: targetUser?.photoUrl || '',
+      type: 'role_change',
+      title: `Jabatan Klan: ${roleLabel}`,
+      detail: `${targetName} diangkat menjadi ${roleLabel} di [${clanTag}] ${clanName}`,
+    });
+
+    await createNotification({
+      uid: cleanTargetUid,
+      type: 'clan_review',
+      title: `Promosi Jabatan Klan [${clanTag}]`,
+      message: `Jabatanmu di klan [${clanTag}] ${clanName} kini diperbarui menjadi ${roleLabel}!`,
+      link: '/leaderboard?tab=clans',
+      actorUid: meUid,
+    });
+
+    return res.json({
+      ok: true,
+      targetUid: cleanTargetUid,
+      newRole: cleanRole,
+      message: `Jabatan ${targetName} berhasil diperbarui menjadi ${roleLabel}!`,
+    });
+  } catch (err) {
+    console.error('[Clan Promote Error]', err);
+    return res.status(500).json({ error: 'Gagal memperbarui jabatan anggota klan' });
+  }
+});
+
+// POST /api/social/clans/kick — Leader (or Co-Leader for regular members) kicks a member in real-time
+router.post('/clans/kick', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const { clanId, targetUid, reason } = req.body || {};
+    const cleanTargetUid = String(targetUid || '').trim();
+
+    if (!clanId || !cleanTargetUid) {
+      return res.status(400).json({ error: 'Clan ID dan UID anggota wajib diisi.' });
+    }
+    if (cleanTargetUid === meUid) {
+      return res.status(400).json({ error: 'Gunakan tombol Keluar Klan untuk keluar sendiri.' });
+    }
+
+    await connectDB();
+    const targetUser = await findUserByUid(cleanTargetUid);
+    const targetName = targetUser?.name || targetUser?.username || `User ${cleanTargetUid}`;
+    let clanTag = '';
+    let clanName = '';
+
+    if (isDbMongoConnected()) {
+      const clan = await ClanModel.findOne({ clanId });
+      if (!clan) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+
+      const roles: Record<string, any> =
+        clan.memberRoles && typeof clan.memberRoles === 'object' ? { ...clan.memberRoles } : {};
+      const isLeader = clan.leaderUid === meUid;
+      const isCoLeader = roles[meUid] === 'co_leader';
+      const targetRole = cleanTargetUid === clan.leaderUid ? 'leader' : roles[cleanTargetUid] || 'member';
+
+      if (!isLeader && !(isCoLeader && (targetRole === 'member' || targetRole === 'elder'))) {
+        return res.status(403).json({
+          error: 'Hanya Ketua Klan atau Wakil Ketua yang dapat mengeluarkan anggota.',
+        });
+      }
+      if (cleanTargetUid === clan.leaderUid) {
+        return res.status(400).json({ error: 'Ketua Klan tidak dapat dikeluarkan.' });
+      }
+      if (!clan.members.includes(cleanTargetUid)) {
+        return res.status(404).json({ error: 'Angguna tidak ditemukan di dalam klan.' });
+      }
+
+      clanTag = clan.tag;
+      clanName = clan.name;
+      clan.members = clan.members.filter((id: string) => id !== cleanTargetUid);
+      delete roles[cleanTargetUid];
+      clan.memberRoles = roles;
+      clan.markModified('memberRoles');
+      await clan.save();
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === clanId);
+      if (!found) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+
+      const roles: Record<string, any> =
+        found.memberRoles && typeof found.memberRoles === 'object' ? { ...found.memberRoles } : {};
+      const isLeader = found.leaderUid === meUid;
+      const isCoLeader = roles[meUid] === 'co_leader';
+      const targetRole = cleanTargetUid === found.leaderUid ? 'leader' : roles[cleanTargetUid] || 'member';
+
+      if (!isLeader && !(isCoLeader && (targetRole === 'member' || targetRole === 'elder'))) {
+        return res.status(403).json({
+          error: 'Hanya Ketua Klan atau Wakil Ketua yang dapat mengeluarkan anggota.',
+        });
+      }
+      if (cleanTargetUid === found.leaderUid) {
+        return res.status(400).json({ error: 'Ketua Klan tidak dapat dikeluarkan.' });
+      }
+      if (!Array.isArray(found.members) || !found.members.includes(cleanTargetUid)) {
+        return res.status(404).json({ error: 'Anggota tidak ditemukan di dalam klan.' });
+      }
+
+      clanTag = found.tag;
+      clanName = found.name;
+      found.members = found.members.filter((id: string) => id !== cleanTargetUid);
+      delete roles[cleanTargetUid];
+      found.memberRoles = roles;
+      writeFallbackJson('clans-v1.json', all);
+    }
+
+    const cleanReason = String(reason || 'Tidak aktif / evaluasi manajemen klan').trim().slice(0, 120);
+    void recordClanActivity({
+      clanId,
+      actorUid: cleanTargetUid,
+      actorName: targetName,
+      actorPhoto: targetUser?.photoUrl || '',
+      type: 'member_kick',
+      title: 'Dikeluarkan dari Klan',
+      detail: `${targetName} dikeluarkan (${cleanReason})`,
+    });
+
+    await createNotification({
+      uid: cleanTargetUid,
+      type: 'clan_review',
+      title: `Dikeluarkan dari Klan [${clanTag}]`,
+      message: `Kamu telah dikeluarkan dari klan [${clanTag}] ${clanName}. Alasan: ${cleanReason}`,
+      link: '/leaderboard?tab=clans',
+      actorUid: meUid,
+    });
+
+    return res.json({
+      ok: true,
+      targetUid: cleanTargetUid,
+      message: `${targetName} berhasil dikeluarkan dari klan secara real-time.`,
+    });
+  } catch (err) {
+    console.error('[Clan Kick Error]', err);
+    return res.status(500).json({ error: 'Gagal mengeluarkan anggota dari klan' });
   }
 });
 
@@ -1570,3 +2545,4 @@ router.post('/charisma/boost', requireAuth, async (_req: AuthenticatedRequest, r
 });
 
 export default router;
+

@@ -17,11 +17,17 @@ import {
   Send,
   Sparkles,
   UserPen,
+  Volume2,
   X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
-import { TELEGRAM_BADGE_PRESETS, VerifiedBadge } from '../components/VerifiedBadge';
+import {
+  TELEGRAM_BADGE_PRESETS,
+  VerifiedBadge,
+  isFounderBadgeLabel,
+  resolveDisplayBadgeLabel,
+} from '../components/VerifiedBadge';
 import { StatusEmojiBadge, VIP_EMOJIS } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import {
@@ -32,6 +38,8 @@ import {
 } from '../components/AvatarDecoration';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
 import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
+import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
+import { SOUND_PRESETS, useSoundSettings } from '../utils/soundEffects';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
 import heroFallbackImg from '../assets/images/donghua_hero_fallback_1794755348232.jpg';
 
@@ -71,6 +79,7 @@ function fileToCompressedDataUrl(file: File, maxSize: number): Promise<string> {
 export function EditProfilePage() {
   const { user, isPremium, updateProfile } = useAuth();
   const { lang, currentLanguageOption, changeLanguage } = useAppLanguage();
+  const { settings: soundSettings } = useSoundSettings();
   const navigate = useNavigate();
 
   const avatarInputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +101,7 @@ export function EditProfilePage() {
     | 'name'
     | 'bio'
     | 'language'
+    | 'sound'
     | 'badge'
     | 'status-emoji'
     | 'theme'
@@ -105,6 +115,19 @@ export function EditProfilePage() {
   const [saving, setSaving] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
   const [autoSavedLabel, setAutoSavedLabel] = useState<string>('');
+  const [badgeNotice, setBadgeNotice] = useState<string>('');
+  const badgeNoticeTimerRef = useRef<number | null>(null);
+
+  const showFounderBadgeNotice = () => {
+    setBadgeNotice('Lencana Verified Founder eksklusif hanya dapat digunakan oleh akun Founder.');
+    if (badgeNoticeTimerRef.current) {
+      window.clearTimeout(badgeNoticeTimerRef.current);
+    }
+    badgeNoticeTimerRef.current = window.setTimeout(() => {
+      setBadgeNotice('');
+      badgeNoticeTimerRef.current = null;
+    }, 3500);
+  };
 
   const [newEmail, setNewEmail] = useState('');
   const [currentPassword, setCurrentPassword] = useState('');
@@ -121,16 +144,19 @@ export function EditProfilePage() {
     }
     if (initializedUidRef.current !== user.uid) {
       initializedUidRef.current = user.uid;
+      const founderUser = user.role === 'founder';
       setName(user.name);
       setBio(user.bio || '');
       setPhotoUrl(user.photoUrl);
       setBannerUrl(user.bannerUrl);
       setActiveBorder(user.activeBorder || 'none');
-      setActiveBadge(user.activeBadge || 'Member');
+      setActiveBadge(
+        resolveDisplayBadgeLabel(user.activeBadge, founderUser, Boolean(user.isPremium || isPremium))
+      );
       setProfileTheme(user.profileTheme || 'default');
       setStatusEmoji(user.statusEmoji || '');
     }
-  }, [user, navigate]);
+  }, [user, navigate, isPremium]);
 
   const resetOtpState = () => {
     setOtpCode('');
@@ -170,9 +196,14 @@ export function EditProfilePage() {
       activeBorder: overrides.activeBorder ?? activeBorder,
     };
     if (canCustomizePremium) {
+      const candidateBadge = overrides.activeBadge ?? activeBadge;
+      const safeBadge =
+        user.role !== 'founder' && isFounderBadgeLabel(candidateBadge)
+          ? 'Verified VIP'
+          : candidateBadge;
       payload.photoUrl = overrides.photoUrl ?? photoUrl;
       payload.bannerUrl = overrides.bannerUrl ?? bannerUrl;
-      payload.activeBadge = overrides.activeBadge ?? activeBadge;
+      payload.activeBadge = safeBadge;
       payload.profileTheme = overrides.profileTheme ?? profileTheme;
       payload.statusEmoji = overrides.statusEmoji ?? statusEmoji;
     }
@@ -518,6 +549,27 @@ export function EditProfilePage() {
 
             <button
               type="button"
+              onClick={() => setEditingField('sound')}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Volume2 className="w-5 h-5 text-emerald-500" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Efek Suara (Chat, Notifikasi &amp; Level Up)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span className="truncate max-w-[140px] text-slate-900 dark:text-white font-semibold">
+                  {Math.round(soundSettings.volume * 100) === 0
+                    ? 'Senyap'
+                    : SOUND_PRESETS.chat.find((p) => p.id === soundSettings.chat)?.labelId || 'Aktif'}
+                </span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
               onClick={() =>
                 canCustomizePremium
                   ? avatarInputRef.current?.click()
@@ -623,9 +675,14 @@ export function EditProfilePage() {
 
             <button
               type="button"
-              onClick={() =>
-                canCustomizePremium ? setEditingField('badge') : setEditingField('premium-lock')
-              }
+              onClick={() => {
+                if (canCustomizePremium) {
+                  setBadgeNotice('');
+                  setEditingField('badge');
+                } else {
+                  setEditingField('premium-lock');
+                }
+              }}
               className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
             >
               <div className="flex items-center gap-3">
@@ -768,6 +825,28 @@ export function EditProfilePage() {
                 Nanti Saja
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sound Effects Picker Modal */}
+      {editingField === 'sound' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-3 sm:p-4">
+          <div className="w-full max-w-2xl max-h-[90dvh] overflow-y-auto rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+            <div className="flex items-center justify-between mb-3 pb-3 border-b border-slate-200 dark:border-white/[0.08]">
+              <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+                Pengaturan Efek Suara
+              </h3>
+              <button
+                type="button"
+                onClick={() => setEditingField(null)}
+                aria-label="Tutup Pengaturan Suara"
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <SoundSettingsPanel embedded />
           </div>
         </div>
       )}
@@ -1026,6 +1105,27 @@ export function EditProfilePage() {
         </div>
       )}
 
+      {/* Floating Global Notification for Founder-Only Badge */}
+      {badgeNotice && (
+        <div
+          role="alert"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[70] w-[calc(100%-2rem)] max-w-md px-4 py-3 rounded-2xl bg-[#1A1318]/95 border border-amber-400/50 text-amber-100 shadow-2xl backdrop-blur-md flex items-center gap-3"
+        >
+          <span className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+            <Lock className="w-4 h-4" />
+          </span>
+          <p className="text-xs sm:text-sm font-bold leading-snug flex-1">{badgeNotice}</p>
+          <button
+            type="button"
+            onClick={() => setBadgeNotice('')}
+            aria-label="Tutup notifikasi"
+            className="text-amber-300/80 hover:text-white shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Telegram-Style Verified Badge Modal */}
       {editingField === 'badge' && canCustomizePremium && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
@@ -1033,7 +1133,7 @@ export function EditProfilePage() {
             <div className="flex items-center justify-between mb-3">
               <div>
                 <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  Pilih Lencana Verified (14 Gaya)
+                  Pilih Lencana Verified ({TELEGRAM_BADGE_PRESETS.length} Gaya)
                 </h3>
                 <p className="text-[11px] text-slate-500 dark:text-gray-400">
                   Lencana tampil di profil dan kolom komentar Anda
@@ -1041,21 +1141,39 @@ export function EditProfilePage() {
               </div>
               <button
                 type="button"
-                onClick={() => setEditingField(null)}
+                onClick={() => {
+                  setBadgeNotice('');
+                  setEditingField(null);
+                }}
                 className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
+            {badgeNotice && (
+              <div
+                role="status"
+                className="mb-3 px-3 py-2.5 rounded-2xl bg-amber-500/15 border border-amber-400/40 text-amber-700 dark:text-amber-200 text-xs font-semibold flex items-center gap-2"
+              >
+                <Lock className="w-4 h-4 text-amber-500 dark:text-amber-300 shrink-0" />
+                <span>{badgeNotice}</span>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 overflow-y-auto pr-1">
               {TELEGRAM_BADGE_PRESETS.map((b) => {
                 const Icon = b.icon;
-                const selected = activeBadge === b.label;
+                const lockedForMember = Boolean(b.founderOnly && !isFounder);
+                const selected = !lockedForMember && activeBadge === b.label;
                 return (
                   <button
                     key={b.id}
                     type="button"
                     onClick={() => {
+                      if (lockedForMember) {
+                        showFounderBadgeNotice();
+                        return;
+                      }
+                      setBadgeNotice('');
                       setActiveBadge(b.label);
                       setEditingField(null);
                       void triggerAutoSave({ activeBadge: b.label }, `Lencana ${b.label} dipasang!`);
@@ -1063,16 +1181,24 @@ export function EditProfilePage() {
                     className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 transition-all ${
                       selected
                         ? 'border-[#E84A18] bg-[#E84A18]/10'
+                        : lockedForMember
+                        ? 'border-amber-400/30 bg-amber-500/[0.06] hover:bg-amber-500/[0.12] opacity-85 cursor-not-allowed'
                         : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#1B1E26] hover:bg-slate-100 dark:hover:bg-[#232732]'
                     }`}
                   >
                     <span
-                      className={`px-2.5 py-1 rounded-full text-[11px] font-bold inline-flex items-center gap-1 ${b.pillClass}`}
+                      className={`px-2.5 py-1 rounded-full text-[11px] font-bold inline-flex items-center gap-1 min-w-0 ${b.pillClass}`}
                     >
                       <Icon className="w-3.5 h-3.5 shrink-0" />
                       <span className="truncate">{b.label}</span>
                     </span>
-                    {selected && <Check className="w-4 h-4 text-[#E84A18] shrink-0" />}
+                    {lockedForMember ? (
+                      <span className="px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-300 text-[9px] font-bold inline-flex items-center gap-0.5 shrink-0">
+                        <Lock className="w-2.5 h-2.5" /> Founder
+                      </span>
+                    ) : (
+                      selected && <Check className="w-4 h-4 text-[#E84A18] shrink-0" />
+                    )}
                   </button>
                 );
               })}

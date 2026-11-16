@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
-import { TELEGRAM_BADGE_MAP, VerifiedBadge } from '../components/VerifiedBadge';
+import { TELEGRAM_BADGE_MAP, VerifiedBadge, resolveDisplayBadgeLabel } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { AvatarDecoration } from '../components/AvatarDecoration';
 import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
@@ -344,16 +344,19 @@ export function CommunityPage() {
                           <span>·</span>
                           <span className="font-mono-tabular">UID: {u.uid}</span>
                         </div>
-                        {hasVip && (
-                          <span
-                            className={`inline-block mt-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                              TELEGRAM_BADGE_MAP.get(u.activeBadge)?.pillClass ||
-                              'bg-amber-500/20 text-amber-400'
-                            }`}
-                          >
-                            {u.activeBadge || (isFounder ? 'Verified Founder' : 'VIP')}
-                          </span>
-                        )}
+                        {hasVip && (() => {
+                          const safeBadge = resolveDisplayBadgeLabel(u.activeBadge, isFounder, hasVip);
+                          return (
+                            <span
+                              className={`inline-block mt-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                TELEGRAM_BADGE_MAP.get(safeBadge)?.pillClass ||
+                                'bg-amber-500/20 text-amber-400'
+                              }`}
+                            >
+                              {safeBadge}
+                            </span>
+                          );
+                        })()}
                         <p className="mt-2 text-xs text-slate-600 dark:text-gray-300 line-clamp-2 min-h-[32px]">
                           {u.bio || 'Penonton setia Anime & Donghua di ZoneStream.'}
                         </p>

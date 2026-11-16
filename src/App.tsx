@@ -30,6 +30,7 @@ export default function App() {
             <Route path="/community" element={<PageTransition><CommunityPage /></PageTransition>} />
             <Route path="/leaderboard" element={<PageTransition><LeaderboardPage /></PageTransition>} />
             <Route path="/ranking" element={<PageTransition><LeaderboardPage /></PageTransition>} />
+            <Route path="/clan/join/:inviteCode" element={<PageTransition><LeaderboardPage /></PageTransition>} />
             <Route path="/users" element={<PageTransition><CommunityPage /></PageTransition>} />
             <Route path="/u/:uid" element={<PageTransition><PublicProfilePage /></PageTransition>} />
             <Route path="/user/:uid" element={<PageTransition><PublicProfilePage /></PageTransition>} />

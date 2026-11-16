@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Bell,
   CalendarDays,
   Check,
   ChevronDown,
@@ -38,6 +37,7 @@ import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import { useAuth } from '../context/AuthContext';
 import { HeaderSearch } from '../components/HeaderSearch';
+import { NotificationBell } from '../components/NotificationBell';
 import { seedCatalogIndex } from '../utils/catalogSearch';
 import type {
   HeroSlide,
@@ -118,15 +118,6 @@ export function HomePage() {
   const [currentSlide, setCurrentSlide] = useState(0);
   const [loading, setLoading] = useState(true);
   const [genreLoading, setGenreLoading] = useState(false);
-  const [showNotif, setShowNotif] = useState(false);
-  const [seenNotifIds, setSeenNotifIds] = useState<string[]>(() => {
-    try {
-      const raw = localStorage.getItem('zonestream_seen_stream_notifs_v3');
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('');
   const [syncingFeed, setSyncingFeed] = useState(false);
@@ -201,50 +192,6 @@ export function HomePage() {
       clearInterval(autoRefresh);
     };
   }, [loadHome]);
-
-  const streamNotifItems = useMemo(() => {
-    return latestEpisodes.slice(0, 12).map((ep) => ({
-      ...ep,
-      notifKey: `${ep.type}:${ep.id}:${ep.episodeId || ep.episodeLabel || 'latest'}`,
-    }));
-  }, [latestEpisodes]);
-
-  // Initialize seen notifications so only the newest releases show as unread initially, and update dynamically on new stream updates
-  useEffect(() => {
-    if (streamNotifItems.length === 0) return;
-    try {
-      const initialized = localStorage.getItem('zonestream_seen_stream_init_v3');
-      if (!initialized) {
-        const olderKeys = streamNotifItems.slice(2).map((x) => x.notifKey);
-        localStorage.setItem('zonestream_seen_stream_init_v3', '1');
-        localStorage.setItem('zonestream_seen_stream_notifs_v3', JSON.stringify(olderKeys));
-        setSeenNotifIds(olderKeys);
-      }
-    } catch {
-      // ignore storage quota errors
-    }
-  }, [streamNotifItems]);
-
-  const unreadNotifCount = useMemo(() => {
-    const seenSet = new Set(seenNotifIds);
-    return streamNotifItems.filter((item) => !seenSet.has(item.notifKey)).length;
-  }, [streamNotifItems, seenNotifIds]);
-
-  const markNotificationsAsRead = useCallback(
-    (keysToMark?: string[]) => {
-      const targetKeys = keysToMark || streamNotifItems.map((x) => x.notifKey);
-      setSeenNotifIds((prev) => {
-        const merged = Array.from(new Set([...prev, ...targetKeys])).slice(-200);
-        try {
-          localStorage.setItem('zonestream_seen_stream_notifs_v3', JSON.stringify(merged));
-        } catch {
-          // ignore
-        }
-        return merged;
-      });
-    },
-    [streamNotifItems]
-  );
 
   useEffect(() => {
     if (heroSlides.length <= 1) return;
@@ -422,25 +369,7 @@ export function HomePage() {
               </Link>
             )}
 
-            <button
-              type="button"
-              onClick={() => {
-                const nextOpen = !showNotif;
-                setShowNotif(nextOpen);
-                if (nextOpen && unreadNotifCount > 0) {
-                  markNotificationsAsRead();
-                }
-              }}
-              aria-label="Notifikasi rilis baru"
-              className="relative h-9 w-9 sm:min-h-[40px] sm:min-w-[40px] flex items-center justify-center rounded-xl bg-white dark:bg-[#14161E] border border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/50 transition-colors text-[#E84A18]"
-            >
-              <Bell className="w-4 h-4 sm:w-5 sm:h-5 fill-[#E84A18]/20" />
-              {unreadNotifCount > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-[#E84A18] text-white text-[10px] font-bold flex items-center justify-center font-mono-tabular shadow animate-pulse">
-                  {unreadNotifCount > 99 ? '99+' : unreadNotifCount}
-                </span>
-              )}
-            </button>
+            <NotificationBell compact className="lg:hidden" />
 
             <button
               type="button"
@@ -450,80 +379,6 @@ export function HomePage() {
             >
               <Search className="w-4 h-4 sm:w-5 sm:h-5" />
             </button>
-
-            {/* Live Streaming Notifications Dropdown */}
-            {showNotif && (
-              <div className="absolute right-0 top-12 z-50 w-[min(calc(100vw-1.5rem),21rem)] rounded-2xl bg-white dark:bg-[#14161F] border border-slate-200 dark:border-white/10 p-3 shadow-2xl">
-                <div className="flex items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-100 dark:border-white/5">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                      <span className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
-                        Rilis Terbaru Hari Ini (Live Stream)
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-slate-500 dark:text-gray-400 mt-0.5">
-                      Update otomatis setiap ada episode baru rilis
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => loadHome(true)}
-                      disabled={syncingFeed}
-                      title="Sinkronkan rilis terbaru sekarang"
-                      className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/10 text-[#E84A18] transition-colors"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${syncingFeed ? 'animate-spin' : ''}`} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowNotif(false)}
-                      className="p-1 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
-                  {streamNotifItems.map((ep, idx) => (
-                    <Link
-                      key={`notif-${ep.type}-${ep.id}-${idx}`}
-                      to={`/detail/${ep.type}/${encodeURIComponent(ep.id)}${
-                        ep.episodeId ? `?ep=${encodeURIComponent(ep.episodeId)}` : ''
-                      }`}
-                      state={{ backTo: '/', poster: ep.poster, seriesTitle: ep.title }}
-                      onClick={() => {
-                        markNotificationsAsRead([ep.notifKey]);
-                        setShowNotif(false);
-                      }}
-                      className="flex items-center gap-2.5 p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-white/5 transition-colors"
-                    >
-                      <ResilientPosterImage
-                        src={ep.poster}
-                        alt={ep.title}
-                        className="w-10 h-12 rounded-lg object-cover shrink-0 bg-slate-200 dark:bg-[#1F222C]"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          {ep.title}
-                        </p>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className="text-[11px] text-[#E84A18] font-bold">
-                            {ep.episodeLabel} · {ep.type === 'donghua' ? 'Donghua' : 'Anime'}
-                          </span>
-                          {idx < 3 && (
-                            <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-500 dark:text-emerald-400 text-[9px] font-extrabold uppercase">
-                              LIVE
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </Link>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </header>
 

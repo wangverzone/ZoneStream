@@ -14,13 +14,25 @@ import {
   findUserByIdentifier,
   findUserByUid,
   getJakartaDateString,
+  listAllUsersForFounder,
   sanitizeUser,
   saveOtpCode,
+  setAllUsersBanStatus,
+  setUserBanStatus,
   touchUserLastActive,
+  touchUserLogin,
   updateUserByUid,
   verifyAndConsumeOtpCode,
 } from '../db.ts';
 import type { BookmarkItem, WatchHistoryItem } from '../models/User.ts';
+import {
+  getUserNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  syncFavoriteEpisodeNotifications,
+} from '../notifications.ts';
+import { recordClanActivity } from '../clanActivity.ts';
+import { getLatestEpisodesSnapshot } from './stream.ts';
 
 const router = Router();
 const FIREBASE_WEB_API_KEY = 'AIzaSyBPXKFLf1xPdo9H9Bw8w8KAPFGY0dYH-04';
@@ -126,6 +138,14 @@ router.post('/login', async (req, res) => {
     if (!user || !verifyPassword(String(password), user.passwordHash)) {
       return res.status(401).json({ error: 'Username/Email atau Password salah.' });
     }
+    if (user.isBanned && user.role !== 'founder') {
+      const reasonSuffix = user.banReason ? ` (${user.banReason})` : '';
+      return res.status(403).json({
+        error: `Akun Anda telah dibanned oleh Founder${reasonSuffix}.`,
+        banned: true,
+        banReason: user.banReason || '',
+      });
+    }
 
     const token = signAuthToken({
       uid: user.uid,
@@ -133,7 +153,7 @@ router.post('/login', async (req, res) => {
       role: user.role,
     });
 
-    void touchUserLastActive(user.uid);
+    await touchUserLogin(user.uid);
     return res.json({ ok: true, token, user: sanitizeUser(user) });
   } catch (err) {
     console.error('[Login Error]', err);
@@ -170,13 +190,22 @@ router.post('/firebase-google', async (req, res) => {
       photoUrl: fbUser.photoUrl ? String(fbUser.photoUrl) : undefined,
     });
 
+    if (user.isBanned && user.role !== 'founder') {
+      const reasonSuffix = user.banReason ? ` (${user.banReason})` : '';
+      return res.status(403).json({
+        error: `Akun Anda telah dibanned oleh Founder${reasonSuffix}.`,
+        banned: true,
+        banReason: user.banReason || '',
+      });
+    }
+
     const token = signAuthToken({
       uid: user.uid,
       username: user.username,
       role: user.role,
     });
 
-    void touchUserLastActive(user.uid);
+    await touchUserLogin(user.uid);
     return res.json({ ok: true, token, user: sanitizeUser(user) });
   } catch (err) {
     console.error('[Firebase Google Auth Error]', err);
@@ -239,6 +268,7 @@ router.post('/register', async (req, res) => {
       role: created.role,
     });
 
+    await touchUserLogin(created.uid);
     return res.status(201).json({ ok: true, token, user: sanitizeUser(created) });
   } catch (err) {
     console.error('[Register Error]', err);
@@ -526,6 +556,16 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
       statusEmoji !== '' &&
       statusEmoji !== (existing.statusEmoji || '');
 
+    const cleanRequestedBadge = typeof activeBadge === 'string' ? activeBadge.trim() : '';
+    if (
+      existing.role !== 'founder' &&
+      cleanRequestedBadge.toLowerCase() === 'verified founder'
+    ) {
+      return res.status(403).json({
+        error: 'Lencana Verified Founder hanya khusus untuk akun Founder.',
+      });
+    }
+
     if (
       !hasPremiumAccess &&
       (tryingPhotoEdit ||
@@ -573,11 +613,22 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
 
       let nextBadge = current.activeBadge;
       if (typeof activeBadge === 'string') {
-        if (hasPremiumAccess) {
-          nextBadge = activeBadge.trim().slice(0, 32) || 'Verified VIP';
+        const trimmedBadge = activeBadge.trim().slice(0, 32);
+        if (current.role === 'founder') {
+          nextBadge = trimmedBadge || 'Verified Founder';
+        } else if (hasPremiumAccess) {
+          nextBadge =
+            trimmedBadge && trimmedBadge.toLowerCase() !== 'verified founder'
+              ? trimmedBadge
+              : 'Verified VIP';
         } else {
           nextBadge = 'Member';
         }
+      } else if (
+        current.role !== 'founder' &&
+        String(current.activeBadge || '').trim().toLowerCase() === 'verified founder'
+      ) {
+        nextBadge = hasPremiumAccess ? 'Verified VIP' : 'Member';
       }
 
       let nextTheme = current.profileTheme || 'default';
@@ -682,6 +733,8 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
     let isDoubleExp = false;
     let newlyUnlockedFrame: { id: string; name: string; minStreak: number } | null = null;
 
+    let watchedNewEpisode = false;
+
     const updated = await updateUserByUid(uid, (current) => {
       const hasValidPremium = Boolean(
         current.role === 'founder' ||
@@ -695,6 +748,7 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
       const alreadyWatchedEpisode = current.watchHistory.some(
         (h: WatchHistoryItem) => h.episodeId === episodeId
       );
+      watchedNewEpisode = !alreadyWatchedEpisode;
       const baseEpisodeExp = (alreadyWatchedEpisode ? 10 : 30) * multiplier;
 
       const isNewDay = current.lastWatchDate !== todayStr;
@@ -785,6 +839,65 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
     if (!updated) {
       return res.status(404).json({ error: 'Akun tidak ditemukan' });
     }
+
+    const cleanTitle = String(title).trim().slice(0, 60);
+    const epLabel = String(episodeTitle || `Episode ${episodeNumber || 1}`).trim().slice(0, 40);
+
+    if (levelUp) {
+      void recordClanActivity({
+        actorUid: uid,
+        actorName: updated.name,
+        actorPhoto: updated.photoUrl,
+        type: 'level_up',
+        title: `Naik ke Level ${finalLevel}`,
+        detail: `+${expGained} EXP · Menonton ${cleanTitle}`,
+        expGained,
+        newLevel: finalLevel,
+        streakDay: finalStreak,
+      });
+    }
+
+    if (dailyBonusGained > 0) {
+      void recordClanActivity({
+        actorUid: uid,
+        actorName: updated.name,
+        actorPhoto: updated.photoUrl,
+        type: 'mission_complete',
+        title: `Misi Harian & Streak ${finalStreak} Hari Selesai`,
+        detail: `+${dailyBonusGained} Bonus EXP Harian · ${cleanTitle}`,
+        expGained: dailyBonusGained,
+        streakDay: finalStreak,
+      });
+    } else if (watchedNewEpisode) {
+      void recordClanActivity({
+        actorUid: uid,
+        actorName: updated.name,
+        actorPhoto: updated.photoUrl,
+        type: 'mission_complete',
+        title: 'Misi Tontonan Episode Selesai',
+        detail: `+${expGained} EXP · ${cleanTitle} (${epLabel})`,
+        expGained,
+        streakDay: finalStreak,
+      });
+    }
+
+    const unlockedFrame = newlyUnlockedFrame as {
+      id: string;
+      name: string;
+      minStreak: number;
+    } | null;
+    if (unlockedFrame) {
+      void recordClanActivity({
+        actorUid: uid,
+        actorName: updated.name,
+        actorPhoto: updated.photoUrl,
+        type: 'mission_complete',
+        title: `Misi Streak ${unlockedFrame.minStreak} Hari Tercapai`,
+        detail: `Membuka hadiah frame ${unlockedFrame.name}`,
+        streakDay: finalStreak,
+      });
+    }
+
     return res.json({
       ok: true,
       expGained,
@@ -900,6 +1013,193 @@ router.post('/episode-bookmark', requireAuth, async (req: AuthenticatedRequest, 
   } catch (err) {
     console.error('[Episode Bookmark Error]', err);
     return res.status(500).json({ error: 'Gagal menyimpan episode bookmark' });
+  }
+});
+
+// =========================================================================
+// FOUNDER EXCLUSIVE: REAL-TIME USER MONITOR + SINGLE & MASS BAN CONTROLS
+// =========================================================================
+
+async function ensureFounderActor(req: AuthenticatedRequest): Promise<boolean> {
+  if (!req.authUser || req.authUser.role !== 'founder') return false;
+  const actor = await findUserByUid(req.authUser.uid);
+  return Boolean(actor && actor.role === 'founder');
+}
+
+function buildFounderUserItem(u: ReturnType<typeof sanitizeUser>) {
+  const nowMs = Date.now();
+  const lastActiveMs = u.lastActiveAt ? new Date(u.lastActiveAt).getTime() : 0;
+  const lastLoginMs = u.lastLoginAt
+    ? new Date(u.lastLoginAt).getTime()
+    : u.createdAt
+    ? new Date(u.createdAt).getTime()
+    : lastActiveMs;
+
+  const isOnline = lastActiveMs > 0 && nowMs - lastActiveMs < 3 * 60 * 1000;
+  const isRecentlyLoggedIn = lastLoginMs > 0 && nowMs - lastLoginMs < 60 * 60 * 1000;
+
+  return {
+    uid: u.uid,
+    username: u.username,
+    email: u.email,
+    name: u.name,
+    photoUrl: u.photoUrl || '',
+    role: u.role,
+    isPremium: Boolean(u.isPremium || u.role === 'founder'),
+    isVerified: Boolean(u.isVerified || u.isPremium || u.role === 'founder'),
+    activeBadge: u.activeBadge || 'Member',
+    activeBorder: u.activeBorder || 'classic',
+    level: u.role === 'founder' ? 999999 : u.level || 1,
+    countryCode: (u.countryCode || 'ID').toUpperCase(),
+    watchStreak: u.watchStreak || 0,
+    isBanned: Boolean(u.isBanned && u.role !== 'founder'),
+    bannedAt: u.bannedAt ? new Date(u.bannedAt).toISOString() : '',
+    banReason: u.banReason || '',
+    lastActiveAt: lastActiveMs > 0 ? new Date(lastActiveMs).toISOString() : '',
+    lastLoginAt: lastLoginMs > 0 ? new Date(lastLoginMs).toISOString() : '',
+    createdAt: u.createdAt ? new Date(u.createdAt).toISOString() : '',
+    isOnline,
+    isRecentlyLoggedIn,
+  };
+}
+
+// GET /api/user/founder/users — List all users & newly logged in users in real-time (Founder only)
+router.get('/founder/users', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!(await ensureFounderActor(req))) {
+      return res.status(403).json({ error: 'Akses ditolak. Fitur ini khusus untuk Founder.' });
+    }
+
+    const rawUsers = await listAllUsersForFounder();
+    const mapped = rawUsers.map((u) => buildFounderUserItem(sanitizeUser(u)));
+
+    mapped.sort((a, b) => {
+      if (a.isOnline !== b.isOnline) return a.isOnline ? -1 : 1;
+      const aTime = new Date(a.lastLoginAt || a.lastActiveAt || a.createdAt || 0).getTime();
+      const bTime = new Date(b.lastLoginAt || b.lastActiveAt || b.createdAt || 0).getTime();
+      return bTime - aTime;
+    });
+
+    const stats = {
+      total: mapped.length,
+      online: mapped.filter((u) => u.isOnline).length,
+      recentLogins: mapped.filter((u) => u.isRecentlyLoggedIn).length,
+      banned: mapped.filter((u) => u.isBanned).length,
+      vip: mapped.filter((u) => u.isPremium && u.role !== 'founder').length,
+      members: mapped.filter((u) => u.role !== 'founder').length,
+    };
+
+    return res.json({
+      ok: true,
+      serverTime: new Date().toISOString(),
+      stats,
+      users: mapped,
+    });
+  } catch (err) {
+    console.error('[Founder Users Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat daftar pengguna Founder' });
+  }
+});
+
+// POST /api/user/founder/ban — Ban or Unban a specific user in real-time (Founder only)
+router.post('/founder/ban', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!(await ensureFounderActor(req))) {
+      return res.status(403).json({ error: 'Akses ditolak. Fitur ini khusus untuk Founder.' });
+    }
+
+    const { targetUid, banned, reason } = req.body || {};
+    const cleanUid = String(targetUid || '').trim();
+    if (!cleanUid) {
+      return res.status(400).json({ error: 'UID pengguna target wajib diisi.' });
+    }
+
+    const result = await setUserBanStatus(cleanUid, Boolean(banned), String(reason || ''));
+    if (result.blockedFounder) {
+      return res.status(400).json({ error: 'Akun Founder tidak dapat dibanned.' });
+    }
+    if (!result.user) {
+      return res.status(404).json({ error: 'Pengguna target tidak ditemukan.' });
+    }
+
+    return res.json({
+      ok: true,
+      user: buildFounderUserItem(sanitizeUser(result.user)),
+    });
+  } catch (err) {
+    console.error('[Founder Ban User Error]', err);
+    return res.status(500).json({ error: 'Gagal memperbarui status ban pengguna' });
+  }
+});
+
+// POST /api/user/founder/ban-all — Mass Ban or Unban all non-founder users in real-time (Founder only)
+router.post('/founder/ban-all', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!(await ensureFounderActor(req))) {
+      return res.status(403).json({ error: 'Akses ditolak. Fitur ini khusus untuk Founder.' });
+    }
+
+    const { banned, reason } = req.body || {};
+    const affectedCount = await setAllUsersBanStatus(Boolean(banned), String(reason || ''));
+
+    return res.json({
+      ok: true,
+      banned: Boolean(banned),
+      affectedCount,
+    });
+  } catch (err) {
+    console.error('[Founder Ban All Error]', err);
+    return res.status(500).json({ error: 'Gagal memproses aksi ban massal' });
+  }
+});
+
+// GET /api/user/notifications — Fetch recent notifications (synced with favorite anime/donghua releases & replies)
+router.get('/notifications', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const uid = req.authUser!.uid;
+    const user = await findUserByUid(uid);
+    if (!user) {
+      return res.status(404).json({ error: 'Akun tidak ditemukan' });
+    }
+
+    const latestSnapshot = getLatestEpisodesSnapshot();
+    if (latestSnapshot.length > 0) {
+      await syncFavoriteEpisodeNotifications(user, latestSnapshot);
+    }
+
+    const result = await getUserNotifications(uid, 30);
+    return res.json({
+      ok: true,
+      notifications: result.notifications,
+      unreadCount: result.unreadCount,
+    });
+  } catch (err) {
+    console.error('[Notifications GET Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat notifikasi' });
+  }
+});
+
+// POST /api/user/notifications/read-all — Mark all notifications as read
+router.post('/notifications/read-all', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const uid = req.authUser!.uid;
+    await markAllNotificationsRead(uid);
+    return res.json({ ok: true, unreadCount: 0 });
+  } catch (err) {
+    console.error('[Notifications Read-All Error]', err);
+    return res.status(500).json({ error: 'Gagal menandai semua notifikasi' });
+  }
+});
+
+// POST /api/user/notifications/:id/read — Mark single notification as read
+router.post('/notifications/:id/read', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const uid = req.authUser!.uid;
+    const unreadCount = await markNotificationRead(uid, String(req.params.id || ''));
+    return res.json({ ok: true, unreadCount });
+  } catch (err) {
+    console.error('[Notification Read Error]', err);
+    return res.status(500).json({ error: 'Gagal menandai notifikasi' });
   }
 });
 

@@ -36,6 +36,18 @@ const cache = new Map<string, CacheEntry>();
 const inFlightJsonRequests = new Map<string, Promise<unknown>>();
 const imageCache = new Map<string, { expiresAt: number; contentType: string; buf: Buffer }>();
 const CACHE_TTL_MS = 10 * 60 * 1000;
+let latestEpisodesSnapshot: Array<{
+  id: string;
+  episodeId?: string;
+  type: 'anime' | 'donghua';
+  title: string;
+  episodeLabel?: string;
+  poster?: string;
+}> = [];
+
+export function getLatestEpisodesSnapshot() {
+  return latestEpisodesSnapshot;
+}
 
 let activeUpstreamCount = 0;
 let lastUpstreamDispatchMs = 0;
@@ -1023,6 +1035,17 @@ router.get('/home', async (req, res) => {
         dedupeCatalogItems([...normalizedAnimeOngoing, ...normalizedAnimeCompleted])
       ),
     ]);
+
+    if (uniqueLatestEpisodes.length > 0) {
+      latestEpisodesSnapshot = uniqueLatestEpisodes.slice(0, 30).map((ep: any) => ({
+        id: String(ep.id || ''),
+        episodeId: String(ep.episodeId || ''),
+        type: ep.type === 'donghua' ? 'donghua' : 'anime',
+        title: String(ep.title || ''),
+        episodeLabel: String(ep.episodeLabel || ''),
+        poster: String(ep.poster || ''),
+      }));
+    }
 
     res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=60');
     return res.json({

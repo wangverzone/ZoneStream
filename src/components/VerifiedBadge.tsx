@@ -17,6 +17,28 @@ export interface TelegramBadgePreset {
   pillClass: string;
   checkClass: string;
   icon: React.ComponentType<{ className?: string }>;
+  founderOnly?: boolean;
+}
+
+export const FOUNDER_ONLY_BADGE = 'Verified Founder';
+
+export function isFounderBadgeLabel(label?: string): boolean {
+  return String(label || '').trim().toLowerCase() === 'verified founder';
+}
+
+export function resolveDisplayBadgeLabel(
+  badgeLabel?: string,
+  isFounder = false,
+  isPremium = true
+): string {
+  const clean = String(badgeLabel || '').trim();
+  if (!isFounder && isFounderBadgeLabel(clean)) {
+    return isPremium ? 'Verified VIP' : 'Member';
+  }
+  if (!clean) {
+    return isFounder ? FOUNDER_ONLY_BADGE : isPremium ? 'Verified VIP' : 'Member';
+  }
+  return clean;
 }
 
 export const TELEGRAM_BADGE_PRESETS: TelegramBadgePreset[] = [
@@ -27,6 +49,7 @@ export const TELEGRAM_BADGE_PRESETS: TelegramBadgePreset[] = [
       'bg-gradient-to-r from-amber-500/25 via-yellow-500/20 to-[#E84A18]/25 border border-amber-400/50 text-amber-700 dark:text-amber-200 shadow-[inset_0_1px_1px_rgba(255,255,255,0.3)]',
     checkClass: 'text-amber-500 dark:text-amber-400 fill-amber-400/20',
     icon: Crown,
+    founderOnly: true,
   },
   {
     id: 'Verified VIP',
@@ -150,6 +173,9 @@ export function VerifiedBadge({
   const iconSize =
     size === 'sm' ? 'w-4 h-4' : size === 'lg' ? 'w-[22px] h-[22px]' : 'w-[18px] h-[18px]';
 
+  const safeBadgeLabel =
+    !isFounder && isFounderBadgeLabel(badgeLabel) ? 'Verified VIP' : badgeLabel;
+
   // Determine fill color of the 8-point rounded starburst
   let fillColor = '#0099EA'; // Default iconic Sky Blue (images_09c016ec.jfif)
   if (variant === 'red') {
@@ -160,23 +186,23 @@ export function VerifiedBadge({
     fillColor = '#F59E0B';
   } else if (variant === 'purple') {
     fillColor = '#8B5CF6';
-  } else if (isFounder || badgeLabel === 'Verified Founder' || badgeLabel === 'Donghua Master') {
+  } else if (isFounder || safeBadgeLabel === 'Donghua Master') {
     fillColor = '#E52E2E'; // Crimson Red like the reference screenshot
-  } else if (badgeLabel === 'Anime Legend') {
+  } else if (safeBadgeLabel === 'Anime Legend') {
     fillColor = '#EC4899'; // Pink like Calista in the reference screenshot
-  } else if (badgeLabel === 'Immortal Sovereign' || badgeLabel === 'Top Supporter') {
+  } else if (safeBadgeLabel === 'Immortal Sovereign' || safeBadgeLabel === 'Top Supporter') {
     fillColor = '#F59E0B';
   } else if (
-    badgeLabel === 'Shadow Monarch' ||
-    badgeLabel === 'Nitro Boost' ||
-    badgeLabel === 'Otaku King'
+    safeBadgeLabel === 'Shadow Monarch' ||
+    safeBadgeLabel === 'Nitro Boost' ||
+    safeBadgeLabel === 'Otaku King'
   ) {
     fillColor = '#8B5CF6';
   }
 
   return (
     <span
-      title={badgeLabel || (isFounder ? 'Verified Founder' : 'Verified VIP')}
+      title={safeBadgeLabel || (isFounder ? 'Verified Founder' : 'Verified VIP')}
       className="inline-flex items-center justify-center shrink-0 select-none align-middle"
     >
       <svg

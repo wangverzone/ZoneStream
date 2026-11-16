@@ -5,6 +5,8 @@ export interface IChatMessage {
   senderUid: string;
   recipientUid: string;
   text: string;
+  mediaUrl?: string;
+  mediaType?: string;
   sticker?: string;
   replyToId?: string;
   replySenderName?: string;
@@ -21,6 +23,8 @@ const ChatMessageSchema = new Schema<IChatMessageDocument>(
     senderUid: { type: String, required: true, index: true },
     recipientUid: { type: String, required: true, index: true },
     text: { type: String, default: '' },
+    mediaUrl: { type: String, default: '' },
+    mediaType: { type: String, default: '' },
     sticker: { type: String, default: '' },
     replyToId: { type: String, default: '' },
     replySenderName: { type: String, default: '' },

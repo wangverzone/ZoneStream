@@ -1,10 +1,46 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Layout } from '../components/Layout';
-import { Crown, Heart, Play, Plus, Search, Users } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  Clock,
+  Copy,
+  Crown,
+  Heart,
+  KeyRound,
+  Link2,
+  LogOut,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Send,
+  Share2,
+  ShieldCheck,
+  Sparkles,
+  UserPlus,
+  Users,
+  X,
+} from 'lucide-react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { VerifiedBadge } from '../components/VerifiedBadge';
 import { AvatarWithBadges, ClanLeaderSvgEmblem, TopRankSvgEmblem } from '../components/AvatarBadges';
+import {
+  acceptClanInvite,
+  buildClanInviteUrl,
+  CLAN_INVITE_RESOLVED_EVENT,
+  clearPendingClanInvite,
+  extractClanInviteCodeFromInput,
+  fetchClanInvitePreview,
+  getPendingClanInvite,
+  normalizeClanInviteCode,
+  setPendingClanInvite,
+  type ClanInvitePreview,
+  type ClanInviteResolveResult,
+} from '../utils/clanInvite';
+import { ClanActivityFeed } from '../components/ClanActivityFeed';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 
 export function getLevelBadgeInfo(level: number) {
@@ -33,16 +69,45 @@ function getToken(): string {
 }
 
 export function LeaderboardPage() {
-  const { user } = useAuth();
+  const { user, refreshUser, lastClanInviteResult, clearLastClanInviteResult } = useAuth();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'charisma' | 'watchtime' | 'clans' | 'levels'>('charisma');
-  const [clanFilter, setClanFilter] = useState<'Level' | 'Anggota' | 'Terbuka' | 'Baru'>('Level');
+  const { inviteCode: routeInviteCode } = useParams<{ inviteCode?: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const queryInviteCode = searchParams.get('invite') || '';
+  const queryTab = searchParams.get('tab');
+  const activeInviteCode = normalizeClanInviteCode(routeInviteCode || queryInviteCode);
+
+  const [activeTab, setActiveTab] = useState<'charisma' | 'watchtime' | 'clans' | 'levels'>(() =>
+    activeInviteCode || queryTab === 'clans'
+      ? 'clans'
+      : queryTab === 'watchtime'
+      ? 'watchtime'
+      : queryTab === 'levels'
+      ? 'levels'
+      : 'charisma'
+  );
+  const [clanFilter, setClanFilter] = useState<'Level' | 'Anggota' | 'Tersedia' | 'Baru'>('Level');
   const [clanSearch, setClanSearch] = useState('');
 
   const [realUsers, setRealUsers] = useState<any[]>([]);
   const [clans, setClans] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [joiningClanId, setJoiningClanId] = useState('');
+  const [cancelingClanId, setCancelingClanId] = useState('');
+  const [reviewingUid, setReviewingUid] = useState('');
+  const [leavingClan, setLeavingClan] = useState(false);
+  const [confirmLeaveClan, setConfirmLeaveClan] = useState(false);
+  const [clanNotice, setClanNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  // Clan recruitment / invite state
+  const [invitePreview, setInvitePreview] = useState<ClanInvitePreview | null>(null);
+  const [inviteLookupError, setInviteLookupError] = useState<string | null>(null);
+  const [inviteLookupLoading, setInviteLookupLoading] = useState(false);
+  const [manualInviteInput, setManualInviteInput] = useState('');
+  const [joiningByCode, setJoiningByCode] = useState(false);
+  const [regeneratingInvite, setRegeneratingInvite] = useState(false);
+  const [copiedInvitePart, setCopiedInvitePart] = useState<'code' | 'link' | 'share' | null>(null);
+  const handledUrlInviteRef = useRef<string>('');
 
   // Modal Create Clan
   const [showCreateClanModal, setShowCreateClanModal] = useState(false);
@@ -151,16 +216,183 @@ export function LeaderboardPage() {
 
   useEffect(() => {
     void loadData();
+    const intervalMs = activeTab === 'clans' ? 4000 : 12000;
     const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void loadData();
+      }
+    }, intervalMs);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void loadData();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [loadData, activeTab]);
+
+  useEffect(() => {
+    if (!clanNotice) return;
+    const t = setTimeout(() => setClanNotice(null), 7000);
+    return () => clearTimeout(t);
+  }, [clanNotice]);
+
+  // Switch to Clans tab when route/query invite or tab=clans changes
+  useEffect(() => {
+    if (activeInviteCode || queryTab === 'clans') {
+      setActiveTab('clans');
+    }
+  }, [activeInviteCode, queryTab]);
+
+  // Listen to automatic post-login invite resolution dispatched by AuthContext
+  useEffect(() => {
+    const applyResult = (detail: ClanInviteResolveResult | null) => {
+      if (!detail) return;
+      setActiveTab('clans');
+      setClanNotice({
+        type: detail.ok ? 'ok' : 'err',
+        text:
+          (detail.ok ? detail.message : detail.error) ||
+          'Status undangan klan diperbarui.',
+      });
       void loadData();
-    }, 15000);
-    return () => clearInterval(timer);
-  }, [loadData]);
+      void refreshUser();
+      clearLastClanInviteResult();
+    };
+
+    if (lastClanInviteResult) {
+      applyResult(lastClanInviteResult);
+    }
+
+    const onResolved = (e: Event) => {
+      const custom = e as CustomEvent<ClanInviteResolveResult>;
+      applyResult(custom.detail || null);
+    };
+    window.addEventListener(CLAN_INVITE_RESOLVED_EVENT, onResolved);
+    return () => window.removeEventListener(CLAN_INVITE_RESOLVED_EVENT, onResolved);
+  }, [lastClanInviteResult, clearLastClanInviteResult, loadData, refreshUser]);
+
+  // Resolve invite preview + auto-join when arriving via /clan/join/:code or ?invite=CODE
+  useEffect(() => {
+    const code = activeInviteCode || getPendingClanInvite();
+    if (!code) {
+      setInvitePreview(null);
+      setInviteLookupError(null);
+      return;
+    }
+
+    if (activeInviteCode) {
+      setPendingClanInvite(activeInviteCode);
+    }
+
+    let cancelled = false;
+    setInviteLookupLoading(true);
+    setInviteLookupError(null);
+
+    void fetchClanInvitePreview(code).then(async (previewRes) => {
+      if (cancelled) return;
+      setInviteLookupLoading(false);
+      if (!previewRes.ok || !previewRes.clan) {
+        setInvitePreview(null);
+        setInviteLookupError(previewRes.error || 'Kode rekrutmen klan tidak ditemukan.');
+        if (activeInviteCode) clearPendingClanInvite();
+        return;
+      }
+      setInvitePreview(previewRes.clan);
+
+      // If user is already logged in while opening the recruit link, join immediately in real time
+      if (user?.uid && activeInviteCode) {
+        const key = `${user.uid}:${activeInviteCode}`;
+        if (handledUrlInviteRef.current === key) return;
+        handledUrlInviteRef.current = key;
+        clearPendingClanInvite();
+        setJoiningByCode(true);
+        const token = getToken();
+        const joinRes = await acceptClanInvite(activeInviteCode, token);
+        if (cancelled) return;
+        setJoiningByCode(false);
+        setClanNotice({
+          type: joinRes.ok ? 'ok' : 'err',
+          text:
+            (joinRes.ok ? joinRes.message : joinRes.error) ||
+            'Gagal memproses undangan klan.',
+        });
+        if (joinRes.ok) {
+          setInvitePreview(null);
+          await loadData();
+          await refreshUser();
+          if (queryInviteCode) {
+            const next = new URLSearchParams(searchParams);
+            next.delete('invite');
+            next.set('tab', 'clans');
+            setSearchParams(next, { replace: true });
+          } else if (routeInviteCode) {
+            navigate('/leaderboard?tab=clans', { replace: true });
+          }
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeInviteCode,
+    user?.uid,
+    loadData,
+    refreshUser,
+    queryInviteCode,
+    routeInviteCode,
+    searchParams,
+    setSearchParams,
+    navigate,
+  ]);
+
+  const myJoinedClan = useMemo(() => {
+    if (!user) return null;
+    return (
+      clans.find(
+        (c) =>
+          c.leaderUid === user.uid ||
+          (Array.isArray(c.members) && c.members.includes(user.uid))
+      ) || null
+    );
+  }, [clans, user]);
+
+  const isUserClanLeader = Boolean(user && myJoinedClan && myJoinedClan.leaderUid === user.uid);
+  const pendingInboxCount = isUserClanLeader ? Number(myJoinedClan?.pendingCount || 0) : 0;
+
+  const openCreateClanModal = () => {
+    if (!user) {
+      navigate('/profile');
+      return;
+    }
+    if (myJoinedClan) {
+      setActiveTab('clans');
+      setClanNotice({
+        type: 'err',
+        text: `Kamu sudah tergabung di klan [${myJoinedClan.tag}] ${myJoinedClan.name}. Setiap user hanya bisa bergabung maksimal 1 klan!`,
+      });
+      return;
+    }
+    setClanNotice(null);
+    setShowCreateClanModal(true);
+  };
 
   const handleCreateClan = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) {
       navigate('/profile');
+      return;
+    }
+    if (myJoinedClan) {
+      setClanNotice({
+        type: 'err',
+        text: `Kamu sudah tergabung di klan [${myJoinedClan.tag}] ${myJoinedClan.name}. Maksimal 1 klan per user.`,
+      });
       return;
     }
     if (!clanName.trim() || !clanTag.trim() || creatingClan) return;
@@ -177,7 +409,6 @@ export function LeaderboardPage() {
           name: clanName.trim(),
           tag: clanTag.trim().toUpperCase(),
           description: clanDesc.trim(),
-          status: 'Terbuka',
         }),
       });
       const json = await res.json();
@@ -187,12 +418,16 @@ export function LeaderboardPage() {
         setClanTag('');
         setClanDesc('');
         setActiveTab('clans');
+        setClanNotice({
+          type: 'ok',
+          text: json.message || 'Klan berhasil dibuat & siap menerima anggota lewat ACC Ketua!',
+        });
         await loadData();
       } else {
-        alert(json.error || 'Gagal membuat klan');
+        setClanNotice({ type: 'err', text: json.error || 'Gagal membuat klan' });
       }
     } catch {
-      alert('Terjadi kesalahan jaringan.');
+      setClanNotice({ type: 'err', text: 'Terjadi kesalahan jaringan saat membuat klan.' });
     } finally {
       setCreatingClan(false);
     }
@@ -201,6 +436,13 @@ export function LeaderboardPage() {
   const handleJoinClan = async (clanId: string) => {
     if (!user) {
       navigate('/profile');
+      return;
+    }
+    if (myJoinedClan) {
+      setClanNotice({
+        type: 'err',
+        text: `Kamu sudah tergabung di klan [${myJoinedClan.tag}] ${myJoinedClan.name}. Setiap user hanya bisa bergabung maksimal 1 klan!`,
+      });
       return;
     }
     setJoiningClanId(clanId);
@@ -216,14 +458,222 @@ export function LeaderboardPage() {
       });
       const json = await res.json();
       if (res.ok) {
+        setClanNotice({
+          type: 'ok',
+          text: json.message || 'Permintaan gabung dikirim! Menunggu ACC ketua klan secara real-time.',
+        });
         await loadData();
       } else {
-        alert(json.error || 'Gagal bergabung');
+        setClanNotice({ type: 'err', text: json.error || 'Gagal mengirim permintaan gabung' });
       }
     } catch {
-      alert('Terjadi kesalahan jaringan.');
+      setClanNotice({ type: 'err', text: 'Terjadi kesalahan jaringan.' });
     } finally {
       setJoiningClanId('');
+    }
+  };
+
+  const handleCancelClanRequest = async (clanId: string) => {
+    if (!user) return;
+    setCancelingClanId(clanId);
+    try {
+      const token = getToken();
+      const res = await fetch('/api/social/clans/cancel-request', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ clanId }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setClanNotice({ type: 'ok', text: json.message || 'Permintaan gabung dibatalkan.' });
+        await loadData();
+      } else {
+        setClanNotice({ type: 'err', text: json.error || 'Gagal membatalkan permintaan.' });
+      }
+    } catch {
+      setClanNotice({ type: 'err', text: 'Terjadi kesalahan jaringan.' });
+    } finally {
+      setCancelingClanId('');
+    }
+  };
+
+  const handleReviewClanRequest = async (
+    clanId: string,
+    targetUid: string,
+    action: 'accept' | 'reject'
+  ) => {
+    if (!user) return;
+    setReviewingUid(`${clanId}:${targetUid}`);
+    try {
+      const token = getToken();
+      const res = await fetch('/api/social/clans/review', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ clanId, targetUid, action }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setClanNotice({
+          type: 'ok',
+          text:
+            json.message ||
+            (action === 'accept'
+              ? 'Permintaan diterima (ACC)! Anggota resmi bergabung.'
+              : 'Permintaan gabung ditolak.'),
+        });
+        await loadData();
+      } else {
+        setClanNotice({ type: 'err', text: json.error || 'Gagal memproses permintaan klan.' });
+        await loadData();
+      }
+    } catch {
+      setClanNotice({ type: 'err', text: 'Terjadi kesalahan jaringan.' });
+    } finally {
+      setReviewingUid('');
+    }
+  };
+
+  const handleLeaveClan = async (clanId: string) => {
+    if (!user || leavingClan) return;
+    setLeavingClan(true);
+    try {
+      const token = getToken();
+      const res = await fetch('/api/social/clans/leave', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ clanId }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setConfirmLeaveClan(false);
+        setClanNotice({ type: 'ok', text: json.message || 'Berhasil keluar dari klan.' });
+        await loadData();
+      } else {
+        setClanNotice({ type: 'err', text: json.error || 'Gagal keluar dari klan.' });
+      }
+    } catch {
+      setClanNotice({ type: 'err', text: 'Terjadi kesalahan jaringan.' });
+    } finally {
+      setLeavingClan(false);
+    }
+  };
+
+  const handleCopyInviteText = async (text: string, part: 'code' | 'link' | 'share') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedInvitePart(part);
+      setTimeout(() => setCopiedInvitePart(null), 2000);
+    } catch {
+      setClanNotice({ type: 'err', text: 'Gagal menyalin ke clipboard browser.' });
+    }
+  };
+
+  const handleShareClanInvite = async (clan: any) => {
+    const code = normalizeClanInviteCode(clan?.inviteCode || '');
+    if (!code) return;
+    const inviteUrl = buildClanInviteUrl(code);
+    const shareText = `Gabung ke klan [${clan.tag}] ${clan.name} di ZoneStream! Klik link ini & login untuk langsung masuk otomatis:\n${inviteUrl}\nKode Rekrut: ${code}`;
+
+    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+      try {
+        await navigator.share({
+          title: `Rekrut Klan [${clan.tag}] ${clan.name}`,
+          text: `Gabung ke klan [${clan.tag}] ${clan.name} di ZoneStream! Kode Rekrut: ${code}`,
+          url: inviteUrl,
+        });
+        return;
+      } catch (err: any) {
+        if (err?.name === 'AbortError') return;
+      }
+    }
+    await handleCopyInviteText(shareText, 'share');
+    setClanNotice({
+      type: 'ok',
+      text: 'Pesan & link rekrut klan disalin! Tinggal tempel ke WhatsApp, Telegram, Discord, atau chat mana pun.',
+    });
+  };
+
+  const handleRegenerateInviteCode = async (clanId: string) => {
+    if (!user || regeneratingInvite) return;
+    setRegeneratingInvite(true);
+    try {
+      const token = getToken();
+      const res = await fetch('/api/social/clans/invite/regenerate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ clanId }),
+      });
+      const json = await res.json();
+      if (res.ok && json.inviteCode) {
+        setClanNotice({
+          type: 'ok',
+          text: json.message || `Kode rekrut baru: ${json.inviteCode}`,
+        });
+        await loadData();
+      } else {
+        setClanNotice({ type: 'err', text: json.error || 'Gagal mengacak kode rekrut baru.' });
+      }
+    } catch {
+      setClanNotice({ type: 'err', text: 'Terjadi kesalahan jaringan saat mengacak kode.' });
+    } finally {
+      setRegeneratingInvite(false);
+    }
+  };
+
+  const handleJoinByInviteCode = async (e?: React.FormEvent, overrideCode?: string) => {
+    if (e) e.preventDefault();
+    const extracted = extractClanInviteCodeFromInput(overrideCode ?? manualInviteInput);
+    if (!extracted) {
+      setClanNotice({ type: 'err', text: 'Masukkan kode atau link rekrutmen klan yang valid.' });
+      return;
+    }
+
+    if (!user) {
+      setPendingClanInvite(extracted);
+      navigate('/profile');
+      return;
+    }
+
+    if (myJoinedClan) {
+      setClanNotice({
+        type: 'err',
+        text: `Kamu sudah tergabung di klan [${myJoinedClan.tag}] ${myJoinedClan.name}. Setiap user hanya bisa bergabung maksimal 1 klan!`,
+      });
+      return;
+    }
+
+    setJoiningByCode(true);
+    const token = getToken();
+    const result = await acceptClanInvite(extracted, token);
+    setJoiningByCode(false);
+
+    if (result.ok) {
+      clearPendingClanInvite();
+      setManualInviteInput('');
+      setInvitePreview(null);
+      setClanNotice({
+        type: 'ok',
+        text: result.message || 'Berhasil bergabung ke klan lewat kode rekrutmen!',
+      });
+      await loadData();
+      await refreshUser();
+    } else {
+      setClanNotice({
+        type: 'err',
+        text: result.error || 'Kode rekrutmen klan tidak valid.',
+      });
     }
   };
 
@@ -263,8 +713,8 @@ export function LeaderboardPage() {
           String(c.leaderName || '').toLowerCase().includes(q)
       );
     }
-    if (clanFilter === 'Terbuka') {
-      list = list.filter((c) => c.status === 'Terbuka');
+    if (clanFilter === 'Tersedia') {
+      list = list.filter((c) => (c.membersCount || c.members?.length || 1) < (c.maxMembers || 50));
     } else if (clanFilter === 'Anggota') {
       list.sort((a, b) => (b.membersCount || b.members?.length || 0) - (a.membersCount || a.members?.length || 0));
     } else if (clanFilter === 'Baru') {
@@ -307,14 +757,16 @@ export function LeaderboardPage() {
               </span>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => (user ? setShowCreateClanModal(true) : navigate('/profile'))}
-            className="px-5 py-2.5 rounded-2xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-extrabold inline-flex items-center gap-2 shadow-lg shadow-[#00A884]/30 transition-transform hover:scale-105 shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Buat Klan Baru</span>
-          </button>
+          {!myJoinedClan && (
+            <button
+              type="button"
+              onClick={openCreateClanModal}
+              className="px-5 py-2.5 rounded-2xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-extrabold inline-flex items-center gap-2 shadow-lg shadow-[#00A884]/30 transition-transform hover:scale-105 shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Buat Klan Baru</span>
+            </button>
+          )}
         </div>
 
         {/* Tabs */}
@@ -354,6 +806,11 @@ export function LeaderboardPage() {
           >
             <Users className="w-3.5 h-3.5" />
             <span>Clan Teratas</span>
+            {pendingInboxCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-extrabold leading-none animate-pulse">
+                {pendingInboxCount}
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -708,9 +1165,418 @@ export function LeaderboardPage() {
           </div>
         )}
 
-        {/* Tab 3: Top Clans (100% Real User-Created Clans, Zero Bots) */}
+        {/* Tab 3: Top Clans (1-Clan Limit + Real-Time Leader ACC) */}
         {activeTab === 'clans' && (
-          <div className="space-y-6">
+          <div className="space-y-5">
+            {clanNotice && (
+              <div
+                className={`flex items-start justify-between gap-3 p-3.5 rounded-2xl border text-xs font-bold ${
+                  clanNotice.type === 'ok'
+                    ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-rose-500/15 border-rose-500/35 text-rose-700 dark:text-rose-300'
+                }`}
+              >
+                <div className="flex items-start gap-2.5">
+                  {clanNotice.type === 'ok' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  )}
+                  <span>{clanNotice.text}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setClanNotice(null)}
+                  className="p-0.5 rounded-lg opacity-70 hover:opacity-100"
+                  aria-label="Tutup pemberitahuan"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* User's Current Clan + Leader Real-Time Approval Inbox */}
+            {myJoinedClan && (
+              <div className="rounded-3xl bg-white dark:bg-[#14161F] border border-[#00A884]/35 p-4 sm:p-5 shadow-lg space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {myJoinedClan.avatarUrl || myJoinedClan.leaderPhoto ? (
+                      <img
+                        src={myJoinedClan.avatarUrl || myJoinedClan.leaderPhoto}
+                        alt={myJoinedClan.name}
+                        referrerPolicy="no-referrer"
+                        className="w-11 h-11 rounded-2xl object-cover border border-amber-500/40 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-11 h-11 rounded-2xl bg-slate-800 text-amber-400 flex items-center justify-center font-extrabold text-xs shrink-0 border border-amber-500/40">
+                        [{myJoinedClan.tag}]
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-[#00A884]">
+                          Klan Kamu (Maks. 1 Klan)
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                            isUserClanLeader
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/35'
+                              : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                          }`}
+                        >
+                          {isUserClanLeader ? 'Ketua Klan' : 'Anggota'}
+                        </span>
+                      </div>
+                      <p className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white truncate mt-0.5">
+                        [{myJoinedClan.tag}] {myJoinedClan.name}
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-gray-400 font-mono">
+                        {myJoinedClan.membersCount || myJoinedClan.members?.length || 1} / {myJoinedClan.maxMembers || 50} anggota · Lv {myJoinedClan.level || 1} · ♥ {myJoinedClan.charisma || 0}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {!confirmLeaveClan ? (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmLeaveClan(true)}
+                        className="px-3.5 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        <span>Keluar Klan</span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={leavingClan}
+                          onClick={() => handleLeaveClan(myJoinedClan.clanId)}
+                          className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold"
+                        >
+                          {leavingClan ? '...' : 'Ya, Keluar'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={leavingClan}
+                          onClick={() => setConfirmLeaveClan(false)}
+                          className="px-3 py-1.5 rounded-xl bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-gray-200 text-xs font-bold"
+                        >
+                          Batal
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Random Recruit Code & Shareable Link Card */}
+                {myJoinedClan.inviteCode && (
+                  <div className="pt-3 border-t border-slate-200 dark:border-white/10 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <UserPlus className="w-4 h-4 text-[#00A884] shrink-0" />
+                        <span className="text-xs font-extrabold text-slate-900 dark:text-white">
+                          Rekrut Klan &amp; Link Undangan Acak
+                        </span>
+                      </div>
+                      {isUserClanLeader && (
+                        <button
+                          type="button"
+                          disabled={regeneratingInvite}
+                          onClick={() => handleRegenerateInviteCode(myJoinedClan.clanId)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-white/10 hover:bg-amber-500/20 text-slate-700 dark:text-amber-300 text-[11px] font-bold inline-flex items-center gap-1 transition-colors"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${regeneratingInvite ? 'animate-spin' : ''}`} />
+                          <span>{regeneratingInvite ? 'Mengacak...' : 'Acak Kode Baru'}</span>
+                        </button>
+                      )}
+                    </div>
+
+                    <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                      Bagikan kode acak atau link rekrut ke WhatsApp, Telegram, Discord, atau mana saja. Teman yang klik link lalu login akan <strong>otomatis masuk klan</strong> secara real-time!
+                    </p>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-slate-50 dark:bg-[#1A1D28] border border-slate-200 dark:border-white/10">
+                        <div className="min-w-0">
+                          <span className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold">
+                            Kode Rekrut Acak
+                          </span>
+                          <span className="text-sm font-extrabold font-mono-tabular tracking-[0.2em] text-[#00A884]">
+                            {myJoinedClan.inviteCode}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyInviteText(myJoinedClan.inviteCode, 'code')}
+                          className="px-2.5 py-1.5 rounded-xl bg-slate-200 dark:bg-white/10 hover:bg-[#00A884] hover:text-white text-slate-700 dark:text-gray-200 text-[11px] font-bold inline-flex items-center gap-1 transition-colors shrink-0"
+                        >
+                          {copiedInvitePart === 'code' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>{copiedInvitePart === 'code' ? 'Tersalin' : 'Salin'}</span>
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-2xl bg-slate-50 dark:bg-[#1A1D28] border border-slate-200 dark:border-white/10">
+                        <div className="min-w-0 flex-1">
+                          <span className="block text-[10px] uppercase tracking-wider text-slate-400 font-bold">
+                            Link Undangan Klan
+                          </span>
+                          <span className="block text-[11px] font-mono text-slate-600 dark:text-gray-300 truncate">
+                            {buildClanInviteUrl(myJoinedClan.inviteCode)}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleCopyInviteText(buildClanInviteUrl(myJoinedClan.inviteCode), 'link')
+                          }
+                          className="px-2.5 py-1.5 rounded-xl bg-slate-200 dark:bg-white/10 hover:bg-[#00A884] hover:text-white text-slate-700 dark:text-gray-200 text-[11px] font-bold inline-flex items-center gap-1 transition-colors shrink-0"
+                        >
+                          {copiedInvitePart === 'link' ? <Check className="w-3.5 h-3.5" /> : <Link2 className="w-3.5 h-3.5" />}
+                          <span>{copiedInvitePart === 'link' ? 'Tersalin' : 'Link'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleShareClanInvite(myJoinedClan)}
+                        className="px-3.5 py-2 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow transition-colors"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span>
+                          {copiedInvitePart === 'share' ? 'Pesan Undangan Tersalin!' : 'Share ke Mana Saja'}
+                        </span>
+                      </button>
+                      <Link
+                        to={`/chat?global=1&channel=rekrut&draft=${encodeURIComponent(
+                          `[REKRUT KLAN] [${myJoinedClan.tag}] ${myJoinedClan.name} membuka rekrutmen! Klik link & login untuk otomatis gabung: ${buildClanInviteUrl(
+                            myJoinedClan.inviteCode
+                          )} (Kode: ${myJoinedClan.inviteCode})`
+                        )}`}
+                        className="px-3.5 py-2 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-500 dark:text-indigo-300 border border-indigo-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Kirim ke Channel Rekrut Global</span>
+                      </Link>
+                    </div>
+                  </div>
+                )}
+
+                {isUserClanLeader && (
+                  <div className="pt-3 border-t border-slate-200 dark:border-white/10 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-amber-400 shrink-0" />
+                        <span className="text-xs font-extrabold text-slate-900 dark:text-white">
+                          Permintaan Gabung Masuk (ACC Real-Time)
+                        </span>
+                      </div>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-extrabold ${
+                          (myJoinedClan.pendingCount || 0) > 0
+                            ? 'bg-amber-500 text-slate-950'
+                            : 'bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-gray-400'
+                        }`}
+                      >
+                        {myJoinedClan.pendingCount || 0} Menunggu
+                      </span>
+                    </div>
+
+                    {Array.isArray(myJoinedClan.pendingRequests) && myJoinedClan.pendingRequests.length > 0 ? (
+                      <div className="space-y-2">
+                        {myJoinedClan.pendingRequests.map((reqUser: any) => {
+                          const busy = reviewingUid === `${myJoinedClan.clanId}:${reqUser.uid}`;
+                          return (
+                            <div
+                              key={reqUser.uid}
+                              className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-[#1A1D28] border border-slate-200 dark:border-white/10"
+                            >
+                              <Link to={`/u/${reqUser.uid}`} className="flex items-center gap-2.5 min-w-0">
+                                <img
+                                  src={reqUser.photoUrl || defaultAvatarImg}
+                                  alt={reqUser.name}
+                                  referrerPolicy="no-referrer"
+                                  className="w-9 h-9 rounded-full object-cover shrink-0 border border-white/15"
+                                />
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                      {reqUser.name}
+                                    </span>
+                                    {(reqUser.isPremium || reqUser.role === 'founder') && (
+                                      <VerifiedBadge
+                                        size="sm"
+                                        isFounder={reqUser.role === 'founder'}
+                                        badgeLabel={reqUser.activeBadge}
+                                      />
+                                    )}
+                                  </div>
+                                  <p className="text-[10px] text-slate-500 dark:text-gray-400 font-mono truncate">
+                                    UID: {reqUser.uid} · Lv {reqUser.role === 'founder' ? '9999' : reqUser.level || 1}
+                                  </p>
+                                </div>
+                              </Link>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    handleReviewClanRequest(myJoinedClan.clanId, reqUser.uid, 'accept')
+                                  }
+                                  className="px-3 py-1.5 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-extrabold inline-flex items-center gap-1 shadow"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>{busy ? '...' : 'ACC'}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    handleReviewClanRequest(myJoinedClan.clanId, reqUser.uid, 'reject')
+                                  }
+                                  className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-500 border border-rose-500/30 text-xs font-bold inline-flex items-center gap-1"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  <span>Tolak</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                        Belum ada permintaan masuk. Permintaan baru akan muncul otomatis secara real-time di sini.
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <ClanActivityFeed
+                  clanId={myJoinedClan.clanId}
+                  isLeader={isUserClanLeader}
+                  currentUid={user?.uid}
+                  onClanUpdated={() => void loadData()}
+                />
+              </div>
+            )}
+
+            {/* Active Recruit Invitation Preview Card (when arriving from shared link) */}
+            {(inviteLookupLoading || invitePreview || inviteLookupError) && !myJoinedClan && (
+              <div className="rounded-3xl bg-gradient-to-br from-[#00A884]/15 via-emerald-900/10 to-slate-900/60 dark:from-[#00A884]/20 dark:via-[#141923] dark:to-[#11131A] border border-[#00A884]/45 p-4 sm:p-5 shadow-xl space-y-3">
+                {inviteLookupLoading ? (
+                  <div className="text-xs font-bold text-[#00A884] flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 animate-pulse" />
+                    <span>Memeriksa undangan rekrutmen klan...</span>
+                  </div>
+                ) : inviteLookupError ? (
+                  <div className="flex items-start justify-between gap-3 text-xs text-rose-400 font-bold">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{inviteLookupError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInviteLookupError(null);
+                        clearPendingClanInvite();
+                      }}
+                      className="p-1 opacity-70 hover:opacity-100"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : invitePreview ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-center gap-3.5 min-w-0">
+                      {invitePreview.avatarUrl || invitePreview.leaderPhoto ? (
+                        <img
+                          src={invitePreview.avatarUrl || invitePreview.leaderPhoto}
+                          alt={invitePreview.name}
+                          referrerPolicy="no-referrer"
+                          className="w-12 h-12 rounded-2xl object-cover border border-[#00A884]/50 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-2xl bg-slate-800 text-[#00A884] flex items-center justify-center font-extrabold text-sm border border-[#00A884]/50 shrink-0">
+                          [{invitePreview.tag}]
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#00A884]">
+                          Undangan Rekrut Klan • Kode {invitePreview.inviteCode}
+                        </span>
+                        <p className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white truncate">
+                          [{invitePreview.tag}] {invitePreview.name}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-gray-300">
+                          Ketua: <strong>{invitePreview.leaderName}</strong> · {invitePreview.membersCount}/{invitePreview.maxMembers} Anggota · Lv {invitePreview.level}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!user ? (
+                        <Link
+                          to="/profile"
+                          onClick={() => setPendingClanInvite(invitePreview.inviteCode)}
+                          className="px-4 py-2.5 rounded-2xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-extrabold inline-flex items-center gap-2 shadow-lg shadow-[#00A884]/30 transition-transform hover:scale-[1.02]"
+                        >
+                          <KeyRound className="w-4 h-4" />
+                          <span>Login &amp; Otomatis Gabung</span>
+                        </Link>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={joiningByCode}
+                          onClick={() => handleJoinByInviteCode(undefined, invitePreview.inviteCode)}
+                          className="px-4 py-2.5 rounded-2xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-extrabold inline-flex items-center gap-2 shadow-lg shadow-[#00A884]/30"
+                        >
+                          <UserPlus className="w-4 h-4" />
+                          <span>{joiningByCode ? 'Bergabung...' : 'Gabung Sekarang'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )}
+
+            <div className="px-3.5 py-2.5 rounded-2xl bg-slate-100 dark:bg-[#14161F] border border-slate-200 dark:border-white/10 text-[11px] text-slate-600 dark:text-gray-300 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-[#00A884] shrink-0" />
+              <span>
+                Setiap pengguna hanya dapat bergabung di <strong>1 klan</strong>. Pengajuan reguler di-<strong>ACC Ketua Klan</strong> secara real-time, atau langsung gabung otomatis lewat <strong>Kode / Link Rekrut</strong>.
+              </span>
+            </div>
+
+            {/* Join via Random Recruit Code / Link */}
+            {!myJoinedClan && (
+              <form
+                onSubmit={handleJoinByInviteCode}
+                className="flex flex-col sm:flex-row gap-2 p-3 rounded-2xl bg-white dark:bg-[#14161F] border border-slate-200 dark:border-white/10 shadow-sm"
+              >
+                <div className="relative flex-1">
+                  <KeyRound className="w-4 h-4 text-[#00A884] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={manualInviteInput}
+                    onChange={(e) => setManualInviteInput(e.target.value)}
+                    placeholder="Punya kode atau link rekrut klan? Tempel di sini..."
+                    className="w-full h-10 pl-10 pr-3 rounded-xl bg-slate-50 dark:bg-[#1A1D28] border border-slate-200 dark:border-white/10 text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#00A884]"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={joiningByCode || !manualInviteInput.trim()}
+                  className="h-10 px-4 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] disabled:opacity-50 text-white text-xs font-extrabold inline-flex items-center justify-center gap-1.5 shrink-0 shadow"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>{joiningByCode ? 'Memproses...' : 'Gabung via Kode'}</span>
+                </button>
+              </form>
+            )}
+
             {/* Search Input */}
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -725,7 +1591,7 @@ export function LeaderboardPage() {
 
             {/* Filter Pills */}
             <div className="flex items-center gap-2 overflow-x-auto pb-1">
-              {(['Level', 'Anggota', 'Terbuka', 'Baru'] as const).map((filter) => (
+              {(['Level', 'Anggota', 'Tersedia', 'Baru'] as const).map((filter) => (
                 <button
                   key={filter}
                   type="button"
@@ -739,14 +1605,16 @@ export function LeaderboardPage() {
                   {filter}
                 </button>
               ))}
-              <button
-                type="button"
-                onClick={() => (user ? setShowCreateClanModal(true) : navigate('/profile'))}
-                className="ml-auto px-4 py-1.5 rounded-full bg-[#00A884] text-white text-xs font-bold inline-flex items-center gap-1 shrink-0"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Buat Klan</span>
-              </button>
+              {!myJoinedClan && (
+                <button
+                  type="button"
+                  onClick={openCreateClanModal}
+                  className="ml-auto px-4 py-1.5 rounded-full bg-[#00A884] text-white text-xs font-bold inline-flex items-center gap-1 shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Buat Klan</span>
+                </button>
+              )}
             </div>
 
             {filteredClans.length === 0 ? (
@@ -758,14 +1626,16 @@ export function LeaderboardPage() {
                 <p className="text-xs text-slate-500 dark:text-gray-400 max-w-sm mx-auto">
                   Jadilah pelopor dengan membuat klan pertama! Klan akan langsung masuk peringkat Top Klan otomatis sesuai Level, Like, dan jumlah tontonan anggotanya.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => (user ? setShowCreateClanModal(true) : navigate('/profile'))}
-                  className="px-5 py-2.5 rounded-xl bg-[#00A884] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Buat Klan Pertamamu</span>
-                </button>
+                {!myJoinedClan && (
+                  <button
+                    type="button"
+                    onClick={openCreateClanModal}
+                    className="px-5 py-2.5 rounded-xl bg-[#00A884] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Buat Klan Pertamamu</span>
+                  </button>
+                )}
               </div>
             ) : (
               <>
@@ -935,8 +1805,14 @@ export function LeaderboardPage() {
                     Daftar Klan Real-Time ({filteredClans.length})
                   </p>
                   {filteredClans.map((c, idx) => {
-                    const isMember = Boolean(user && Array.isArray(c.members) && c.members.includes(user.uid));
+                    const isLeader = Boolean(user && c.leaderUid === user.uid);
+                    const isMember = Boolean(
+                      user && (isLeader || (Array.isArray(c.members) && c.members.includes(user.uid)))
+                    );
                     const isFull = (c.membersCount || c.members?.length || 1) >= (c.maxMembers || 50);
+                    const hasPending = Boolean(c.hasPendingRequest);
+                    const blockedByOtherClan = Boolean(myJoinedClan && myJoinedClan.clanId !== c.clanId);
+
                     return (
                       <div
                         key={c.clanId || c.name}
@@ -978,16 +1854,46 @@ export function LeaderboardPage() {
                               <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[10px] font-bold">
                                 [{c.tag}] · Lv {c.level || 1}
                               </span>
+                              {isLeader && (c.pendingCount || 0) > 0 && (
+                                <span className="px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[10px] font-extrabold">
+                                  {c.pendingCount} Menunggu ACC
+                                </span>
+                              )}
                             </div>
                             <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
                               {c.membersCount || c.members?.length || 1} / {c.maxMembers || 50} anggota · ♥ {c.charisma || 0} Like · 🎬 {c.episodesWatched || 0} Ep
                             </p>
                           </div>
                         </div>
-                        <div className="shrink-0">
+                        <div className="shrink-0 flex items-center gap-1.5">
                           {isMember ? (
-                            <span className="px-3 py-1.5 rounded-xl bg-emerald-500/15 text-emerald-400 text-xs font-bold border border-emerald-500/30">
-                              Anggota
+                            <span
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${
+                                isLeader
+                                  ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                                  : 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                              }`}
+                            >
+                              {isLeader ? 'Ketua' : 'Anggota'}
+                            </span>
+                          ) : hasPending ? (
+                            <>
+                              <span className="px-2.5 py-1.5 rounded-xl bg-amber-500/15 text-amber-400 text-[11px] font-bold border border-amber-500/30 inline-flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                <span>Menunggu ACC</span>
+                              </span>
+                              <button
+                                type="button"
+                                disabled={cancelingClanId === c.clanId}
+                                onClick={() => handleCancelClanRequest(c.clanId)}
+                                className="px-2.5 py-1.5 rounded-xl bg-slate-200 dark:bg-white/10 hover:bg-rose-500/20 text-slate-700 dark:text-gray-200 hover:text-rose-400 text-[11px] font-bold"
+                              >
+                                {cancelingClanId === c.clanId ? '...' : 'Batal'}
+                              </button>
+                            </>
+                          ) : blockedByOtherClan ? (
+                            <span className="px-3 py-1.5 rounded-xl bg-slate-200 dark:bg-white/5 text-slate-500 dark:text-gray-500 text-[11px] font-bold border border-slate-300 dark:border-white/10">
+                              Maks. 1 Klan
                             </span>
                           ) : (
                             <button
@@ -1000,7 +1906,7 @@ export function LeaderboardPage() {
                                   : 'bg-[#00A884] hover:bg-[#06CF9C] text-white'
                               }`}
                             >
-                              {joiningClanId === c.clanId ? '...' : isFull ? 'Penuh' : 'Gabung'}
+                              {joiningClanId === c.clanId ? '...' : isFull ? 'Penuh' : 'Minta Gabung'}
                             </button>
                           )}
                         </div>
@@ -1107,6 +2013,12 @@ export function LeaderboardPage() {
               <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
                 Buat Klan Baru
               </h3>
+              {clanNotice?.type === 'err' && (
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/15 border border-rose-500/35 text-rose-600 dark:text-rose-300 text-xs font-bold">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{clanNotice.text}</span>
+                </div>
+              )}
               <form onSubmit={handleCreateClan} className="space-y-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-600 dark:text-gray-300 mb-1">

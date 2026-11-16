@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
 import { hashPassword } from './auth.ts';
+import { setCachedBanEntry, clearBanCache } from './banCache.ts';
 import { UserModel, type IUser, type PublicUser } from './models/User.ts';
 import { VerificationCodeModel, type OtpPurpose } from './models/VerificationCode.ts';
 
@@ -103,14 +104,26 @@ export function sanitizeUser(user: IUser): PublicUser {
     pub.activeBadge = 'Verified Founder';
     pub.isPremium = true;
     pub.isVerified = true;
+    pub.isBanned = false;
+    pub.bannedAt = null;
+    pub.banReason = '';
     pub.level = 999999;
     pub.charisma = Math.max(9999, Number(pub.charisma ?? 9999));
   } else {
+    pub.role = 'member';
+    pub.isBanned = Boolean(pub.isBanned);
+    pub.banReason = pub.isBanned ? String(pub.banReason || '') : '';
+    const hasFounderBadge =
+      String(pub.activeBadge || '').trim().toLowerCase() === 'verified founder';
     if (isWhitelisted || pub.isPremium) {
       pub.isPremium = true;
       pub.isVerified = true;
       pub.activeBadge =
-        pub.activeBadge && pub.activeBadge !== 'Member' ? pub.activeBadge : 'Verified VIP';
+        pub.activeBadge && pub.activeBadge !== 'Member' && !hasFounderBadge
+          ? pub.activeBadge
+          : 'Verified VIP';
+    } else if (hasFounderBadge || !pub.activeBadge) {
+      pub.activeBadge = 'Member';
     }
     pub.level = Math.max(1, Number(pub.level) || 1);
     pub.charisma = Math.max(0, Number(pub.charisma ?? 0));
@@ -249,6 +262,11 @@ async function ensureFounderFallback() {
       u.charisma = Math.max(9999, Number(u.charisma ?? 9999));
       u.activeBadge = 'Verified Founder';
     } else {
+      const hasFounderBadge =
+        String(u.activeBadge || '').trim().toLowerCase() === 'verified founder';
+      if (hasFounderBadge) {
+        u.activeBadge = u.isPremium || u.isVerified ? 'Verified VIP' : 'Member';
+      }
       if (emailLower === 'akunresspakistan@gmail.com') {
         u.isPremium = true;
         u.isVerified = true;
@@ -259,7 +277,11 @@ async function ensureFounderFallback() {
         u.premiumPlan = u.premiumPlan || 'VIP 1 Tahun';
         u.premiumExpiryDate = u.premiumExpiryDate || oneYearExpiry;
         u.activeBadge =
-          u.activeBadge && u.activeBadge !== 'Member' ? u.activeBadge : 'Verified VIP';
+          u.activeBadge &&
+          u.activeBadge !== 'Member' &&
+          u.activeBadge.toLowerCase() !== 'verified founder'
+            ? u.activeBadge
+            : 'Verified VIP';
       }
       // Ensure non-founder users without real likes from other users have charisma = 0
       if (!Array.isArray(u.likedBy) || u.likedBy.length === 0) {
@@ -314,6 +336,26 @@ export async function ensureFounderAccount() {
       { $set: { charisma: 0 } }
     ).catch(() => {});
 
+    // Strip exclusive 'Verified Founder' badge from any non-founder accounts in DB
+    await UserModel.updateMany(
+      {
+        role: { $ne: 'founder' },
+        email: { $ne: FOUNDER_EMAIL },
+        activeBadge: /^verified founder$/i,
+        isPremium: true,
+      },
+      { $set: { activeBadge: 'Verified VIP' } }
+    ).catch(() => {});
+    await UserModel.updateMany(
+      {
+        role: { $ne: 'founder' },
+        email: { $ne: FOUNDER_EMAIL },
+        activeBadge: /^verified founder$/i,
+        isPremium: { $ne: true },
+      },
+      { $set: { activeBadge: 'Member' } }
+    ).catch(() => {});
+
     const pakistanUser = await UserModel.findOne({ email: 'akunresspakistan@gmail.com' });
     if (pakistanUser) {
       pakistanUser.isPremium = true;
@@ -330,7 +372,9 @@ export async function ensureFounderAccount() {
         pakistanUser.premiumExpiryDate ||
         new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
       pakistanUser.activeBadge =
-        pakistanUser.activeBadge && pakistanUser.activeBadge !== 'Member'
+        pakistanUser.activeBadge &&
+        pakistanUser.activeBadge !== 'Member' &&
+        pakistanUser.activeBadge.toLowerCase() !== 'verified founder'
           ? pakistanUser.activeBadge
           : 'Verified VIP';
       await pakistanUser.save();
@@ -684,6 +728,124 @@ export async function touchUserLastActive(uid: string): Promise<void> {
   } catch {
     // Non-fatal heartbeat
   }
+}
+
+export async function touchUserLogin(uid: string): Promise<void> {
+  if (!uid) return;
+  const now = new Date();
+  try {
+    if (isDbMongoConnected()) {
+      await UserModel.updateOne({ uid }, { $set: { lastLoginAt: now, lastActiveAt: now } });
+    } else {
+      const store = readFallbackUsers();
+      if (store[uid]) {
+        store[uid].lastLoginAt = now;
+        store[uid].lastActiveAt = now;
+        writeFallbackUsers(store);
+      }
+    }
+  } catch {
+    // Non-fatal login touch
+  }
+}
+
+export async function listAllUsersForFounder(): Promise<IUser[]> {
+  const mongoOk = await connectDB();
+  if (mongoOk) {
+    const docs = await UserModel.find({})
+      .sort({ lastLoginAt: -1, lastActiveAt: -1, createdAt: -1 })
+      .lean();
+    return docs as IUser[];
+  }
+  const all = Object.values(readFallbackUsers());
+  return all.sort((a, b) => {
+    const aMs = new Date(a.lastLoginAt || a.lastActiveAt || a.createdAt || 0).getTime();
+    const bMs = new Date(b.lastLoginAt || b.lastActiveAt || b.createdAt || 0).getTime();
+    return bMs - aMs;
+  });
+}
+
+export async function setUserBanStatus(
+  targetUid: string,
+  banned: boolean,
+  reason = ''
+): Promise<{ user: IUser | null; blockedFounder?: boolean }> {
+  const cleanUid = String(targetUid || '').trim();
+  const cleanReason = String(reason || '').trim().slice(0, 160);
+  if (!cleanUid) return { user: null };
+
+  const target = await findUserByUid(cleanUid);
+  if (!target) return { user: null };
+
+  const isTargetFounder =
+    target.role === 'founder' ||
+    target.uid === FOUNDER_UID ||
+    String(target.email || '').toLowerCase() === FOUNDER_EMAIL;
+  if (isTargetFounder) {
+    return { user: target, blockedFounder: true };
+  }
+
+  const now = new Date();
+  const updated = await updateUserByUid(cleanUid, (cur) => ({
+    ...cur,
+    isBanned: banned,
+    bannedAt: banned ? now : null,
+    banReason: banned ? cleanReason : '',
+  }));
+
+  setCachedBanEntry(cleanUid, {
+    role: 'member',
+    isBanned: banned,
+    banReason: banned ? cleanReason : '',
+  });
+
+  return { user: updated };
+}
+
+export async function setAllUsersBanStatus(
+  banned: boolean,
+  reason = ''
+): Promise<number> {
+  const cleanReason = String(reason || '').trim().slice(0, 160);
+  const mongoOk = await connectDB();
+  const now = new Date();
+  let affected = 0;
+
+  if (mongoOk) {
+    const res = await UserModel.updateMany(
+      {
+        role: { $ne: 'founder' },
+        uid: { $ne: FOUNDER_UID },
+        email: { $ne: FOUNDER_EMAIL },
+      },
+      {
+        $set: {
+          isBanned: banned,
+          bannedAt: banned ? now : null,
+          banReason: banned ? cleanReason : '',
+        },
+      }
+    );
+    affected = Number(res.modifiedCount || res.matchedCount || 0);
+  } else {
+    const store = readFallbackUsers();
+    for (const u of Object.values(store)) {
+      const isFounder =
+        u.role === 'founder' ||
+        u.uid === FOUNDER_UID ||
+        String(u.email || '').toLowerCase() === FOUNDER_EMAIL;
+      if (!isFounder) {
+        u.isBanned = banned;
+        u.bannedAt = banned ? now : null;
+        u.banReason = banned ? cleanReason : '';
+        affected += 1;
+      }
+    }
+    writeFallbackUsers(store);
+  }
+
+  clearBanCache();
+  return affected;
 }
 
 export function toCommunityUserSummary(user: IUser) {

@@ -1,6 +1,14 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
+import { playSoundEffect } from '../utils/soundEffects';
+import {
+  acceptClanInvite,
+  CLAN_INVITE_RESOLVED_EVENT,
+  clearPendingClanInvite,
+  getPendingClanInvite,
+  type ClanInviteResolveResult,
+} from '../utils/clanInvite';
 import type {
   UserProfile,
   WatchHistoryItem,
@@ -71,6 +79,8 @@ interface AuthContextValue {
   getLocalHistory: () => WatchHistoryItem[];
   getLocalBookmarks: () => BookmarkItem[];
   getLocalEpisodeBookmarks: () => EpisodeBookmarkItem[];
+  lastClanInviteResult: ClanInviteResolveResult | null;
+  clearLastClanInviteResult: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -341,8 +351,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
   const [guestData, setGuestData] = useState(readGuestData);
+  const [lastClanInviteResult, setLastClanInviteResult] = useState<ClanInviteResolveResult | null>(null);
+  const resolvingInviteRef = useRef<string | null>(null);
+  const lastKnownLevelRef = useRef<{ uid: string; level: number } | null>(null);
 
   const setUser = useCallback((next: UserProfile | null) => {
+    if (next) {
+      const prev = lastKnownLevelRef.current;
+      if (
+        prev &&
+        prev.uid === next.uid &&
+        next.role !== 'founder' &&
+        typeof next.level === 'number' &&
+        next.level > prev.level
+      ) {
+        playSoundEffect('levelUp');
+      }
+      lastKnownLevelRef.current = { uid: next.uid, level: Number(next.level) || 1 };
+    } else {
+      lastKnownLevelRef.current = null;
+    }
     setUserState(next);
     writeCachedUser(next);
   }, []);
@@ -364,10 +392,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!resp.ok) {
+        let banMsg: string | null = null;
+        if (resp.status === 403) {
+          try {
+            const errJson = await resp.json();
+            if (errJson?.banned) {
+              banMsg = errJson.error || 'Akun Anda telah dibanned oleh Founder.';
+            }
+          } catch {
+            // ignore JSON parse failure
+          }
+        }
         localStorage.removeItem(TOKEN_STORAGE_KEY);
         localStorage.removeItem(LEGACY_TOKEN_KEY);
+        firebaseSignOut(auth).catch(() => {});
         setUser(null);
         localStorage.setItem('zonestream_is_premium', 'false');
+        if (banMsg) {
+          setAuthError(banMsg);
+        }
       } else {
         const json = await resp.json();
         if (json.user) {
@@ -386,7 +429,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadSession();
   }, [loadSession]);
 
+  // Real-time session heartbeat: detect ban / role / VIP changes within <= 5s across tabs & active playback
+  useEffect(() => {
+    if (!user) return;
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void loadSession();
+      }
+    }, 5_000);
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void loadSession();
+      }
+    };
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
+    return () => {
+      window.clearInterval(poll);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
+    };
+  }, [user?.uid, loadSession]);
+
+  // Real-time auto-join clan whenever a pending recruit invite exists and the user becomes authenticated
+  useEffect(() => {
+    if (!user?.uid) return;
+    const pendingCode = getPendingClanInvite();
+    if (!pendingCode) return;
+    const attemptKey = `${user.uid}:${pendingCode}`;
+    if (resolvingInviteRef.current === attemptKey) return;
+
+    const token =
+      localStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || '';
+    if (!token) return;
+
+    resolvingInviteRef.current = attemptKey;
+    clearPendingClanInvite();
+
+    void (async () => {
+      const result = await acceptClanInvite(pendingCode, token);
+      setLastClanInviteResult(result);
+      if (result.ok && !result.alreadyMember) {
+        playSoundEffect('notification');
+      }
+      window.dispatchEvent(new CustomEvent(CLAN_INVITE_RESOLVED_EVENT, { detail: result }));
+      if (resolvingInviteRef.current === attemptKey) {
+        resolvingInviteRef.current = null;
+      }
+    })();
+  }, [user?.uid]);
+
   const clearAuthError = () => setAuthError(null);
+  const clearLastClanInviteResult = useCallback(() => setLastClanInviteResult(null), []);
 
   const login = async (identifier: string, password: string): Promise<boolean> => {
     setAuthError(null);
@@ -702,6 +796,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         getLocalHistory,
         getLocalBookmarks,
         getLocalEpisodeBookmarks,
+        lastClanInviteResult,
+        clearLastClanInviteResult,
       }}
     >
       {children}

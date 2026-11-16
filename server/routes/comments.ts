@@ -3,8 +3,20 @@ import { requireAuth, type AuthenticatedRequest } from '../auth.ts';
 import { connectDB, findUserByUid } from '../db.ts';
 import { CommentModel } from '../models/Comment.ts';
 import { UserModel } from '../models/User.ts';
+import { createNotification } from '../notifications.ts';
 
 const router = Router();
+
+function buildMediaNotificationLink(mediaKey: string): string {
+  const idx = mediaKey.indexOf(':');
+  if (idx <= 0) return '/';
+  const type = mediaKey.slice(0, idx);
+  const id = mediaKey.slice(idx + 1);
+  if ((type === 'anime' || type === 'donghua') && id) {
+    return `/detail/${type}/${encodeURIComponent(id)}`;
+  }
+  return '/';
+}
 
 const VIP_TOKEN_REGEX = /\[vip:[a-z0-9_-]+\]/i;
 
@@ -77,16 +89,25 @@ router.get('/', async (req, res) => {
           .filter((c) => userMap.has(c.uid))
           .map((c) => {
             const live = userMap.get(c.uid)!;
+            const liveIsFounder = live.role === 'founder';
+            const liveIsPremium = Boolean(
+              live.isPremium || live.isVerified || liveIsFounder
+            );
+            const rawBadge = live.activeBadge || c.authorBadge || (liveIsPremium ? 'Verified VIP' : 'Member');
+            const safeBadge =
+              !liveIsFounder && String(rawBadge).trim().toLowerCase() === 'verified founder'
+                ? liveIsPremium
+                  ? 'Verified VIP'
+                  : 'Member'
+                : rawBadge;
             return {
               ...c,
               authorName: live.name || c.authorName,
               authorPhoto: live.photoUrl || c.authorPhoto,
               authorBanner: live.bannerUrl || c.authorBanner || '',
               authorRole: live.role || c.authorRole,
-              authorIsPremium: Boolean(
-                live.isPremium || live.isVerified || live.role === 'founder'
-              ),
-              authorBadge: live.activeBadge || c.authorBadge,
+              authorIsPremium: liveIsPremium,
+              authorBadge: safeBadge,
               authorBorder: live.activeBorder || c.authorBorder,
               authorTheme: live.profileTheme || c.authorTheme || 'default',
               authorStatusEmoji: live.statusEmoji || c.authorStatusEmoji || '',
@@ -184,7 +205,13 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       authorBanner: hasVipPrivilege ? user.bannerUrl || '' : '',
       authorRole: user.role,
       authorIsPremium: hasVipPrivilege,
-      authorBadge: user.activeBadge || (hasVipPrivilege ? 'Verified' : 'Member'),
+      authorBadge:
+        user.role !== 'founder' &&
+        String(user.activeBadge || '').trim().toLowerCase() === 'verified founder'
+          ? hasVipPrivilege
+            ? 'Verified VIP'
+            : 'Member'
+          : user.activeBadge || (hasVipPrivilege ? 'Verified VIP' : 'Member'),
       authorBorder: user.activeBorder || 'classic',
       authorTheme: user.profileTheme || 'default',
       authorStatusEmoji: hasVipPrivilege ? user.statusEmoji || '' : '',
@@ -197,8 +224,37 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
     };
 
     const mongoOk = await connectDB();
+    const notifyReplyTarget = async () => {
+      if (!payload.parentId) return;
+      try {
+        let parentDoc: any = null;
+        if (mongoOk) {
+          parentDoc = await CommentModel.findById(payload.parentId).select('uid mediaTitle').lean();
+        } else {
+          parentDoc = memoryComments.find((c) => c._id === payload.parentId);
+        }
+        if (parentDoc?.uid && parentDoc.uid !== user.uid) {
+          const snippet = (cleanText || (cleanSticker ? '[Mengirim stiker]' : '')).slice(0, 90);
+          const titleLabel = payload.mediaTitle || parentDoc.mediaTitle || 'episode ini';
+          await createNotification({
+            uid: parentDoc.uid,
+            type: 'comment_reply',
+            title: `${user.name} membalas komentarmu`,
+            message: `Di ${titleLabel}: "${snippet}"`,
+            link: buildMediaNotificationLink(cleanMediaKey),
+            actorUid: user.uid,
+            actorName: user.name,
+            actorPhoto: user.photoUrl || '',
+          });
+        }
+      } catch (notifyErr) {
+        console.warn('[Comment Reply Notify Notice]', (notifyErr as Error).message);
+      }
+    };
+
     if (mongoOk) {
       const created = await CommentModel.create(payload);
+      await notifyReplyTarget();
       const obj = created.toObject();
       return res.status(201).json({
         ok: true,
@@ -218,6 +274,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       createdAt: new Date().toISOString(),
     };
     memoryComments.unshift(memDoc);
+    await notifyReplyTarget();
     return res.status(201).json({ ok: true, comment: memDoc });
   } catch (err) {
     console.error('[Comments POST Error]', err);
@@ -238,6 +295,20 @@ router.post('/:id/like', requireAuth, async (req: AuthenticatedRequest, res) => 
       const exists = doc.likes.includes(uid);
       doc.likes = exists ? doc.likes.filter((id) => id !== uid) : [...doc.likes, uid];
       await doc.save();
+      if (!exists && doc.uid && doc.uid !== uid) {
+        const liker = await findUserByUid(uid).catch(() => null);
+        await createNotification({
+          uid: doc.uid,
+          type: 'comment_like',
+          title: `${liker?.name || 'Seseorang'} menyukai komentarmu`,
+          message: `Di ${doc.mediaTitle || 'komentar episode'}: "${(doc.text || '[Stiker]').slice(0, 75)}"`,
+          link: buildMediaNotificationLink(doc.mediaKey),
+          actorUid: uid,
+          actorName: liker?.name || '',
+          actorPhoto: liker?.photoUrl || '',
+          dedupeKey: `clike:${commentId}:${uid}`,
+        });
+      }
       return res.json({ ok: true, likes: doc.likes });
     }
 
@@ -245,6 +316,20 @@ router.post('/:id/like', requireAuth, async (req: AuthenticatedRequest, res) => 
     if (!item) return res.status(404).json({ error: 'Komentar tidak ditemukan' });
     const exists = item.likes.includes(uid);
     item.likes = exists ? item.likes.filter((id: string) => id !== uid) : [...item.likes, uid];
+    if (!exists && item.uid && item.uid !== uid) {
+      const liker = await findUserByUid(uid).catch(() => null);
+      await createNotification({
+        uid: item.uid,
+        type: 'comment_like',
+        title: `${liker?.name || 'Seseorang'} menyukai komentarmu`,
+        message: `Di ${item.mediaTitle || 'komentar episode'}: "${(item.text || '[Stiker]').slice(0, 75)}"`,
+        link: buildMediaNotificationLink(item.mediaKey),
+        actorUid: uid,
+        actorName: liker?.name || '',
+        actorPhoto: liker?.photoUrl || '',
+        dedupeKey: `clike:${commentId}:${uid}`,
+      });
+    }
     return res.json({ ok: true, likes: item.likes });
   } catch (err) {
     console.error('[Comments Like Error]', err);

@@ -1,7 +1,14 @@
 import crypto from 'crypto';
 import { Router } from 'express';
 import { requireAuth, type AuthenticatedRequest } from '../auth.ts';
-import { connectDB, findUserByUid, sanitizeUser, updateUserByUid } from '../db.ts';
+import {
+  connectDB,
+  findUserByUid,
+  readFallbackJson,
+  sanitizeUser,
+  updateUserByUid,
+  writeFallbackJson,
+} from '../db.ts';
 import { TransactionModel, type ITransaction } from '../models/Transaction.ts';
 
 const router = Router();
@@ -13,6 +20,9 @@ const PAKASIR_API_KEY = (
 const PAKASIR_WEBHOOK_SECRET = (
   process.env.PAKASIR_WEBHOOK_SECRET || 'b24465c06e491e4035aae8a9ca57b7f1'
 ).trim();
+
+const TX_FALLBACK_FILE = 'transactions-v1.json';
+const activeActivationLocks = new Set<string>();
 
 export interface PremiumPackageSpec {
   id: string;
@@ -31,7 +41,7 @@ export const PREMIUM_PACKAGES: PremiumPackageSpec[] = [
     amount: 15000,
     durationDays: 30,
     bonusExp: 300,
-    tagline: 'Bebas iklan 10s, Lencana VIP, Emoji Eksklusif & 2x EXP Nonton selama 30 hari penuh.',
+    tagline: 'Bebas iklan 100%, Lencana Verified, Emoji Eksklusif & 2x EXP Nonton selama 30 hari penuh.',
   },
   {
     id: 'vip_20k',
@@ -52,8 +62,6 @@ export const PREMIUM_PACKAGES: PremiumPackageSpec[] = [
   },
 ];
 
-const memoryTransactions = new Map<string, ITransaction>();
-
 const getExpNeeded = (level: number) => Math.max(100, level * 200);
 
 function resolvePackage(amountInput: unknown, planIdInput?: unknown): PremiumPackageSpec {
@@ -68,6 +76,54 @@ function resolvePackage(amountInput: unknown, planIdInput?: unknown): PremiumPac
   if (numAmount >= 30000) return PREMIUM_PACKAGES[2];
   if (numAmount >= 20000) return PREMIUM_PACKAGES[1];
   return PREMIUM_PACKAGES[0];
+}
+
+function readFallbackTxMap(): Record<string, ITransaction> {
+  return readFallbackJson<Record<string, ITransaction>>(TX_FALLBACK_FILE, {});
+}
+
+function writeFallbackTxMap(map: Record<string, ITransaction>) {
+  writeFallbackJson(TX_FALLBACK_FILE, map);
+}
+
+async function getTransactionByOrderId(orderId: string): Promise<ITransaction | null> {
+  const mongoOk = await connectDB();
+  if (mongoOk) {
+    const doc = await TransactionModel.findOne({ orderId }).lean();
+    return doc ? (doc as ITransaction) : null;
+  }
+  const map = readFallbackTxMap();
+  return map[orderId] || null;
+}
+
+async function saveNewTransaction(tx: ITransaction): Promise<void> {
+  const mongoOk = await connectDB();
+  if (mongoOk) {
+    await TransactionModel.create(tx);
+  } else {
+    const map = readFallbackTxMap();
+    map[tx.orderId] = tx;
+    writeFallbackTxMap(map);
+  }
+}
+
+async function markTransactionTerminalStatus(
+  orderId: string,
+  status: 'expired' | 'failed'
+): Promise<void> {
+  const mongoOk = await connectDB();
+  if (mongoOk) {
+    await TransactionModel.updateOne(
+      { orderId, status: 'pending' },
+      { $set: { status } }
+    );
+  } else {
+    const map = readFallbackTxMap();
+    if (map[orderId] && map[orderId].status === 'pending') {
+      map[orderId].status = status;
+      writeFallbackTxMap(map);
+    }
+  }
 }
 
 function constantTimeMatch(a: string, b: string): boolean {
@@ -128,62 +184,216 @@ async function activatePremiumFromTransaction(
   tx: ITransaction,
   txnIdFromGateway?: string
 ) {
-  const alreadyPaid = tx.status === 'paid';
-  const now = new Date();
-
-  const mongoOk = await connectDB();
-  if (mongoOk) {
-    const doc = await TransactionModel.findOne({ orderId: tx.orderId });
-    if (doc && doc.status !== 'paid') {
-      doc.status = 'paid';
-      doc.txnId = txnIdFromGateway || doc.txnId || '';
-      doc.paidAt = now.toISOString();
-      await doc.save();
-    }
-  } else {
-    const mem = memoryTransactions.get(tx.orderId);
-    if (mem) {
-      mem.status = 'paid';
-      mem.txnId = txnIdFromGateway || mem.txnId || '';
-      mem.paidAt = now.toISOString();
-    }
+  if (activeActivationLocks.has(tx.orderId)) {
+    return findUserByUid(tx.uid);
   }
+  activeActivationLocks.add(tx.orderId);
 
-  if (alreadyPaid) {
-    const existing = await findUserByUid(tx.uid);
-    return existing;
+  try {
+    const now = new Date();
+    const paidAtIso = now.toISOString();
+    const finalTxnId = txnIdFromGateway || tx.txnId || tx.orderId;
+    const mongoOk = await connectDB();
+    let claimed = false;
+
+    if (mongoOk) {
+      const updatedDoc = await TransactionModel.findOneAndUpdate(
+        { orderId: tx.orderId, status: { $ne: 'paid' } },
+        {
+          $set: {
+            status: 'paid',
+            txnId: finalTxnId,
+            paidAt: paidAtIso,
+          },
+        },
+        { new: true }
+      );
+      claimed = Boolean(updatedDoc);
+    } else {
+      const map = readFallbackTxMap();
+      const existing = map[tx.orderId];
+      if (existing && existing.status !== 'paid') {
+        existing.status = 'paid';
+        existing.txnId = finalTxnId;
+        existing.paidAt = paidAtIso;
+        writeFallbackTxMap(map);
+        claimed = true;
+      }
+    }
+
+    if (!claimed) {
+      return findUserByUid(tx.uid);
+    }
+
+    const updatedUser = await updateUserByUid(tx.uid, (current) => {
+      const currentExpiryMs = current.premiumExpiryDate
+        ? new Date(current.premiumExpiryDate).getTime()
+        : 0;
+      const baseMs = currentExpiryMs > now.getTime() ? currentExpiryMs : now.getTime();
+      const newExpiryIso = new Date(
+        baseMs + tx.durationDays * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      let nextExp = (current.exp || 0) + (tx.bonusExp || 0);
+      let nextLevel = current.level || 1;
+      while (nextExp >= getExpNeeded(nextLevel)) {
+        nextExp -= getExpNeeded(nextLevel);
+        nextLevel += 1;
+      }
+
+      return {
+        ...current,
+        isPremium: true,
+        isVerified: true,
+        premiumPlan: tx.planName,
+        premiumExpiryDate: newExpiryIso,
+        activeBadge:
+          current.activeBadge === 'Member' || !current.activeBadge
+            ? 'Verified VIP'
+            : current.activeBadge,
+        activeBorder: current.activeBorder === 'classic' ? 'gold' : current.activeBorder,
+        level: nextLevel,
+        exp: nextExp,
+      };
+    });
+
+    return updatedUser;
+  } finally {
+    activeActivationLocks.delete(tx.orderId);
   }
+}
 
-  const updatedUser = await updateUserByUid(tx.uid, (current) => {
-    const currentExpiryMs = current.premiumExpiryDate
-      ? new Date(current.premiumExpiryDate).getTime()
-      : 0;
-    const baseMs = currentExpiryMs > now.getTime() ? currentExpiryMs : now.getTime();
-    const newExpiryIso = new Date(
-      baseMs + tx.durationDays * 24 * 60 * 60 * 1000
-    ).toISOString();
+interface PakasirDetailResult {
+  ok: boolean;
+  remoteStatus: string;
+  remoteAmount: number;
+  remoteOrderId: string;
+  txnId: string;
+  message?: string;
+}
 
-    let nextExp = (current.exp || 0) + (tx.bonusExp || 0);
-    let nextLevel = current.level || 1;
-    while (nextExp >= getExpNeeded(nextLevel)) {
-      nextExp -= getExpNeeded(nextLevel);
-      nextLevel += 1;
+async function queryPakasirTransactionDetail(
+  orderId: string,
+  amount: number
+): Promise<PakasirDetailResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const detailUrl = `https://app.pakasir.com/api/transactiondetail?project=${encodeURIComponent(
+      PAKASIR_SLUG
+    )}&amount=${encodeURIComponent(String(Math.round(amount)))}&order_id=${encodeURIComponent(
+      orderId
+    )}&api_key=${encodeURIComponent(PAKASIR_API_KEY)}`;
+
+    const resp = await fetch(detailUrl, {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+
+    const rawText = await resp.text();
+    let json: any = {};
+    try {
+      json = JSON.parse(rawText);
+    } catch {
+      json = {};
+    }
+
+    const remote = json?.transaction || json?.data || null;
+    if (!resp.ok || !remote) {
+      return {
+        ok: false,
+        remoteStatus: 'pending',
+        remoteAmount: 0,
+        remoteOrderId: orderId,
+        txnId: '',
+        message: json?.message || json?.error || `HTTP ${resp.status}`,
+      };
     }
 
     return {
-      ...current,
-      isPremium: true,
-      isVerified: true,
-      premiumPlan: tx.planName,
-      premiumExpiryDate: newExpiryIso,
-      activeBadge: current.activeBadge === 'Member' ? 'Verified' : current.activeBadge,
-      activeBorder: current.activeBorder === 'classic' ? 'gold' : current.activeBorder,
-      level: nextLevel,
-      exp: nextExp,
+      ok: true,
+      remoteStatus: String(remote.status || 'pending').toLowerCase().trim(),
+      remoteAmount: Number(remote.amount ?? amount) || 0,
+      remoteOrderId: String(remote.order_id || orderId).trim(),
+      txnId: String(remote.completed_at || remote.txn_id || orderId).trim(),
     };
-  });
+  } catch (err: any) {
+    return {
+      ok: false,
+      remoteStatus: 'pending',
+      remoteAmount: 0,
+      remoteOrderId: orderId,
+      txnId: '',
+      message: err?.message || 'Timeout menghubungi server Pakasir',
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
-  return updatedUser;
+async function verifyAndSyncPakasirTransaction(tx: ITransaction) {
+  if (tx.status === 'paid') {
+    const user = await findUserByUid(tx.uid);
+    return {
+      paid: true,
+      status: 'paid' as const,
+      transaction: tx,
+      user,
+      error: null,
+    };
+  }
+
+  const detail = await queryPakasirTransactionDetail(tx.orderId, tx.amount);
+
+  if (detail.ok) {
+    const isCompleted = ['completed', 'paid', 'success', 'settled'].includes(detail.remoteStatus);
+    const matchesOrder = detail.remoteOrderId === tx.orderId;
+    const matchesAmount = detail.remoteAmount >= tx.amount;
+
+    if (isCompleted && matchesOrder && matchesAmount) {
+      const updatedUser = await activatePremiumFromTransaction(tx, detail.txnId);
+      return {
+        paid: true,
+        status: 'paid' as const,
+        transaction: { ...tx, status: 'paid' as const, paidAt: new Date().toISOString() },
+        user: updatedUser,
+        error: null,
+      };
+    }
+
+    if (['expired', 'cancelled', 'canceled', 'failed'].includes(detail.remoteStatus)) {
+      const terminal = detail.remoteStatus === 'failed' ? 'failed' : 'expired';
+      await markTransactionTerminalStatus(tx.orderId, terminal);
+      return {
+        paid: false,
+        status: terminal,
+        transaction: { ...tx, status: terminal },
+        user: null,
+        error: 'Tagihan ini sudah kedaluwarsa atau dibatalkan di Pakasir. Silakan buat transaksi baru.',
+      };
+    }
+  }
+
+  if (tx.expiredAt && new Date(tx.expiredAt).getTime() < Date.now()) {
+    await markTransactionTerminalStatus(tx.orderId, 'expired');
+    return {
+      paid: false,
+      status: 'expired' as const,
+      transaction: { ...tx, status: 'expired' as const },
+      user: null,
+      error: 'Tagihan pembayaran sudah kedaluwarsa. Silakan buat transaksi baru.',
+    };
+  }
+
+  return {
+    paid: false,
+    status: 'pending' as const,
+    transaction: tx,
+    user: null,
+    error:
+      'Pembayaran belum terdeteksi masuk di sistem Pakasir. Pastikan kamu sudah selesai transfer sesuai nominal, lalu tunggu beberapa detik.',
+  };
 }
 
 // GET /api/payment/packages — Public package list (15k / 20k / 30k)
@@ -194,63 +404,7 @@ router.get('/packages', (_req, res) => {
   });
 });
 
-function crc16Ccitt(str: string): string {
-  let crc = 0xffff;
-  for (let i = 0; i < str.length; i++) {
-    crc ^= str.charCodeAt(i) << 8;
-    for (let j = 0; j < 8; j++) {
-      if ((crc & 0x8000) !== 0) {
-        crc = ((crc << 1) ^ 0x1021) & 0xffff;
-      } else {
-        crc = (crc << 1) & 0xffff;
-      }
-    }
-  }
-  return crc.toString(16).toUpperCase().padStart(4, '0');
-}
-
-function tlv(tag: string, value: string): string {
-  const len = value.length.toString().padStart(2, '0');
-  return `${tag}${len}${value}`;
-}
-
-function buildStandardEmvQrisPayload(orderId: string, amount: number): string {
-  const merchantAccount =
-    tlv('00', 'ID.CO.QRIS.WWW') +
-    tlv('01', '936009143000084928') +
-    tlv('02', orderId.slice(0, 22)) +
-    tlv('03', 'UMI');
-  const additionalData = tlv('01', orderId.slice(0, 25)) + tlv('07', 'ZS01');
-  const body =
-    tlv('00', '01') +
-    tlv('01', '12') +
-    tlv('26', merchantAccount) +
-    tlv('52', '5815') +
-    tlv('53', '360') +
-    tlv('54', String(Math.round(amount))) +
-    tlv('58', 'ID') +
-    tlv('59', 'ZONESTREAM VIP OFFICIAL') +
-    tlv('60', 'JAKARTA') +
-    tlv('61', '10110') +
-    tlv('62', additionalData) +
-    '6304';
-  return body + crc16Ccitt(body);
-}
-
-function buildFallbackVaNumber(method: string, uid: string, orderId: string): string {
-  let hash = 0;
-  for (let i = 0; i < orderId.length; i++) {
-    hash = (hash * 33 + orderId.charCodeAt(i)) % 1000000;
-  }
-  const suffix = `${String(uid).replace(/\D/g, '').padStart(5, '0').slice(-5)}${String(hash).padStart(6, '0')}`;
-  if (method === 'bni_va') return `8808${suffix}`;
-  if (method === 'bri_va') return `12808${suffix}`;
-  if (method === 'permata_va') return `8528${suffix}`;
-  if (method === 'cimb_niaga_va') return `7089${suffix}`;
-  return `0857${suffix}`;
-}
-
-// POST /api/payment/create-transaction — Create In-App 1-Web Payment Transaction (Pakasir API v2 + Built-in QRIS/VA)
+// POST /api/payment/create-transaction — Create genuine Pakasir transaction (NO fake QRIS/VA)
 router.post('/create-transaction', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
@@ -261,89 +415,95 @@ router.post('/create-transaction', requireAuth, async (req: AuthenticatedRequest
 
     const { amount, planId, paymentMethod = 'qris' } = req.body || {};
     const pkg = resolvePackage(amount, planId);
-    const allowedMethods = [
-      'qris',
-      'bni_va',
-      'bri_va',
-      'permata_va',
-      'cimb_niaga_va',
-      'dana',
-      'gopay',
-      'ovo',
-    ];
-    const cleanMethod = allowedMethods.includes(String(paymentMethod))
-      ? String(paymentMethod)
-      : 'qris';
+    const requestedMethod = String(paymentMethod || 'qris').trim().toLowerCase();
+
+    // Map e-wallet choices (DANA/GoPay/OVO) to Pakasir QRIS since Pakasir QRIS supports all e-wallets natively
+    const pakasirMethodMap: Record<string, string> = {
+      qris: 'qris',
+      dana: 'qris',
+      gopay: 'qris',
+      ovo: 'qris',
+      bni_va: 'bni_va',
+      bri_va: 'bri_va',
+      permata_va: 'permata_va',
+      cimb_niaga_va: 'cimb_niaga_va',
+      maybank_va: 'maybank_va',
+      bnc_va: 'bnc_va',
+      sampoerna_va: 'sampoerna_va',
+      artha_graha_va: 'artha_graha_va',
+      atm_bersama_va: 'atm_bersama_va',
+    };
+    const cleanMethod = pakasirMethodMap[requestedMethod] || 'qris';
 
     const orderId = `ZS-${user.uid}-${Date.now().toString(36).toUpperCase()}`;
-    const inAppPayUrl = `/profile?order_id=${encodeURIComponent(orderId)}`;
+    const pakasirCheckoutUrl = `https://app.pakasir.com/pay/${encodeURIComponent(
+      PAKASIR_SLUG
+    )}/${pkg.amount}?order_id=${encodeURIComponent(orderId)}`;
 
-    // Deterministic unique 2-digit code (11..89) for clear tracking
-    const uniqueCode = 11 + (Date.now() % 79);
-    let fee = cleanMethod === 'qris' ? uniqueCode : 0;
-    let totalPayment = pkg.amount + fee;
-    let paymentNumber = '';
-    let txnId = '';
-    let expiredAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+
+    let pakasirJson: any = {};
+    let pakasirOk = false;
+    let pakasirStatus = 0;
 
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
+      const pakasirResp = await fetch(
+        `https://app.pakasir.com/api/transactioncreate/${encodeURIComponent(cleanMethod)}`,
+        {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            project: PAKASIR_SLUG,
+            order_id: orderId,
+            amount: pkg.amount,
+            api_key: PAKASIR_API_KEY,
+          }),
+        }
+      );
+
+      pakasirStatus = pakasirResp.status;
+      pakasirOk = pakasirResp.ok;
+      const rawText = await pakasirResp.text();
       try {
-        // Pakasir API v2 endpoint
-        const pakasirResp = await fetch(
-          `https://app.pakasir.com/api/v2/create-transaction/${encodeURIComponent(PAKASIR_SLUG)}/${encodeURIComponent(orderId)}`,
-          {
-            method: 'POST',
-            signal: controller.signal,
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Api-Key': PAKASIR_API_KEY,
-            },
-            body: JSON.stringify({
-              project: PAKASIR_SLUG,
-              order_id: orderId,
-              amount: pkg.amount,
-              payment_method: cleanMethod,
-            }),
-          }
-        );
-
-        const rawText = await pakasirResp.text();
-        let pakasirJson: any = {};
-        try {
-          pakasirJson = JSON.parse(rawText);
-        } catch {
-          pakasirJson = {};
-        }
-
-        const p = pakasirJson?.payment || pakasirJson?.data || pakasirJson;
-        if (pakasirResp.ok && p && (p.payment_number || p.va_number || p.qris_string)) {
-          fee = Number(p.fee) || fee;
-          totalPayment = Number(p.total_payment) || pkg.amount + fee;
-          paymentNumber = String(p.payment_number || p.va_number || p.qris_string || '');
-          txnId = String(p.txn_id || p.id || '');
-          if (p.expired_at) expiredAt = String(p.expired_at);
-        }
-      } finally {
-        clearTimeout(timer);
+        pakasirJson = JSON.parse(rawText);
+      } catch {
+        pakasirJson = { message: rawText };
       }
-    } catch {
-      // Fallback to built-in 1-Web QRIS / VA generator below
+    } finally {
+      clearTimeout(timer);
     }
 
-    // Ensure paymentNumber is ALWAYS generated so QRIS / VA is displayed directly inside 1 web
-    if (!paymentNumber) {
-      if (cleanMethod === 'qris') {
-        paymentNumber = buildStandardEmvQrisPayload(orderId, totalPayment);
-      } else {
-        paymentNumber = buildFallbackVaNumber(cleanMethod, user.uid, orderId);
-      }
+    const p = pakasirJson?.payment || pakasirJson?.data || pakasirJson;
+    const paymentNumber = String(p?.payment_number || p?.va_number || p?.qris_string || '').trim();
+
+    if (!pakasirOk || !paymentNumber) {
+      console.error('[Pakasir Create Error]', {
+        status: pakasirStatus,
+        method: cleanMethod,
+        response: pakasirJson,
+      });
+      return res.status(502).json({
+        error:
+          pakasirJson?.message ||
+          pakasirJson?.error ||
+          'Gateway Pakasir gagal membuat kode pembayaran. Silakan pilih QRIS atau coba beberapa saat lagi.',
+      });
     }
+
+    const fee = Number(p.fee) || 0;
+    const totalPayment = Number(p.total_payment) || pkg.amount + fee;
+    const expiredAt = p.expired_at
+      ? String(p.expired_at)
+      : new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
     const txRecord: ITransaction = {
       orderId,
-      txnId,
+      txnId: String(p.txn_id || p.id || orderId),
       uid: user.uid,
       userEmail: user.email,
       userName: user.name,
@@ -351,22 +511,17 @@ router.post('/create-transaction', requireAuth, async (req: AuthenticatedRequest
       planName: pkg.name,
       durationDays: pkg.durationDays,
       bonusExp: pkg.bonusExp,
-      amount: pkg.amount,
+      amount: Number(p.amount) || pkg.amount,
       fee,
       totalPayment,
       paymentMethod: cleanMethod,
       paymentNumber,
-      paymentUrl: inAppPayUrl,
+      paymentUrl: pakasirCheckoutUrl,
       status: 'pending',
       expiredAt,
     };
 
-    const mongoOk = await connectDB();
-    if (mongoOk) {
-      await TransactionModel.create(txRecord);
-    } else {
-      memoryTransactions.set(orderId, txRecord);
-    }
+    await saveNewTransaction(txRecord);
 
     return res.status(201).json({
       ok: true,
@@ -374,11 +529,11 @@ router.post('/create-transaction', requireAuth, async (req: AuthenticatedRequest
     });
   } catch (err) {
     console.error('[Payment Create Error]', err);
-    return res.status(500).json({ error: 'Gagal membuat transaksi pembayaran' });
+    return res.status(500).json({ error: 'Gagal menghubungi gateway pembayaran Pakasir' });
   }
 });
 
-// GET /api/payment/status/:orderId — Poll Pakasir v2 transaction status & auto-activate VIP if paid
+// GET /api/payment/status/:orderId — Poll genuine Pakasir transactiondetail & activate ONLY if completed
 router.get('/status/:orderId', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
@@ -387,64 +542,17 @@ router.get('/status/:orderId', requireAuth, async (req: AuthenticatedRequest, re
       return res.status(400).json({ error: 'orderId tidak valid' });
     }
 
-    const mongoOk = await connectDB();
-    let tx: ITransaction | null = null;
-    if (mongoOk) {
-      const doc = await TransactionModel.findOne({ orderId }).lean();
-      if (doc) tx = doc as ITransaction;
-    } else {
-      tx = memoryTransactions.get(orderId) || null;
-    }
-
+    const tx = await getTransactionByOrderId(orderId);
     if (!tx || tx.uid !== uid) {
       return res.status(404).json({ error: 'Transaksi tidak ditemukan' });
     }
 
-    if (tx.status === 'paid') {
-      const user = await findUserByUid(uid);
-      return res.json({
-        ok: true,
-        status: 'paid',
-        transaction: tx,
-        user: user ? sanitizeUser(user) : null,
-      });
-    }
-
-    // Query live status from Pakasir API v2
-    if (tx.txnId) {
-      try {
-        const v2StatusUrl = `https://app.pakasir.com/api/v2/transaction-status/${encodeURIComponent(
-          PAKASIR_SLUG
-        )}/${encodeURIComponent(tx.txnId)}`;
-        const resp = await fetch(v2StatusUrl, {
-          headers: { 'X-Api-Key': PAKASIR_API_KEY },
-        });
-        if (resp.ok) {
-          const json = (await resp.json()) as any;
-          const remote = json?.transaction || json?.data || json;
-          const remoteStatus = String(remote?.status || '').toUpperCase();
-          if (['COMPLETED', 'PAID', 'SUCCESS', 'SETTLED'].includes(remoteStatus)) {
-            const updatedUser = await activatePremiumFromTransaction(
-              tx,
-              String(remote?.txn_id || tx.txnId)
-            );
-            return res.json({
-              ok: true,
-              status: 'paid',
-              transaction: { ...tx, status: 'paid' },
-              user: updatedUser ? sanitizeUser(updatedUser) : null,
-            });
-          }
-        }
-      } catch {
-        // Ignore transient upstream error
-      }
-    }
-
+    const result = await verifyAndSyncPakasirTransaction(tx);
     return res.json({
       ok: true,
-      status: tx.status,
-      transaction: tx,
+      status: result.status,
+      transaction: result.transaction,
+      ...(result.user ? { user: sanitizeUser(result.user) } : {}),
     });
   } catch (err) {
     console.error('[Payment Status Error]', err);
@@ -452,7 +560,7 @@ router.get('/status/:orderId', requireAuth, async (req: AuthenticatedRequest, re
   }
 });
 
-// POST /api/payment/confirm/:orderId — In-App 1-Web Payment Confirmation & Instant VIP Activation
+// POST /api/payment/confirm/:orderId — Strictly verify against Pakasir API before activating VIP (NEVER auto-ACC unpaid orders)
 router.post('/confirm/:orderId', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
@@ -461,33 +569,32 @@ router.post('/confirm/:orderId', requireAuth, async (req: AuthenticatedRequest, 
       return res.status(400).json({ error: 'orderId tidak valid' });
     }
 
-    const mongoOk = await connectDB();
-    let tx: ITransaction | null = null;
-    if (mongoOk) {
-      const doc = await TransactionModel.findOne({ orderId }).lean();
-      if (doc) tx = doc as ITransaction;
-    } else {
-      tx = memoryTransactions.get(orderId) || null;
-    }
-
+    const tx = await getTransactionByOrderId(orderId);
     if (!tx || tx.uid !== uid) {
       return res.status(404).json({ error: 'Transaksi tidak ditemukan' });
     }
 
-    const updatedUser = await activatePremiumFromTransaction(
-      tx,
-      tx.txnId || `INAPP-${Date.now().toString(36).toUpperCase()}`
-    );
+    const result = await verifyAndSyncPakasirTransaction(tx);
+    if (!result.paid) {
+      return res.status(402).json({
+        ok: false,
+        status: result.status,
+        transaction: result.transaction,
+        error:
+          result.error ||
+          'Pembayaran belum masuk di Pakasir. Silakan transfer terlebih dahulu sebelum verifikasi.',
+      });
+    }
 
     return res.json({
       ok: true,
       status: 'paid',
-      transaction: { ...tx, status: 'paid', paidAt: new Date().toISOString() },
-      user: updatedUser ? sanitizeUser(updatedUser) : null,
+      transaction: result.transaction,
+      user: result.user ? sanitizeUser(result.user) : null,
     });
   } catch (err) {
     console.error('[Payment Confirm Error]', err);
-    return res.status(500).json({ error: 'Gagal memverifikasi pembayaran' });
+    return res.status(500).json({ error: 'Gagal memverifikasi pembayaran ke Pakasir' });
   }
 });
 
@@ -499,42 +606,31 @@ router.options('/webhook', (_req, res) => {
   return res.sendStatus(204);
 });
 
-// POST /api/payment/webhook — Public Pakasir Webhook (verifies signature & activates Premium automatically)
+// POST /api/payment/webhook — Public Pakasir Webhook (verifies signature OR server-to-server Pakasir API)
 router.post('/webhook', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
 
   try {
-    if (!verifyWebhookSignature(req)) {
-      return res.status(403).json({ error: 'Invalid webhook signature / secret' });
-    }
-
     const body = req.body || {};
     const orderId = String(body.order_id || body.orderId || '').trim();
-    const txnId = String(body.txn_id || body.txnId || '').trim();
-    const rawStatus = String(body.status || '').toUpperCase().trim();
+    const txnId = String(body.txn_id || body.txnId || body.completed_at || '').trim();
+    const rawStatus = String(body.status || '').toLowerCase().trim();
     const amount = Number(body.amount || 0);
 
     if (!orderId) {
       return res.status(400).json({ error: 'order_id wajib ada di payload webhook' });
     }
 
-    const isSuccessStatus = ['PAID', 'SUCCESS', 'COMPLETED', 'SETTLED'].includes(rawStatus);
+    const isSuccessStatus = ['paid', 'success', 'completed', 'settled'].includes(rawStatus);
     if (!isSuccessStatus) {
       return res.status(200).json({ ok: true, ignored: true, status: rawStatus });
     }
 
-    const mongoOk = await connectDB();
-    let tx: ITransaction | null = null;
-    if (mongoOk) {
-      const doc = await TransactionModel.findOne({ orderId }).lean();
-      if (doc) tx = doc as ITransaction;
-    } else {
-      tx = memoryTransactions.get(orderId) || null;
-    }
+    let tx = await getTransactionByOrderId(orderId);
 
-    // Fallback: if transaction created externally via Pakasir Pay link with ZS-<uid>-... order_id
+    // Fallback: if transaction was initiated directly via Pakasir Pay link with ZS-<uid>-... order_id
     if (!tx && orderId.startsWith('ZS-')) {
       const parts = orderId.split('-');
       const extractedUid = parts[1];
@@ -544,7 +640,7 @@ router.post('/webhook', async (req, res) => {
           const pkg = resolvePackage(amount);
           const syntheticTx: ITransaction = {
             orderId,
-            txnId,
+            txnId: txnId || orderId,
             uid: matchedUser.uid,
             userEmail: matchedUser.email,
             userName: matchedUser.name,
@@ -557,14 +653,12 @@ router.post('/webhook', async (req, res) => {
             totalPayment: amount || pkg.amount,
             paymentMethod: String(body.payment_method || 'qris'),
             paymentNumber: '',
-            paymentUrl: `https://app.pakasir.com/pay/${PAKASIR_SLUG}/${amount || pkg.amount}?order_id=${encodeURIComponent(orderId)}`,
+            paymentUrl: `https://app.pakasir.com/pay/${encodeURIComponent(PAKASIR_SLUG)}/${
+              amount || pkg.amount
+            }?order_id=${encodeURIComponent(orderId)}`,
             status: 'pending',
           };
-          if (mongoOk) {
-            await TransactionModel.create(syntheticTx).catch(() => {});
-          } else {
-            memoryTransactions.set(orderId, syntheticTx);
-          }
+          await saveNewTransaction(syntheticTx).catch(() => {});
           tx = syntheticTx;
         }
       }
@@ -574,11 +668,29 @@ router.post('/webhook', async (req, res) => {
       return res.status(404).json({ error: 'Transaksi tidak ditemukan untuk order_id ini' });
     }
 
+    // Security check: require valid webhook signature OR live confirmation directly from Pakasir transactiondetail API
+    const sigValid = verifyWebhookSignature(req);
+    const liveDetail = await queryPakasirTransactionDetail(orderId, tx.amount);
+    const liveConfirmed =
+      liveDetail.ok &&
+      liveDetail.remoteOrderId === tx.orderId &&
+      liveDetail.remoteAmount >= tx.amount &&
+      ['completed', 'paid', 'success', 'settled'].includes(liveDetail.remoteStatus);
+
+    if (!sigValid && !liveConfirmed) {
+      return res.status(403).json({
+        error: 'Webhook ditolak: tanda tangan tidak valid dan status belum completed di Pakasir.',
+      });
+    }
+
     if (amount > 0 && tx.amount > 0 && amount < tx.amount) {
       return res.status(400).json({ error: 'Nominal pembayaran tidak sesuai paket' });
     }
 
-    const updatedUser = await activatePremiumFromTransaction(tx, txnId);
+    const updatedUser = await activatePremiumFromTransaction(
+      tx,
+      liveDetail.txnId || txnId || orderId
+    );
     return res.status(200).json({
       ok: true,
       status: 'paid',

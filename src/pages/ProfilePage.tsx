@@ -34,7 +34,7 @@ import {
   Trophy,
   ChevronRight,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { TelegramCsButton } from '../components/TelegramCsButton';
 import { ThemeToggle } from '../components/ThemeToggle';
@@ -46,8 +46,19 @@ import {
   STREAK_FRAME_REWARDS,
   normalizeDecorationId,
 } from '../components/AvatarDecoration';
+import { FounderUserMonitorPanel } from '../components/FounderUserMonitorPanel';
+import { LevelUpCard } from '../components/LevelUpCard';
+import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
+import { VipBenefitsLog } from '../components/VipBenefitsLog';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
 import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
+import {
+  CLAN_INVITE_RESOLVED_EVENT,
+  clearPendingClanInvite,
+  fetchClanInvitePreview,
+  getPendingClanInvite,
+  type ClanInvitePreview,
+} from '../utils/clanInvite';
 import type { PaymentTransaction, PremiumPackage } from '../types';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
 
@@ -80,8 +91,7 @@ const FALLBACK_PACKAGES: PremiumPackage[] = [
 ];
 
 const PAYMENT_METHODS = [
-  { id: 'qris', label: 'QRIS (Semua E-Wallet & Bank)' },
-  { id: 'dana', label: 'DANA / GoPay / OVO' },
+  { id: 'qris', label: 'QRIS (DANA, GoPay, OVO, ShopeePay & Bank)' },
   { id: 'bni_va', label: 'BNI Virtual Account' },
   { id: 'bri_va', label: 'BRI Virtual Account' },
   { id: 'permata_va', label: 'Permata Virtual Account' },
@@ -172,6 +182,7 @@ export function ProfilePage() {
     getLocalBookmarks,
   } = useAuth();
   const { lang, changeLanguage } = useAppLanguage();
+  const navigate = useNavigate();
 
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
   const [identifier, setIdentifier] = useState('');
@@ -209,28 +220,79 @@ export function ProfilePage() {
   const [userClan, setUserClan] = useState<any>(null);
   const [equippingFrameId, setEquippingFrameId] = useState<string>('');
   const [streakFrameNotice, setStreakFrameNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [pendingClanInvite, setPendingClanInviteState] = useState<ClanInvitePreview | null>(null);
+
+  useEffect(() => {
+    if (user) {
+      setPendingClanInviteState(null);
+      return;
+    }
+    const pendingCode = getPendingClanInvite();
+    if (!pendingCode) {
+      setPendingClanInviteState(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchClanInvitePreview(pendingCode).then((res) => {
+      if (cancelled) return;
+      if (res.ok && res.clan) {
+        setPendingClanInviteState(res.clan);
+      } else {
+        setPendingClanInviteState(null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
-    fetch('/api/social/clans', {
-      headers: { Authorization: `Bearer ${getStoredAuthToken()}` },
-    })
-      .then((res) => res.json())
-      .then((json) => {
-        if (json.ok && Array.isArray(json.clans)) {
-          const found = json.clans.find((c: any) => c.members?.includes(user.uid));
-          if (found) setUserClan(found);
-        }
+    const loadMyClan = () => {
+      fetch('/api/social/clans', {
+        headers: { Authorization: `Bearer ${getStoredAuthToken()}` },
       })
-      .catch(() => {});
+        .then((res) => res.json())
+        .then((json) => {
+          if (json.ok && Array.isArray(json.clans)) {
+            const found = json.clans.find(
+              (c: any) => c.leaderUid === user.uid || c.members?.includes(user.uid)
+            );
+            setUserClan(found || null);
+          }
+        })
+        .catch(() => {});
+    };
+    loadMyClan();
+    const onResolved = () => loadMyClan();
+    window.addEventListener(CLAN_INVITE_RESOLVED_EVENT, onResolved);
+    return () => window.removeEventListener(CLAN_INVITE_RESOLVED_EVENT, onResolved);
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
+    void refreshUser();
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshUser();
+      }
+    }, 5000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshUser();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [user?.uid]);
 
   const isFounderUser = user?.role === 'founder';
   const level = user?.level ?? 1;
   const levelDisplay = isFounderUser ? '∞' : String(level);
   const exp = user?.exp ?? 25;
-  const expNeeded = Math.max(100, level * 200);
-  const progressPct = isFounderUser ? 100 : Math.min(100, Math.round((exp / expNeeded) * 100));
   const todayWib = getTodayWibString();
   const yesterdayWib = getJakartaWibDateString(-1);
   const rawStreak = user?.watchStreak ?? 0;
@@ -290,15 +352,23 @@ export function ProfilePage() {
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const hadPendingInvite = Boolean(getPendingClanInvite());
     setSubmitting(true);
-    await login(identifier, password);
+    const ok = await login(identifier, password);
     setSubmitting(false);
+    if (ok && hadPendingInvite) {
+      navigate('/leaderboard?tab=clans');
+    }
   };
 
   const handleGoogleLogin = async () => {
+    const hadPendingInvite = Boolean(getPendingClanInvite());
     setGoogleBusy(true);
-    await loginWithGoogle();
+    const ok = await loginWithGoogle();
     setGoogleBusy(false);
+    if (ok && hadPendingInvite) {
+      navigate('/leaderboard?tab=clans');
+    }
   };
 
   const handleSendRegisterCode = async () => {
@@ -330,9 +400,13 @@ export function ProfilePage() {
 
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const hadPendingInvite = Boolean(getPendingClanInvite());
     setSubmitting(true);
-    await register(regUsername, regEmail, regName, regPassword, regCode);
+    const ok = await register(regUsername, regEmail, regName, regPassword, regCode);
     setSubmitting(false);
+    if (ok && hadPendingInvite) {
+      navigate('/leaderboard?tab=clans');
+    }
   };
 
   useEffect(() => {
@@ -364,7 +438,10 @@ export function ProfilePage() {
   const checkTransactionStatus = async (orderId: string, silent = false) => {
     const token = getStoredAuthToken();
     if (!token || !orderId) return;
-    if (!silent) setCheckingTx(true);
+    if (!silent) {
+      setCheckingTx(true);
+      setPaymentError(null);
+    }
     try {
       const res = await fetch(`/api/payment/status/${encodeURIComponent(orderId)}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -373,11 +450,25 @@ export function ProfilePage() {
       if (res.ok && json.ok) {
         if (json.status === 'paid') {
           setActiveTx((prev) => (prev ? { ...prev, status: 'paid' } : prev));
+          setPaymentError(null);
           await refreshUser();
+        } else if (json.status === 'expired' || json.status === 'failed') {
+          setActiveTx((prev) => (prev ? { ...prev, status: json.status } : prev));
+          setPaymentError(
+            'Transaksi sudah kedaluwarsa atau gagal di Pakasir. Silakan buat tagihan baru.'
+          );
+        } else if (!silent) {
+          setPaymentError(
+            'Pembayaran belum terdeteksi masuk di Pakasir. Selesaikan transfer terlebih dahulu.'
+          );
         }
+      } else if (!silent) {
+        setPaymentError(json.error || 'Gagal memeriksa status pembayaran Pakasir.');
       }
     } catch {
-      // Keep polling silently
+      if (!silent) {
+        setPaymentError('Gagal menghubungi server pembayaran Pakasir.');
+      }
     } finally {
       if (!silent) setCheckingTx(false);
     }
@@ -564,6 +655,47 @@ export function ProfilePage() {
                 Sinkronkan history nonton harian, raih 2x EXP VIP, dan buka lencana eksklusif.
               </p>
             </div>
+
+            {pendingClanInvite && (
+              <div className="mb-4 rounded-2xl bg-[#00A884]/15 border border-[#00A884]/40 p-3.5 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  {pendingClanInvite.avatarUrl || pendingClanInvite.leaderPhoto ? (
+                    <img
+                      src={pendingClanInvite.avatarUrl || pendingClanInvite.leaderPhoto}
+                      alt={pendingClanInvite.name}
+                      referrerPolicy="no-referrer"
+                      className="w-10 h-10 rounded-xl object-cover border border-[#00A884]/50 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-xl bg-slate-800 text-[#00A884] flex items-center justify-center font-extrabold text-xs shrink-0">
+                      [{pendingClanInvite.tag}]
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#00A884]">
+                      Undangan Klan Aktif • {pendingClanInvite.inviteCode}
+                    </p>
+                    <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                      [{pendingClanInvite.tag}] {pendingClanInvite.name}
+                    </p>
+                    <p className="text-[11px] text-slate-600 dark:text-gray-300">
+                      Masuk atau daftar sekarang untuk otomatis bergabung secara real-time!
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearPendingClanInvite();
+                    setPendingClanInviteState(null);
+                  }}
+                  aria-label="Batalkan undangan klan"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-900 dark:hover:text-white shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* Auth Card */}
             <div className="rounded-3xl bg-white/95 dark:bg-[#13151C]/95 backdrop-blur-xl border border-slate-200 dark:border-white/10 p-5 sm:p-6 shadow-2xl">
@@ -1050,13 +1182,31 @@ export function ProfilePage() {
                     Lv. {levelDisplay}
                   </span>
                   {userClan && (
-                    <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-xs font-extrabold text-amber-400 shadow-sm">
-                      [{userClan.tag}] {userClan.name}
-                    </span>
+                    <Link
+                      to="/leaderboard?tab=clans"
+                      className="px-3 py-1 rounded-full bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-xs font-extrabold text-amber-400 shadow-sm inline-flex items-center gap-1.5 transition-colors"
+                    >
+                      <span>[{userClan.tag}] {userClan.name}</span>
+                      {userClan.leaderUid === user.uid && (userClan.pendingCount || 0) > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-extrabold leading-none">
+                          {userClan.pendingCount} ACC
+                        </span>
+                      )}
+                    </Link>
                   )}
                   <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-700 dark:text-gray-200 font-mono-tabular shadow-sm">
                     UID: {user.uid}
                   </span>
+                </div>
+
+                {/* Real-Time Level Up Progress Card */}
+                <div className="mt-4 w-full max-w-md">
+                  <LevelUpCard
+                    level={level}
+                    exp={exp}
+                    isFounder={isFounderUser}
+                    onOpenXpGuide={() => setShowXpModal(true)}
+                  />
                 </div>
 
                 {/* Social & Messenger Shortcuts */}
@@ -1123,73 +1273,6 @@ export function ProfilePage() {
               {isFounderUser ? 'Founder' : isPremium ? 'VIP' : 'Gratis'}
             </p>
             <p className="text-[10px] text-slate-500 dark:text-[#9CA3AF]">Status</p>
-          </div>
-        </div>
-
-        {/* EXP & Daily Watch Mission Progress Card */}
-        <div className="px-4 mt-4">
-          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className="w-7 h-7 rounded-lg bg-amber-500/15 text-amber-500 dark:text-amber-400 flex items-center justify-center">
-                  <Zap className="w-4 h-4 fill-current" />
-                </span>
-                <div>
-                  <span className="text-sm font-bold text-slate-900 dark:text-white">
-                    Level &amp; Misi Nonton Harian
-                  </span>
-                </div>
-              </div>
-              <span className="flex items-center gap-1 text-xs font-bold text-[#3B82F6] font-mono-tabular">
-                <Zap className="w-3.5 h-3.5 fill-current" />
-                {isFounderUser ? '∞ / ∞ EXP' : `${exp} / ${expNeeded}`}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-[#9CA3AF] mb-2">
-              <span>
-                {isFounderUser
-                  ? 'Level Tak Terbatas (Akses Penuh Founder)'
-                  : `Kemajuan ke Level ${level + 1}`}
-              </span>
-              <span className="font-bold text-slate-900 dark:text-white font-mono-tabular">
-                {isFounderUser ? 'MAX · ∞' : `${progressPct}%`}
-              </span>
-            </div>
-
-            <div className="h-2.5 w-full rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden mb-3">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${
-                  isFounderUser
-                    ? 'bg-gradient-to-r from-amber-400 via-[#E84A18] to-amber-500'
-                    : 'bg-gradient-to-r from-[#3B82F6] to-[#60A5FA]'
-                }`}
-                style={{ width: `${progressPct}%` }}
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-white/[0.05]">
-              <span
-                className={`text-xs font-semibold ${
-                  watchedToday
-                    ? 'text-emerald-600 dark:text-emerald-400'
-                    : 'text-[#E84A18]'
-                }`}
-              >
-                {watchedToday
-                  ? `Misi hari ini selesai · Streak ${watchStreak} hari`
-                  : 'Tonton 1 episode hari ini untuk klaim +50 EXP harian!'}
-              </span>
-
-              <button
-                type="button"
-                onClick={() => setShowXpModal(true)}
-                className="text-xs font-semibold text-[#3B82F6] hover:text-blue-500 inline-flex items-center gap-1 transition-colors"
-              >
-                <span>Cara dapatkan EXP</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            </div>
           </div>
         </div>
 
@@ -1620,6 +1703,17 @@ export function ProfilePage() {
           </div>
         </div>
 
+        {/* Visual VIP Benefits, Milestone Timeline & Charisma Bonuses Log */}
+        <VipBenefitsLog
+          user={user}
+          isPremium={isPremium}
+          cardClass={activeTheme.cardClass}
+          onOpenUpgrade={() => setShowUpgradeModal(true)}
+        />
+
+        {/* Founder Exclusive Real-Time User Monitor & Ban Controls */}
+        {isFounderUser && <FounderUserMonitorPanel cardClass={activeTheme.cardClass} />}
+
         {/* Leaderboard & Klan Settings Card */}
         <div className="px-4 mt-4">
           <Link
@@ -1685,6 +1779,11 @@ export function ProfilePage() {
               })}
             </div>
           </div>
+        </div>
+
+        {/* Pengaturan Efek Suara (Chat, Notifikasi & Level Up) */}
+        <div className="px-4 mt-4">
+          <SoundSettingsPanel cardClass={activeTheme.cardClass} />
         </div>
 
         {/* Logout button */}
@@ -1844,6 +1943,8 @@ export function ProfilePage() {
                       type="button"
                       onClick={() => setPaymentMethod(m.id)}
                       className={`px-3 py-2.5 rounded-xl border text-xs font-semibold text-left transition-colors ${
+                        m.id === 'qris' ? 'col-span-2 ' : ''
+                      }${
                         paymentMethod === m.id
                           ? 'bg-[#E84A18] border-[#E84A18] text-white shadow-sm'
                           : 'bg-slate-50 dark:bg-[#1B1E26] border-slate-200 dark:border-white/10 text-slate-700 dark:text-gray-300'
@@ -2004,8 +2105,8 @@ export function ProfilePage() {
                     <CheckCircle2 className="w-4 h-4" />
                     <span>
                       {checkingTx
-                        ? 'Memverifikasi Pembayaran...'
-                        : 'Sudah Bayar · Verifikasi & Aktifkan VIP Sekarang'}
+                        ? 'Mengecek Mutasi di Pakasir...'
+                        : 'Sudah Transfer · Cek Verifikasi Pakasir'}
                     </span>
                   </button>
 
@@ -2016,7 +2117,7 @@ export function ProfilePage() {
                     className="w-full min-h-[40px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1E222D] dark:hover:bg-[#272C3A] text-slate-800 dark:text-gray-200 font-semibold text-xs flex items-center justify-center gap-2 border border-slate-200 dark:border-white/10"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${checkingTx ? 'animate-spin' : ''}`} />
-                    <span>Cek Status Otomatis (Auto-Sync 4 Detik)</span>
+                    <span>Cek Status Otomatis Pakasir (Auto-Sync 4 Detik)</span>
                   </button>
 
                   <button

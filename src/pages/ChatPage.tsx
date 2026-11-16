@@ -9,6 +9,7 @@ import {
   Globe,
   Heart,
   Image as ImageIcon,
+  Loader2,
   Lock,
   Maximize2,
   MessageCircle,
@@ -47,6 +48,13 @@ import type {
   PublicCommunityUser,
   RelationshipStatus,
 } from '../types';
+import {
+  compressImageForChat,
+  formatFileSize,
+  MAX_CHAT_IMAGE_BYTES,
+  uploadCompressedChatImage,
+} from '../utils/imageCompression';
+import { playSoundEffect } from '../utils/soundEffects';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 
 function getToken(): string {
@@ -63,29 +71,10 @@ function formatMsgTime(iso?: string): string {
   return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
 }
 
-function fileToCompressedDataUrl(file: File, maxSize: number): Promise<string> {
+function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
-        canvas.width = Math.max(1, Math.round(img.width * scale));
-        canvas.height = Math.max(1, Math.round(img.height * scale));
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(String(reader.result));
-          return;
-        }
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL('image/jpeg', 0.92));
-      };
-      img.onerror = () => resolve(String(reader.result)); // fallback for videos/audio
-      img.src = String(reader.result);
-    };
+    reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -120,7 +109,12 @@ export function ChatPage() {
   const [conversations, setConversations] = useState<ChatConversationSummary[]>([]);
   const [groups, setGroups] = useState<GroupChatSummary[]>([]);
   const [globalMessages, setGlobalMessages] = useState<ChatMessageItem[]>([]);
-  const [globalChannel, setGlobalChannel] = useState<'ch1' | 'ch2' | 'ch3' | 'rekrut'>('ch1');
+  const requestedChannel = searchParams.get('channel');
+  const initialGlobalChannel: 'ch1' | 'ch2' | 'ch3' | 'rekrut' =
+    requestedChannel === 'ch2' || requestedChannel === 'ch3' || requestedChannel === 'rekrut'
+      ? requestedChannel
+      : 'ch1';
+  const [globalChannel, setGlobalChannel] = useState<'ch1' | 'ch2' | 'ch3' | 'rekrut'>(initialGlobalChannel);
   const [globalOnlineCount, setGlobalOnlineCount] = useState<number>(1);
   const [friendsData, setFriendsData] = useState<{
     friends: PublicCommunityUser[];
@@ -136,9 +130,18 @@ export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessageItem[]>([]);
   const [loadingThread, setLoadingThread] = useState(false);
 
-  const [draft, setDraft] = useState('');
+  const [draft, setDraft] = useState(() => searchParams.get('draft') || '');
   const [selectedSticker, setSelectedSticker] = useState('');
-  const [mediaPreview, setMediaPreview] = useState<{ url: string; type: 'image' | 'video' | 'audio' } | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<{
+    url: string;
+    type: 'image' | 'video' | 'audio';
+    originalSize?: number;
+    compressedSize?: number;
+    uploadedToFirebase?: boolean;
+  } | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   const [zoomMedia, setZoomMedia] = useState<{ url: string; type: 'image' | 'video' } | null>(null);
   const [replyTarget, setReplyTarget] = useState<ChatMessageItem | null>(null);
 
@@ -163,6 +166,35 @@ export function ChatPage() {
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const groupAvatarInputRef = useRef<HTMLInputElement>(null);
+  const seenThreadRef = useRef<{ key: string; ids: Set<string> } | null>(null);
+  const seenGlobalRef = useRef<{ channel: string; ids: Set<string> } | null>(null);
+
+  const trackIncomingSound = useCallback(
+    (
+      trackerRef: React.MutableRefObject<{ key: string; ids: Set<string> } | null>,
+      key: string,
+      list: ChatMessageItem[]
+    ) => {
+      const cur = trackerRef.current;
+      if (!cur || cur.key !== key) {
+        trackerRef.current = { key, ids: new Set(list.map((m) => m._id)) };
+        return;
+      }
+      let hasNewFromOther = false;
+      for (const m of list) {
+        if (!cur.ids.has(m._id)) {
+          cur.ids.add(m._id);
+          if (m.senderUid && m.senderUid !== me?.uid) {
+            hasNewFromOther = true;
+          }
+        }
+      }
+      if (hasNewFromOther) {
+        playSoundEffect('chat');
+      }
+    },
+    [me?.uid]
+  );
 
   const loadFriends = useCallback(async () => {
     if (!me) return;
@@ -279,9 +311,11 @@ export function ChatPage() {
         });
         const json = await res.json();
         if (json.ok) {
+          const incoming: ChatMessageItem[] = json.messages || [];
+          trackIncomingSound(seenThreadRef, `dm:${peerUid}`, incoming);
           setPeer(json.peer || null);
           setRelationship(json.relationship || 'none');
-          setMessages(json.messages || []);
+          setMessages(incoming);
         }
       } catch {
         // Keep thread
@@ -289,7 +323,7 @@ export function ChatPage() {
         if (!silent) setLoadingThread(false);
       }
     },
-    [me?.uid, peerUid, isGroupRoom]
+    [me?.uid, peerUid, isGroupRoom, trackIncomingSound]
   );
 
   const loadGroupThread = useCallback(
@@ -303,8 +337,10 @@ export function ChatPage() {
         });
         const json = await res.json();
         if (json.ok) {
+          const incoming: ChatMessageItem[] = json.messages || [];
+          trackIncomingSound(seenThreadRef, `grp:${gId}`, incoming);
           setActiveGroup(json.group || null);
-          setMessages(json.messages || []);
+          setMessages(incoming);
         }
       } catch {
         // Keep group thread
@@ -312,7 +348,7 @@ export function ChatPage() {
         if (!silent) setLoadingThread(false);
       }
     },
-    [me?.uid, groupId, searchParams]
+    [me?.uid, groupId, searchParams, trackIncomingSound]
   );
 
   const loadGlobalThread = useCallback(
@@ -328,7 +364,28 @@ export function ChatPage() {
         );
         const json = await res.json();
         if (json.ok && Array.isArray(json.messages)) {
-          setGlobalMessages(json.messages);
+          const incoming: ChatMessageItem[] = json.messages;
+          const cur = seenGlobalRef.current;
+          if (!cur || cur.channel !== globalChannel) {
+            seenGlobalRef.current = {
+              channel: globalChannel,
+              ids: new Set(incoming.map((m) => m._id)),
+            };
+          } else {
+            let hasNewFromOther = false;
+            for (const m of incoming) {
+              if (!cur.ids.has(m._id)) {
+                cur.ids.add(m._id);
+                if (m.senderUid && m.senderUid !== me?.uid) {
+                  hasNewFromOther = true;
+                }
+              }
+            }
+            if (hasNewFromOther) {
+              playSoundEffect('chat');
+            }
+          }
+          setGlobalMessages(incoming);
           if (typeof json.onlineCount === 'number') {
             setGlobalOnlineCount(json.onlineCount);
           }
@@ -468,9 +525,44 @@ export function ChatPage() {
 
   const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'video') => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
-    const dataUrl = await fileToCompressedDataUrl(file, type === 'image' ? 1200 : 1280);
-    setMediaPreview({ url: dataUrl, type });
+
+    setMediaError(null);
+    if (type === 'image') {
+      if (!file.type.startsWith('image/')) {
+        setMediaError('File harus berupa gambar (JPG, PNG, WebP, atau GIF).');
+        return;
+      }
+      setUploadingMedia(true);
+      setUploadProgress(5);
+      try {
+        const uploaded = await uploadCompressedChatImage(file, me?.uid || 'anon', (pct) => {
+          setUploadProgress(pct);
+        });
+        setMediaPreview({
+          url: uploaded.url,
+          type: 'image',
+          originalSize: uploaded.compressed.originalSize,
+          compressedSize: uploaded.compressed.compressedSize,
+          uploadedToFirebase: uploaded.uploadedToFirebase,
+        });
+      } catch (err: any) {
+        setMediaError(
+          err?.message || 'Gagal mengompresi/mengunggah gambar (maksimal 1MB).'
+        );
+      } finally {
+        setUploadingMedia(false);
+      }
+      return;
+    }
+
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      setMediaPreview({ url: dataUrl, type });
+    } catch {
+      setMediaError('Gagal membaca file video.');
+    }
   };
 
   const startVnRecording = async () => {
@@ -578,9 +670,14 @@ export function ChatPage() {
   const handleChangeGroupAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const gId = groupId || searchParams.get('group');
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file || !gId) return;
-    const dataUrl = await fileToCompressedDataUrl(file, 800);
     try {
+      const compressed = await compressImageForChat(file, {
+        maxSizeBytes: MAX_CHAT_IMAGE_BYTES,
+        maxDimension: 800,
+      });
+      const dataUrl = compressed.previewDataUrl;
       const res = await fetch(`/api/social/groups/${encodeURIComponent(gId)}/avatar`, {
         method: 'POST',
         headers: {
@@ -1397,21 +1494,48 @@ export function ChatPage() {
                   </div>
                 )}
 
-                {mediaPreview && (
+                {mediaError && (
+                  <div className="px-4 py-2 bg-rose-500/15 border-t border-rose-500/30 flex items-center justify-between gap-2 text-xs text-rose-300 font-semibold">
+                    <span>{mediaError}</span>
+                    <button type="button" onClick={() => setMediaError(null)} className="text-rose-300 hover:text-white">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {uploadingMedia && (
+                  <div className="px-4 py-2 bg-[#161820] border-t border-white/[0.08] flex items-center gap-2.5 text-xs text-sky-300 font-semibold">
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                    <span>Mengompresi (&le; 1MB) &amp; mengunggah ke Firebase Storage... {uploadProgress}%</span>
+                  </div>
+                )}
+
+                {mediaPreview && !uploadingMedia && (
                   <div className="px-4 py-2 bg-[#161820] border-t border-white/[0.08] flex items-center justify-between gap-2 text-xs">
                     <div className="flex items-center gap-2.5 min-w-0">
                       {mediaPreview.type === 'image' && (
                         <img
                           src={mediaPreview.url}
                           alt="Preview"
-                          className="w-10 h-10 rounded-lg object-cover"
+                          className="w-10 h-10 rounded-lg object-cover border border-white/10"
                         />
                       )}
                       {mediaPreview.type === 'video' && <Video className="w-5 h-5 text-sky-400" />}
                       {mediaPreview.type === 'audio' && <Mic className="w-5 h-5 text-sky-400" />}
-                      <span className="font-bold text-white truncate">
-                        Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
-                      </span>
+                      <div className="min-w-0">
+                        <p className="font-bold text-white truncate">
+                          Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
+                        </p>
+                        {mediaPreview.type === 'image' && mediaPreview.compressedSize && (
+                          <p className="text-[10px] text-emerald-400 font-mono-tabular truncate">
+                            {formatFileSize(mediaPreview.compressedSize)}
+                            {mediaPreview.originalSize && mediaPreview.originalSize > mediaPreview.compressedSize
+                              ? ` (dari ${formatFileSize(mediaPreview.originalSize)})`
+                              : ''}
+                            {mediaPreview.uploadedToFirebase ? ' · Firebase Storage' : ' · Terkompresi ≤ 1MB'}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     <button
                       type="button"
@@ -1572,7 +1696,7 @@ export function ChatPage() {
 
                     <button
                       type="submit"
-                      disabled={sending || (!draft.trim() && !mediaPreview && !selectedSticker)}
+                      disabled={sending || uploadingMedia || (!draft.trim() && !mediaPreview && !selectedSticker)}
                       className="w-12 h-11 rounded-2xl bg-[#1D7AFC] hover:bg-[#388BFF] disabled:opacity-40 text-white flex items-center justify-center transition-colors shrink-0 shadow-lg shadow-sky-500/25"
                       aria-label="Kirim"
                     >
@@ -1781,18 +1905,45 @@ export function ChatPage() {
                   <div ref={messagesEndRef} />
                 </div>
 
+                {mediaError && (
+                  <div className="px-4 py-2 bg-rose-500/15 border-t border-rose-500/30 flex items-center justify-between gap-2 text-xs text-rose-600 dark:text-rose-300 font-semibold">
+                    <span>{mediaError}</span>
+                    <button type="button" onClick={() => setMediaError(null)} className="text-rose-500">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {uploadingMedia && (
+                  <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center gap-2.5 text-xs text-[#00A884] font-semibold">
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                    <span>Mengompresi (&le; 1MB) &amp; mengunggah ke Firebase Storage... {uploadProgress}%</span>
+                  </div>
+                )}
+
                 {/* Media Preview Bar */}
-                {mediaPreview && (
+                {mediaPreview && !uploadingMedia && (
                   <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center justify-between gap-2 text-xs">
                     <div className="flex items-center gap-2.5 min-w-0">
                       {mediaPreview.type === 'image' && (
-                        <img src={mediaPreview.url} alt="Preview" className="w-10 h-10 rounded-lg object-cover" />
+                        <img src={mediaPreview.url} alt="Preview" className="w-10 h-10 rounded-lg object-cover border border-white/10" />
                       )}
                       {mediaPreview.type === 'video' && <Video className="w-5 h-5 text-[#00A884]" />}
                       {mediaPreview.type === 'audio' && <Mic className="w-5 h-5 text-[#00A884]" />}
-                      <span className="font-bold text-slate-800 dark:text-white truncate">
-                        Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
-                      </span>
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-800 dark:text-white truncate">
+                          Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
+                        </p>
+                        {mediaPreview.type === 'image' && mediaPreview.compressedSize && (
+                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono-tabular truncate">
+                            {formatFileSize(mediaPreview.compressedSize)}
+                            {mediaPreview.originalSize && mediaPreview.originalSize > mediaPreview.compressedSize
+                              ? ` (dari ${formatFileSize(mediaPreview.originalSize)})`
+                              : ''}
+                            {mediaPreview.uploadedToFirebase ? ' · Firebase Storage' : ' · Terkompresi ≤ 1MB'}
+                          </p>
+                        )}
+                      </div>
                     </div>
                     <button type="button" onClick={() => setMediaPreview(null)} className="text-slate-400 hover:text-rose-500">
                       <X className="w-4 h-4" />
@@ -1924,6 +2075,21 @@ export function ChatPage() {
                                 : 'bg-white dark:bg-[#202C33] text-slate-900 dark:text-white rounded-bl-sm'
                             }`}
                           >
+                            {m.mediaType === 'image' && m.mediaUrl && (
+                              <div
+                                onClick={() => setZoomMedia({ url: m.mediaUrl!, type: 'image' })}
+                                className="mb-2 rounded-xl overflow-hidden max-w-xs bg-black cursor-pointer group/img relative"
+                              >
+                                <img
+                                  src={m.mediaUrl}
+                                  alt="Media"
+                                  className="w-full h-auto object-cover max-h-64 group-hover/img:scale-105 transition-transform"
+                                />
+                                <div className="absolute inset-0 bg-black/30 opacity-0 group-hover/img:opacity-100 flex items-center justify-center text-white transition-opacity">
+                                  <Maximize2 className="w-5 h-5" />
+                                </div>
+                              </div>
+                            )}
                             {m.sticker && (
                               <div className="mb-1">
                                 <VipStickerCard stickerId={m.sticker} />
@@ -2020,6 +2186,49 @@ export function ChatPage() {
                   </div>
                 )}
 
+                {mediaError && (
+                  <div className="px-4 py-2 bg-rose-500/15 border-t border-rose-500/30 flex items-center justify-between gap-2 text-xs text-rose-600 dark:text-rose-300 font-semibold">
+                    <span>{mediaError}</span>
+                    <button type="button" onClick={() => setMediaError(null)} className="text-rose-500">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {uploadingMedia && (
+                  <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center gap-2.5 text-xs text-[#00A884] font-semibold">
+                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                    <span>Mengompresi (&le; 1MB) &amp; mengunggah ke Firebase Storage... {uploadProgress}%</span>
+                  </div>
+                )}
+
+                {mediaPreview && !uploadingMedia && (
+                  <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {mediaPreview.type === 'image' && (
+                        <img src={mediaPreview.url} alt="Preview" className="w-10 h-10 rounded-lg object-cover border border-white/10" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-800 dark:text-white truncate">
+                          Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
+                        </p>
+                        {mediaPreview.type === 'image' && mediaPreview.compressedSize && (
+                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono-tabular truncate">
+                            {formatFileSize(mediaPreview.compressedSize)}
+                            {mediaPreview.originalSize && mediaPreview.originalSize > mediaPreview.compressedSize
+                              ? ` (dari ${formatFileSize(mediaPreview.originalSize)})`
+                              : ''}
+                            {mediaPreview.uploadedToFirebase ? ' · Firebase Storage' : ' · Terkompresi ≤ 1MB'}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <button type="button" onClick={() => setMediaPreview(null)} className="text-slate-400 hover:text-rose-500">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
                 {/* Composer for DM */}
                 <form
                   onSubmit={handleSend}
@@ -2036,6 +2245,19 @@ export function ChatPage() {
                     <Smile className="w-5 h-5" />
                   </button>
 
+                  <label
+                    className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer shrink-0"
+                    title="Kirim Foto (Kompresi ≤ 1MB)"
+                  >
+                    <ImageIcon className="w-5 h-5 text-[#00A884]" />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => handleMediaUpload(e, 'image')}
+                      className="hidden"
+                    />
+                  </label>
+
                   <input
                     type="text"
                     value={draft}
@@ -2046,7 +2268,7 @@ export function ChatPage() {
 
                   <button
                     type="submit"
-                    disabled={sending || (!draft.trim() && !selectedSticker)}
+                    disabled={sending || uploadingMedia || (!draft.trim() && !selectedSticker && !mediaPreview)}
                     className="w-10 h-10 rounded-full bg-[#00A884] hover:bg-[#06CF9C] disabled:opacity-40 text-white flex items-center justify-center transition-colors shrink-0 shadow"
                     aria-label="Kirim"
                   >

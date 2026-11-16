@@ -1,12 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Bookmark,
   CalendarDays,
   Compass,
   Home,
   MessageCircle,
+  ShieldAlert,
   User as UserIcon,
   Users,
+  X,
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -17,7 +19,9 @@ import { StatusEmojiBadge } from './VipEmojis';
 import { AvatarDecoration } from './AvatarDecoration';
 import { CountryFlagBadge } from './CountryFlag';
 import { HeaderSearch } from './HeaderSearch';
+import { NotificationBell } from './NotificationBell';
 import { APP_LANGUAGES, UI_TRANSLATIONS, useAppLanguage } from '../utils/language';
+import { playSoundEffect } from '../utils/soundEffects';
 
 export function Layout({
   children,
@@ -27,10 +31,11 @@ export function Layout({
   hideBottomNav?: boolean;
 }) {
   const location = useLocation();
-  const { user, isPremium } = useAuth();
+  const { user, isPremium, authError, clearAuthError } = useAuth();
   const { lang, currentLanguageOption, changeLanguage } = useAppLanguage();
   const t = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.id;
   const [unreadChat, setUnreadChat] = useState(0);
+  const prevUnreadChatRef = useRef<{ uid: string; count: number } | null>(null);
 
   const desktopNavItems = [
     { to: '/', label: t.navHome, icon: Home },
@@ -43,9 +48,9 @@ export function Layout({
   const mobileNavItems = [
     { to: '/', label: t.navHome, icon: Home },
     { to: '/catalog', label: t.navCatalog, icon: Compass },
+    { to: '/library', label: t.navLibrary, icon: Bookmark },
     { to: '/community', label: t.navCommunity, icon: Users },
     { to: '/chat', label: t.navChat, icon: MessageCircle },
-    { to: '/profile', label: t.navProfile, icon: UserIcon },
   ];
 
   const cycleLanguage = () => {
@@ -57,6 +62,7 @@ export function Layout({
   useEffect(() => {
     if (!user) {
       setUnreadChat(0);
+      prevUnreadChatRef.current = null;
       return;
     }
     let active = true;
@@ -72,7 +78,18 @@ export function Layout({
         });
         const json = await res.json();
         if (active && json.ok) {
-          setUnreadChat(Number(json.totalUnread) || 0);
+          const nextUnread = Number(json.totalUnread) || 0;
+          const prev = prevUnreadChatRef.current;
+          if (
+            prev &&
+            prev.uid === user.uid &&
+            nextUnread > prev.count &&
+            !location.pathname.startsWith('/chat')
+          ) {
+            playSoundEffect('chat');
+          }
+          prevUnreadChatRef.current = { uid: user.uid, count: nextUnread };
+          setUnreadChat(nextUnread);
         }
       } catch {
         // Ignore transient poll error
@@ -104,6 +121,27 @@ export function Layout({
         aria-hidden="true"
         className="pointer-events-none fixed inset-x-0 top-0 h-80 bg-[radial-gradient(ellipse_at_top,_rgba(232,74,24,0.08),_transparent_68%)] dark:bg-[radial-gradient(ellipse_at_top,_rgba(232,74,24,0.14),_transparent_68%)] z-0"
       />
+
+      {/* Real-time Ban Alert Banner (shown anywhere if active session was just banned) */}
+      {!user && authError && authError.toLowerCase().includes('dibanned') && (
+        <div
+          role="alert"
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] w-[calc(100%-2rem)] max-w-md px-4 py-3 rounded-2xl bg-rose-950/95 border border-rose-500/60 text-rose-100 shadow-2xl backdrop-blur-md flex items-center gap-3"
+        >
+          <span className="w-8 h-8 rounded-xl bg-rose-500/25 border border-rose-400/50 text-rose-300 flex items-center justify-center shrink-0">
+            <ShieldAlert className="w-4 h-4" />
+          </span>
+          <p className="text-xs sm:text-sm font-bold leading-snug flex-1">{authError}</p>
+          <button
+            type="button"
+            onClick={clearAuthError}
+            aria-label="Tutup peringatan"
+            className="text-rose-300 hover:text-white shrink-0"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Desktop Top Navigation Bar */}
       <header className="hidden lg:flex sticky top-0 z-40 items-center justify-between gap-3 xl:gap-6 px-4 xl:px-8 h-16 bg-white/90 dark:bg-[#090A0E]/85 backdrop-blur-xl border-b border-slate-200 dark:border-white/[0.06] transition-colors">
@@ -178,6 +216,7 @@ export function Layout({
           >
             <Bookmark className="w-4 h-4" />
           </Link>
+          <NotificationBell />
           <TelegramCsButton />
           <ThemeToggle compact />
 
@@ -230,7 +269,29 @@ export function Layout({
             placeholder="Cari judul anime / donghua..."
             dropdownClassName="-left-12 -right-12 sm:left-0 sm:right-0"
           />
+          <NotificationBell compact />
           <ThemeToggle compact />
+          <Link
+            to="/profile"
+            aria-label={user ? user.name : 'Masuk Akun'}
+            title={user ? user.name : 'Masuk Akun'}
+            className={`shrink-0 h-9 w-9 sm:h-10 sm:w-10 rounded-xl border flex items-center justify-center transition-colors ${
+              isActive('/profile')
+                ? 'bg-[#E84A18]/15 border-[#E84A18]/50'
+                : 'bg-white dark:bg-[#13151C] border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/40'
+            }`}
+          >
+            {user ? (
+              <AvatarDecoration
+                src={user.photoUrl}
+                alt={user.name}
+                decorationId={user.activeBorder}
+                size="xs"
+              />
+            ) : (
+              <UserIcon className="w-4 h-4 text-slate-600 dark:text-gray-300" />
+            )}
+          </Link>
         </header>
       )}
 
@@ -247,9 +308,9 @@ export function Layout({
       {!hideBottomNav && (
         <nav
           aria-label="Navigasi utama"
-          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#0F1117]/95 backdrop-blur-xl border-t border-slate-200 dark:border-white/[0.06] transition-colors"
+          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#0F1117]/95 backdrop-blur-xl border-t border-slate-200 dark:border-white/[0.08] shadow-[0_-8px_30px_rgba(0,0,0,0.08)] dark:shadow-[0_-10px_32px_rgba(0,0,0,0.45)] pb-[env(safe-area-inset-bottom)] transition-colors"
         >
-          <div className="grid grid-cols-5 items-center h-16 max-w-lg mx-auto">
+          <div className="grid grid-cols-5 items-center h-16 max-w-lg mx-auto px-1">
             {mobileNavItems.map((item) => {
               const active = isActive(item.to);
               const Icon = item.icon;
@@ -258,13 +319,20 @@ export function Layout({
                 <Link
                   key={item.to}
                   to={item.to}
-                  className="relative flex flex-col items-center justify-center min-h-[44px] h-full transition-colors"
+                  aria-current={active ? 'page' : undefined}
+                  className="relative flex flex-col items-center justify-center min-h-[48px] h-full rounded-xl active:scale-95 transition-all"
                 >
                   {active && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute inset-x-3 -top-px h-10 rounded-b-full bg-gradient-to-b from-[#E84A18]/20 to-transparent pointer-events-none"
-                    />
+                    <>
+                      <span
+                        aria-hidden="true"
+                        className="absolute top-0 inset-x-4 h-[2.5px] rounded-b-full bg-[#E84A18]"
+                      />
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-x-2.5 top-0 h-10 rounded-b-2xl bg-gradient-to-b from-[#E84A18]/18 to-transparent pointer-events-none"
+                      />
+                    </>
                   )}
                   <div className="relative">
                     <Icon
@@ -279,8 +347,10 @@ export function Layout({
                     )}
                   </div>
                   <span
-                    className={`text-[10px] font-medium mt-1 tracking-tight ${
-                      active ? 'text-[#E84A18]' : 'text-slate-500 dark:text-[#6E7480]'
+                    className={`text-[10px] mt-1 tracking-tight truncate max-w-full px-1 ${
+                      active
+                        ? 'text-[#E84A18] font-bold'
+                        : 'text-slate-500 dark:text-[#6E7480] font-medium'
                     }`}
                   >
                     {item.label}

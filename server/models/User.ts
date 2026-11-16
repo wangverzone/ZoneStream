@@ -55,6 +55,10 @@ export interface IUser {
   episodeBookmarks: EpisodeBookmarkItem[];
   charisma?: number;
   likedBy?: string[];
+  isBanned?: boolean;
+  bannedAt?: Date | null;
+  banReason?: string;
+  lastLoginAt?: Date;
   lastActiveAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -151,6 +155,10 @@ const UserSchema = new Schema<IUserDocument>(
     episodeBookmarks: { type: [EpisodeBookmarkSchema], default: [] },
     charisma: { type: Number, default: 0, min: 0 },
     likedBy: { type: [String], default: [] },
+    isBanned: { type: Boolean, default: false },
+    bannedAt: { type: Date, default: null },
+    banReason: { type: String, default: '' },
+    lastLoginAt: { type: Date, default: () => new Date() },
     lastActiveAt: { type: Date, default: () => new Date() },
   },
   { timestamps: true }
