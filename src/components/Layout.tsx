@@ -16,6 +16,7 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { StatusEmojiBadge } from './VipEmojis';
 import { AvatarDecoration } from './AvatarDecoration';
 import { CountryFlagBadge } from './CountryFlag';
+import { HeaderSearch } from './HeaderSearch';
 import { APP_LANGUAGES, UI_TRANSLATIONS, useAppLanguage } from '../utils/language';
 
 export function Layout({
@@ -91,9 +92,13 @@ export function Layout({
   };
 
   const hasVipBadge = Boolean(user && (user.isVerified || isPremium || user.role === 'founder'));
+  const showMobileTopSearchBar =
+    !hideBottomNav &&
+    location.pathname !== '/' &&
+    !location.pathname.startsWith('/chat');
 
   return (
-    <div className="relative min-h-screen bg-[#F5F7FB] text-slate-900 dark:bg-[#090A0E] dark:text-[#F4F5F7] flex flex-col overflow-x-hidden transition-colors duration-200">
+    <div className="relative min-h-screen bg-[#F5F7FB] text-slate-900 dark:bg-[#090A0E] dark:text-[#F4F5F7] flex flex-col overflow-x-clip transition-colors duration-200">
       {/* Subtle Ambient Top Glow */}
       <div
         aria-hidden="true"
@@ -101,20 +106,20 @@ export function Layout({
       />
 
       {/* Desktop Top Navigation Bar */}
-      <header className="hidden lg:flex sticky top-0 z-40 items-center justify-between gap-8 px-8 h-16 bg-white/90 dark:bg-[#090A0E]/85 backdrop-blur-xl border-b border-slate-200 dark:border-white/[0.06] transition-colors">
+      <header className="hidden lg:flex sticky top-0 z-40 items-center justify-between gap-3 xl:gap-6 px-4 xl:px-8 h-16 bg-white/90 dark:bg-[#090A0E]/85 backdrop-blur-xl border-b border-slate-200 dark:border-white/[0.06] transition-colors">
         <Link
           to="/"
-          className="flex items-center gap-2.5 text-lg font-extrabold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
+          className="flex items-center gap-2 xl:gap-2.5 text-base xl:text-lg font-extrabold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
         >
           <img
             src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
             alt="ZoneStream Logo"
-            className="w-9 h-9 rounded-xl object-cover ring-2 ring-[#E84A18]/80 shadow-lg shadow-[#E84A18]/25"
+            className="w-8 h-8 xl:w-9 xl:h-9 rounded-xl object-cover ring-2 ring-[#E84A18]/80 shadow-lg shadow-[#E84A18]/25"
           />
           <span>ZoneStream</span>
         </Link>
 
-        <nav className="flex items-center gap-7 text-sm font-medium">
+        <nav className="flex items-center gap-3 xl:gap-5 2xl:gap-7 text-[13px] xl:text-sm font-medium shrink-0">
           {desktopNavItems.map((item) => {
             const active = isActive(item.to);
             const showUnread = item.to === '/chat' && unreadChat > 0;
@@ -142,12 +147,20 @@ export function Layout({
           })}
         </nav>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex items-center gap-1.5 xl:gap-2.5 shrink-0">
+          <HeaderSearch
+            className="w-40 xl:w-60 2xl:w-72"
+            placeholder="Cari Anime, Donghua..."
+            enableGlobalShortcut
+            compact
+            dropdownClassName="right-0 left-auto w-[350px] xl:w-[400px]"
+          />
+
           <button
             type="button"
             onClick={cycleLanguage}
             title={`Bahasa: ${currentLanguageOption.label} (Klik untuk ganti)`}
-            className="h-10 px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-gray-200 inline-flex items-center gap-1.5 transition-colors"
+            className="h-10 px-2 xl:px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-gray-200 inline-flex items-center gap-1.5 transition-colors shrink-0"
           >
             <CountryFlagBadge countryCode={currentLanguageOption.countryCode} size="xs" />
             <span className="uppercase">{currentLanguageOption.code}</span>
@@ -157,7 +170,7 @@ export function Layout({
             to="/library"
             aria-label="Watchlist & Riwayat"
             title="Watchlist & Riwayat"
-            className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors ${
+            className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors shrink-0 ${
               isActive('/library')
                 ? 'bg-[#E84A18]/15 border-[#E84A18]/40 text-[#E84A18]'
                 : 'bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-gray-300'
@@ -170,7 +183,7 @@ export function Layout({
 
           <Link
             to="/profile"
-            className="flex items-center gap-2.5 py-1.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border border-slate-200 dark:border-white/[0.08] transition-colors whitespace-nowrap shrink-0"
+            className="flex items-center gap-2 py-1.5 px-2 xl:px-3 rounded-xl bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border border-slate-200 dark:border-white/[0.08] transition-colors whitespace-nowrap shrink-0"
           >
             <AvatarDecoration
               src={user?.photoUrl}
@@ -178,8 +191,10 @@ export function Layout({
               decorationId={user?.activeBorder}
               size="xs"
             />
-            <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-              <span>{user ? user.name : 'Masuk Akun'}</span>
+            <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1 xl:gap-1.5">
+              <span className="max-w-[68px] xl:max-w-[115px] truncate">
+                {user ? user.name : 'Masuk Akun'}
+              </span>
               {hasVipBadge && (
                 <VerifiedBadge
                   size="sm"
@@ -195,6 +210,29 @@ export function Layout({
           </Link>
         </div>
       </header>
+
+      {/* Mobile / Tablet Compact Top Search Header (non-sticky to preserve mobile viewport) */}
+      {showMobileTopSearchBar && (
+        <header className="lg:hidden relative z-30 flex items-center gap-2 sm:gap-2.5 px-3 sm:px-6 pt-3 pb-1">
+          <Link
+            to="/"
+            aria-label="Beranda ZoneStream"
+            className="shrink-0 min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl overflow-hidden ring-1 ring-[#E84A18]/60"
+          >
+            <img
+              src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
+              alt="ZoneStream"
+              className="w-10 h-10 object-cover"
+            />
+          </Link>
+          <HeaderSearch
+            className="flex-1 min-w-0"
+            placeholder="Cari judul anime / donghua..."
+            dropdownClassName="-left-12 -right-12 sm:left-0 sm:right-0"
+          />
+          <ThemeToggle compact />
+        </header>
+      )}
 
       {/* Main Content Container */}
       <main

@@ -53,8 +53,12 @@ export interface UserProfile {
   countryCode?: string;
   lastWatchDate?: string;
   watchStreak?: number;
+  longestStreak?: number;
+  streakDates?: string[];
+  unlockedStreakFrames?: string[];
   dailyEpisodesWatched?: number;
   totalEpisodesWatched?: number;
+  charisma?: number;
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
   episodeBookmarks: EpisodeBookmarkItem[];
@@ -64,9 +68,11 @@ export interface WatchHistoryReward {
   expGained: number;
   dailyBonusGained: number;
   streak: number;
+  longestStreak?: number;
   levelUp: boolean;
   newLevel: number;
   isDoubleExp?: boolean;
+  newlyUnlockedFrame?: { id: string; name: string; minStreak: number } | null;
 }
 
 export interface PremiumPackage {
@@ -234,6 +240,16 @@ export interface PublicCommunityUser {
   watchStreak: number;
   totalEpisodesWatched: number;
   bookmarksCount: number;
+  charisma?: number;
+  clan?: string;
+  clanName?: string;
+  clanRank?: number;
+  isClanLeader?: boolean;
+  topRank?: number | null;
+  topCategory?: 'charisma' | 'watchtime' | 'level' | null;
+  charismaRank?: number;
+  watchRank?: number;
+  levelRank?: number;
   lastActiveAt: string;
   isOnline: boolean;
   relationship?: RelationshipStatus;
@@ -241,24 +257,45 @@ export interface PublicCommunityUser {
 
 export interface PublicProfileDetail extends PublicCommunityUser {
   friendsCount: number;
+  hasLiked?: boolean;
   bookmarks: BookmarkItem[];
   recentHistory: WatchHistoryItem[];
 }
 
 export interface ChatMessageItem {
   _id: string;
+  channel?: string;
   conversationId?: string;
   groupId?: string;
   senderUid: string;
   recipientUid?: string;
   senderName?: string;
+  senderUsername?: string;
   senderPhoto?: string;
+  senderRole?: 'member' | 'founder';
+  senderIsPremium?: boolean;
+  senderBadge?: string;
+  senderBorder?: string;
+  senderStatusEmoji?: string;
+  senderLevel?: number;
+  senderCharisma?: number;
+  senderClan?: {
+    tag: string;
+    name: string;
+    level?: number;
+    isLeader?: boolean;
+    clanRank?: number;
+  } | null;
+  senderTopRank?: number | null;
+  senderTopCategory?: 'charisma' | 'watchtime' | 'level' | null;
   text: string;
   mediaUrl?: string;
   mediaType?: 'image' | 'video' | 'audio' | '';
   sticker?: string;
   replyToId?: string;
+  replySenderUid?: string;
   replySenderName?: string;
+  replySenderIsVerified?: boolean;
   replyText?: string;
   readAt?: string | null;
   createdAt: string;

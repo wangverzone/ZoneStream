@@ -31,6 +31,8 @@ import {
   X,
   Zap,
   Globe,
+  Trophy,
+  ChevronRight,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Layout } from '../components/Layout';
@@ -39,7 +41,11 @@ import { ThemeToggle } from '../components/ThemeToggle';
 import { TELEGRAM_BADGE_MAP, VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
-import { AvatarDecoration } from '../components/AvatarDecoration';
+import {
+  AvatarDecoration,
+  STREAK_FRAME_REWARDS,
+  normalizeDecorationId,
+} from '../components/AvatarDecoration';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
 import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
 import type { PaymentTransaction, PremiumPackage } from '../types';
@@ -109,9 +115,35 @@ function GoogleLogo() {
   );
 }
 
-function getTodayWibString(): string {
-  const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
+function getJakartaWibDateString(offsetDays = 0): string {
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000 + offsetDays * 86_400_000);
   return now.toISOString().slice(0, 10);
+}
+
+function getTodayWibString(): string {
+  return getJakartaWibDateString(0);
+}
+
+const SHORT_DAYS_ID = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
+
+function getLast7WibDays(): Array<{
+  dateStr: string;
+  shortDay: string;
+  dayNum: string;
+  isToday: boolean;
+}> {
+  const items: Array<{ dateStr: string; shortDay: string; dayNum: string; isToday: boolean }> = [];
+  for (let offset = -6; offset <= 0; offset++) {
+    const ms = Date.now() + 7 * 60 * 60 * 1000 + offset * 86_400_000;
+    const d = new Date(ms);
+    items.push({
+      dateStr: d.toISOString().slice(0, 10),
+      shortDay: SHORT_DAYS_ID[d.getUTCDay()],
+      dayNum: String(d.getUTCDate()),
+      isToday: offset === 0,
+    });
+  }
+  return items;
 }
 
 function getStoredAuthToken(): string {
@@ -134,6 +166,7 @@ export function ProfilePage() {
     register,
     logout,
     refreshUser,
+    updateProfile,
     toggleFounderAdPreview,
     getLocalHistory,
     getLocalBookmarks,
@@ -173,6 +206,24 @@ export function ProfilePage() {
   const [forgotNewPassword, setForgotNewPassword] = useState('');
   const [forgotBusy, setForgotBusy] = useState(false);
   const [forgotMsg, setForgotMsg] = useState<{ type: 'ok' | 'err'; text: string; code?: string } | null>(null);
+  const [userClan, setUserClan] = useState<any>(null);
+  const [equippingFrameId, setEquippingFrameId] = useState<string>('');
+  const [streakFrameNotice, setStreakFrameNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    fetch('/api/social/clans', {
+      headers: { Authorization: `Bearer ${getStoredAuthToken()}` },
+    })
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.ok && Array.isArray(json.clans)) {
+          const found = json.clans.find((c: any) => c.members?.includes(user.uid));
+          if (found) setUserClan(found);
+        }
+      })
+      .catch(() => {});
+  }, [user?.uid]);
 
   const isFounderUser = user?.role === 'founder';
   const level = user?.level ?? 1;
@@ -180,8 +231,50 @@ export function ProfilePage() {
   const exp = user?.exp ?? 25;
   const expNeeded = Math.max(100, level * 200);
   const progressPct = isFounderUser ? 100 : Math.min(100, Math.round((exp / expNeeded) * 100));
-  const watchStreak = user?.watchStreak ?? 0;
-  const watchedToday = Boolean(user?.lastWatchDate && user.lastWatchDate === getTodayWibString());
+  const todayWib = getTodayWibString();
+  const yesterdayWib = getJakartaWibDateString(-1);
+  const rawStreak = user?.watchStreak ?? 0;
+  const isStreakCurrent = Boolean(
+    user?.lastWatchDate && (user.lastWatchDate === todayWib || user.lastWatchDate === yesterdayWib)
+  );
+  const watchStreak = isStreakCurrent ? Math.max(1, rawStreak) : 0;
+  const longestStreak = Math.max(user?.longestStreak ?? 0, watchStreak);
+  const watchedToday = Boolean(user?.lastWatchDate && user.lastWatchDate === todayWib);
+  const dailyEpisodesToday = watchedToday ? Math.max(1, user?.dailyEpisodesWatched ?? 1) : 0;
+
+  const watchedDateSet = new Set<string>(user?.streakDates || []);
+  if (user?.lastWatchDate) {
+    watchedDateSet.add(user.lastWatchDate);
+    if (watchStreak > 1) {
+      const anchorMs = new Date(`${user.lastWatchDate}T00:00:00Z`).getTime();
+      if (!Number.isNaN(anchorMs)) {
+        for (let i = 0; i < Math.min(watchStreak, 7); i++) {
+          watchedDateSet.add(new Date(anchorMs - i * 86_400_000).toISOString().slice(0, 10));
+        }
+      }
+    }
+  }
+  const last7Days = getLast7WibDays();
+  const bestStreakForRewards = Math.max(longestStreak, watchStreak);
+  const unlockedFramesSet = new Set<string>(user?.unlockedStreakFrames || []);
+
+  const handleEquipStreakFrame = async (frameId: string, frameName: string) => {
+    setEquippingFrameId(frameId);
+    setStreakFrameNotice(null);
+    const ok = await updateProfile({ activeBorder: frameId });
+    setEquippingFrameId('');
+    if (ok) {
+      setStreakFrameNotice({
+        type: 'ok',
+        text: `Frame ${frameName} berhasil dipasang ke avatar profilmu!`,
+      });
+    } else {
+      setStreakFrameNotice({
+        type: 'err',
+        text: 'Gagal memasang frame. Pastikan streak kamu sudah memenuhi syarat.',
+      });
+    }
+  };
 
   const borderStyle =
     AVATAR_BORDER_STYLES[user?.activeBorder || 'classic']?.ringClass ||
@@ -956,6 +1049,11 @@ export function ProfilePage() {
                   <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-800 dark:text-gray-100 font-mono-tabular shadow-sm">
                     Lv. {levelDisplay}
                   </span>
+                  {userClan && (
+                    <span className="px-3 py-1 rounded-full bg-amber-500/20 border border-amber-500/40 text-xs font-extrabold text-amber-400 shadow-sm">
+                      [{userClan.tag}] {userClan.name}
+                    </span>
+                  )}
                   <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-700 dark:text-gray-200 font-mono-tabular shadow-sm">
                     UID: {user.uid}
                   </span>
@@ -971,18 +1069,11 @@ export function ProfilePage() {
                     <span>Profil Publik</span>
                   </Link>
                   <Link
-                    to="/community"
-                    className="px-3.5 py-2 rounded-xl bg-white dark:bg-[#181B25] hover:border-[#E84A18] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white inline-flex items-center gap-1.5 shadow-sm transition-colors"
-                  >
-                    <Users className="w-3.5 h-3.5 text-sky-500" />
-                    <span>Cari User &amp; Teman</span>
-                  </Link>
-                  <Link
                     to="/chat"
                     className="px-3.5 py-2 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-md shadow-emerald-500/20 transition-colors"
                   >
                     <MessageCircle className="w-3.5 h-3.5" />
-                    <span>Chat WA</span>
+                    <span>Chat</span>
                   </Link>
                 </div>
               </>
@@ -1098,6 +1189,227 @@ export function ProfilePage() {
                 <span>Cara dapatkan EXP</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Daily Watch Streak & Animated Frame Rewards Dashboard */}
+        <div className="px-4 mt-4">
+          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+            {/* Header Row */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-slate-100 dark:border-white/[0.06]">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-rose-600 text-white flex items-center justify-center shadow-md shadow-orange-500/25 shrink-0">
+                  <Flame className="w-5 h-5 fill-current" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white">
+                    Daily Watch Streak
+                  </h3>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                    <span className="font-mono-tabular font-bold text-orange-500 dark:text-amber-400">
+                      {watchStreak} Hari Beruntun
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono-tabular">
+                      Rekor Terbaik: {longestStreak} Hari
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono-tabular">
+                      Hari Ini: {dailyEpisodesToday} Ep
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {watchedToday ? (
+                <span className="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-300 text-xs font-bold inline-flex items-center gap-1.5 shrink-0">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Streak Terjaga Hari Ini</span>
+                </span>
+              ) : (
+                <Link
+                  to="/catalog"
+                  className="px-3.5 py-2 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors shrink-0"
+                >
+                  <span>Tonton 1 Ep Sekarang</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              )}
+            </div>
+
+            {/* 7-Day Rolling Consistency Calendar (Jakarta WIB) */}
+            <div className="py-3.5 border-b border-slate-100 dark:border-white/[0.06]">
+              <div className="flex items-center justify-between mb-2.5 text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                <span>Kalender Konsistensi 7 Hari Terakhir</span>
+                <span className="font-mono-tabular">
+                  {last7Days.filter((d) => watchedDateSet.has(d.dateStr)).length}/7 Hari Aktif
+                </span>
+              </div>
+              <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                {last7Days.map((day) => {
+                  const isDone = watchedDateSet.has(day.dateStr);
+                  return (
+                    <div
+                      key={day.dateStr}
+                      className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center gap-1 border text-center transition-colors ${
+                        isDone
+                          ? 'bg-gradient-to-b from-orange-500/15 to-rose-500/10 border-orange-500/40 text-orange-600 dark:text-amber-300'
+                          : day.isToday
+                          ? 'bg-slate-100 dark:bg-white/[0.04] border-dashed border-[#E84A18]/60 text-slate-700 dark:text-gray-200'
+                          : 'bg-slate-50 dark:bg-white/[0.02] border-slate-200/80 dark:border-white/[0.05] text-slate-400 dark:text-gray-500'
+                      }`}
+                    >
+                      <span className="text-[10px] font-semibold leading-none">{day.shortDay}</span>
+                      <div
+                        className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                          isDone
+                            ? 'bg-gradient-to-br from-orange-500 to-rose-500 text-white shadow-sm'
+                            : day.isToday
+                            ? 'border border-[#E84A18]/60 text-[#E84A18]'
+                            : 'bg-slate-200/70 dark:bg-white/[0.05]'
+                        }`}
+                      >
+                        {isDone ? (
+                          <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                        ) : (
+                          <span className="text-[10px] font-mono-tabular font-bold">{day.dayNum}</span>
+                        )}
+                      </div>
+                      <span className="text-[9px] font-mono-tabular leading-none opacity-80">
+                        {day.isToday ? 'Hari Ini' : day.dayNum}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Frame Rewards Gallery (3, 7, 14, 30 Consecutive Days) */}
+            <div className="pt-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div>
+                  <h4 className="text-xs font-extrabold text-slate-900 dark:text-white">
+                    Hadiah Frame Profil Animasi Eksklusif
+                  </h4>
+                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                    Tonton anime setiap hari tanpa putus untuk membuka &amp; memasang bingkai avatar animasi.
+                  </p>
+                </div>
+              </div>
+
+              {streakFrameNotice && (
+                <div
+                  className={`mb-3 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 border ${
+                    streakFrameNotice.type === 'ok'
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-300'
+                      : 'bg-rose-500/10 border-rose-500/30 text-rose-500'
+                  }`}
+                >
+                  <span>{streakFrameNotice.text}</span>
+                  <button
+                    type="button"
+                    onClick={() => setStreakFrameNotice(null)}
+                    className="opacity-70 hover:opacity-100"
+                    aria-label="Tutup notifikasi"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {STREAK_FRAME_REWARDS.map((frame) => {
+                  const unlocked = Boolean(
+                    isFounderUser ||
+                      unlockedFramesSet.has(frame.id) ||
+                      bestStreakForRewards >= frame.minStreak
+                  );
+                  const equipped = normalizeDecorationId(user?.activeBorder) === frame.id;
+                  const progressNum = isFounderUser
+                    ? frame.minStreak
+                    : Math.min(bestStreakForRewards, frame.minStreak);
+                  const pct = Math.round((progressNum / frame.minStreak) * 100);
+                  const busy = equippingFrameId === frame.id;
+
+                  return (
+                    <div
+                      key={frame.id}
+                      className={`rounded-xl border p-3 flex items-center gap-3 transition-colors ${
+                        equipped
+                          ? 'bg-[#E84A18]/[0.08] border-[#E84A18]/60'
+                          : unlocked
+                          ? 'bg-slate-50 dark:bg-[#171A23] border-slate-200 dark:border-white/10'
+                          : 'bg-slate-50/60 dark:bg-[#12141B] border-slate-200/70 dark:border-white/[0.05]'
+                      }`}
+                    >
+                      <div className="p-1 shrink-0">
+                        <AvatarDecoration
+                          src={user?.photoUrl}
+                          alt={frame.name}
+                          decorationId={frame.id}
+                          size="md"
+                        />
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                            {frame.name}
+                          </p>
+                          <span className="text-[10px] font-mono-tabular font-bold text-orange-500 dark:text-amber-400 shrink-0">
+                            {frame.tierLabel}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate mt-0.5">
+                          {frame.subtitle}
+                        </p>
+
+                        <div className="mt-2 flex items-center gap-2">
+                          <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
+                            <div
+                              className="h-full rounded-full transition-all duration-300"
+                              style={{
+                                width: `${pct}%`,
+                                backgroundColor: frame.accentColor,
+                              }}
+                            />
+                          </div>
+                          <span className="text-[10px] font-mono-tabular text-slate-500 dark:text-gray-400 shrink-0">
+                            {progressNum}/{frame.minStreak}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0">
+                        {equipped ? (
+                          <span className="px-2.5 py-1.5 rounded-lg bg-[#E84A18]/20 text-[#E84A18] dark:text-[#FF8A65] text-[11px] font-extrabold inline-flex items-center gap-1">
+                            <Check className="w-3 h-3" />
+                            <span>Aktif</span>
+                          </span>
+                        ) : unlocked ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handleEquipStreakFrame(frame.id, frame.name)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-950 hover:opacity-90 text-[11px] font-extrabold transition-opacity disabled:opacity-50"
+                          >
+                            {busy ? '...' : 'Pasang'}
+                          </button>
+                        ) : (
+                          <span
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-200/80 dark:bg-white/[0.06] text-slate-500 dark:text-gray-400 text-[10px] font-bold inline-flex items-center gap-1"
+                            title={`Capai ${frame.minStreak} hari beruntun untuk membuka`}
+                          >
+                            <Lock className="w-3 h-3" />
+                            <span>{frame.minStreak - progressNum}h lagi</span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -1306,6 +1618,29 @@ export function ProfilePage() {
               </button>
             )}
           </div>
+        </div>
+
+        {/* Leaderboard & Klan Settings Card */}
+        <div className="px-4 mt-4">
+          <Link
+            to="/leaderboard"
+            className={`flex items-center justify-between p-4 sm:p-5 rounded-2xl border shadow-sm dark:shadow-none transition-all hover:border-[#E84A18] ${activeTheme.cardClass}`}
+          >
+            <div className="flex items-center gap-3">
+              <span className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-center shrink-0">
+                <Trophy className="w-5 h-5" />
+              </span>
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                  Leaderboard &amp; Klan Wibu
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                  Lihat peringkat Top Charisma, penonton terbanyak, dan buat atau gabung klan
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
+          </Link>
         </div>
 
         {/* Pengaturan Bahasa Aplikasi & Subtitle (4 Bahasa) */}

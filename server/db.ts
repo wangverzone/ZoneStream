@@ -74,19 +74,76 @@ export const generateDisplayUid = (): string => {
   return String(Math.floor(1000000 + Math.random() * 9000000));
 };
 
+export const STREAK_FRAME_TIERS = [
+  { id: 'streak-ember', minStreak: 3, name: 'Ember Pulse 3D' },
+  { id: 'streak-aurora', minStreak: 7, name: 'Aurora Prism 3D' },
+  { id: 'streak-celestial', minStreak: 14, name: 'Celestial Orbit 3D' },
+  { id: 'streak-eternal', minStreak: 30, name: 'Eternal Phoenix 3D' },
+] as const;
+
+export function getJakartaDateString(offsetDays = 0): string {
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000 + offsetDays * 86_400_000);
+  return now.toISOString().slice(0, 10);
+}
+
 export function sanitizeUser(user: IUser): PublicUser {
   const { passwordHash: _removed, ...pub } = user;
   pub.photoUrl = upgradeImageToHd(pub.photoUrl);
   pub.countryCode = (pub.countryCode || 'ID').toUpperCase();
+
+  const isFounderUser =
+    String(pub.email || '').toLowerCase() === 'wanglin72kk@gmail.com' || pub.role === 'founder';
+
   const isWhitelisted = AUTO_VIP_WHITELIST.map((e) => e.toLowerCase()).includes(
     String(pub.email || '').toLowerCase()
   );
-  if (isWhitelisted) {
+
+  if (isFounderUser) {
+    pub.role = 'founder';
+    pub.activeBadge = 'Verified Founder';
     pub.isPremium = true;
     pub.isVerified = true;
-    pub.activeBadge =
-      pub.activeBadge && pub.activeBadge !== 'Member' ? pub.activeBadge : 'Verified VIP';
+    pub.level = 999999;
+    pub.charisma = Math.max(9999, Number(pub.charisma ?? 9999));
+  } else {
+    if (isWhitelisted || pub.isPremium) {
+      pub.isPremium = true;
+      pub.isVerified = true;
+      pub.activeBadge =
+        pub.activeBadge && pub.activeBadge !== 'Member' ? pub.activeBadge : 'Verified VIP';
+    }
+    pub.level = Math.max(1, Number(pub.level) || 1);
+    pub.charisma = Math.max(0, Number(pub.charisma ?? 0));
   }
+
+  // Normalize Daily Watch Streak & Earned Animated Profile Frames
+  const todayStr = getJakartaDateString(0);
+  const yesterdayStr = getJakartaDateString(-1);
+  const storedDates = Array.isArray(pub.streakDates)
+    ? pub.streakDates.filter((d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d))
+    : [];
+  if (pub.lastWatchDate && /^\d{4}-\d{2}-\d{2}$/.test(pub.lastWatchDate) && !storedDates.includes(pub.lastWatchDate)) {
+    storedDates.push(pub.lastWatchDate);
+  }
+  storedDates.sort();
+  pub.streakDates = Array.from(new Set(storedDates)).slice(-30);
+
+  const rawStreak = Math.max(0, Number(pub.watchStreak || 0));
+  const isStreakActive = Boolean(
+    pub.lastWatchDate && (pub.lastWatchDate === todayStr || pub.lastWatchDate === yesterdayStr)
+  );
+  pub.watchStreak = isStreakActive ? Math.max(1, rawStreak) : 0;
+  pub.dailyEpisodesWatched = pub.lastWatchDate === todayStr ? Math.max(0, Number(pub.dailyEpisodesWatched || 0)) : 0;
+  pub.longestStreak = Math.max(Number(pub.longestStreak || 0), rawStreak, pub.watchStreak);
+
+  const unlockedSet = new Set(Array.isArray(pub.unlockedStreakFrames) ? pub.unlockedStreakFrames : []);
+  for (const tier of STREAK_FRAME_TIERS) {
+    if (isFounderUser || pub.longestStreak >= tier.minStreak) {
+      unlockedSet.add(tier.id);
+    }
+  }
+  pub.unlockedStreakFrames = Array.from(unlockedSet);
+
   if (
     pub.role !== 'founder' &&
     !isWhitelisted &&
@@ -154,6 +211,8 @@ function buildFounderPayload(): IUser {
     bannerUrl: '',
     level: 999999,
     exp: 0,
+    charisma: 9999,
+    likedBy: [],
     isPremium: true,
     isVerified: true,
     premiumPlan: 'Founder Lifetime',
@@ -165,6 +224,9 @@ function buildFounderPayload(): IUser {
     countryCode: 'ID',
     lastWatchDate: '',
     watchStreak: 1,
+    longestStreak: 30,
+    streakDates: [],
+    unlockedStreakFrames: ['streak-ember', 'streak-aurora', 'streak-celestial', 'streak-eternal'],
     dailyEpisodesWatched: 0,
     totalEpisodesWatched: 0,
     watchHistory: [],
@@ -178,12 +240,31 @@ async function ensureFounderFallback() {
   const store = readFallbackUsers();
   const oneYearExpiry = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
   for (const u of Object.values(store)) {
-    if (u.email && u.email.toLowerCase() === 'akunresspakistan@gmail.com') {
+    const emailLower = String(u.email || '').toLowerCase();
+    if (emailLower === 'wanglin72kk@gmail.com' || u.role === 'founder') {
+      u.role = 'founder';
       u.isPremium = true;
       u.isVerified = true;
-      u.premiumPlan = 'VIP 1 Tahun (Special Request)';
-      u.premiumExpiryDate = oneYearExpiry;
-      u.activeBadge = 'Verified VIP';
+      u.level = 999999;
+      u.charisma = Math.max(9999, Number(u.charisma ?? 9999));
+      u.activeBadge = 'Verified Founder';
+    } else {
+      if (emailLower === 'akunresspakistan@gmail.com') {
+        u.isPremium = true;
+        u.isVerified = true;
+        if ((u.level || 1) >= 9000) {
+          u.level = 1;
+          u.exp = 0;
+        }
+        u.premiumPlan = u.premiumPlan || 'VIP 1 Tahun';
+        u.premiumExpiryDate = u.premiumExpiryDate || oneYearExpiry;
+        u.activeBadge =
+          u.activeBadge && u.activeBadge !== 'Member' ? u.activeBadge : 'Verified VIP';
+      }
+      // Ensure non-founder users without real likes from other users have charisma = 0
+      if (!Array.isArray(u.likedBy) || u.likedBy.length === 0) {
+        u.charisma = 0;
+      }
     }
   }
 
@@ -191,8 +272,11 @@ async function ensureFounderFallback() {
     store[FOUNDER_UID] = {
       ...store['4167293'],
       uid: FOUNDER_UID,
+      role: 'founder',
       level: 999999,
       exp: 0,
+      charisma: 9999,
+      activeBadge: 'Verified Founder',
       activeBorder:
         !store['4167293'].activeBorder || store['4167293'].activeBorder === 'classic'
           ? 'lightning-aura'
@@ -203,7 +287,10 @@ async function ensureFounderFallback() {
     delete store['4167293'];
     writeFallbackUsers(store);
   } else if (!store[FOUNDER_UID]) {
-    store[FOUNDER_UID] = buildFounderPayload();
+    const payload = buildFounderPayload();
+    payload.level = 999999;
+    payload.charisma = 9999;
+    store[FOUNDER_UID] = payload;
     writeFallbackUsers(store);
   } else {
     writeFallbackUsers(store);
@@ -215,18 +302,49 @@ export async function ensureFounderAccount() {
   founderSeeded = true;
   try {
     await UserModel.collection.dropIndex('firebaseUid_1').catch(() => {});
-    
-    // Also ensure akunresspakistan@gmail.com has 1-year VIP Premium
-    const specialVipEmail = 'akunresspakistan@gmail.com';
-    const specialVipUser = await UserModel.findOne({ email: specialVipEmail });
-    const oneYearExpiry = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
-    if (specialVipUser) {
-      specialVipUser.isPremium = true;
-      specialVipUser.isVerified = true;
-      specialVipUser.premiumPlan = 'VIP 1 Tahun (Special Request)';
-      specialVipUser.premiumExpiryDate = oneYearExpiry;
-      specialVipUser.activeBadge = 'Verified VIP';
-      await specialVipUser.save();
+
+    // Zero out legacy default charisma (1200 / 38500 / auto-boosted) for non-founders who have no real likes yet
+    await UserModel.updateMany(
+      {
+        role: { $ne: 'founder' },
+        email: { $ne: FOUNDER_EMAIL },
+        $or: [{ likedBy: { $exists: false } }, { likedBy: { $size: 0 } }],
+        charisma: { $ne: 0 },
+      },
+      { $set: { charisma: 0 } }
+    ).catch(() => {});
+
+    const pakistanUser = await UserModel.findOne({ email: 'akunresspakistan@gmail.com' });
+    if (pakistanUser) {
+      pakistanUser.isPremium = true;
+      pakistanUser.isVerified = true;
+      if ((pakistanUser.level || 1) >= 9000) {
+        pakistanUser.level = 1;
+        pakistanUser.exp = 0;
+      }
+      if (!Array.isArray(pakistanUser.likedBy) || pakistanUser.likedBy.length === 0) {
+        pakistanUser.charisma = 0;
+      }
+      pakistanUser.premiumPlan = pakistanUser.premiumPlan || 'VIP 1 Tahun';
+      pakistanUser.premiumExpiryDate =
+        pakistanUser.premiumExpiryDate ||
+        new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
+      pakistanUser.activeBadge =
+        pakistanUser.activeBadge && pakistanUser.activeBadge !== 'Member'
+          ? pakistanUser.activeBadge
+          : 'Verified VIP';
+      await pakistanUser.save();
+    }
+
+    const founderUser = await UserModel.findOne({ email: 'wanglin72kk@gmail.com' });
+    if (founderUser) {
+      founderUser.role = 'founder';
+      founderUser.isPremium = true;
+      founderUser.isVerified = true;
+      founderUser.level = 999999;
+      founderUser.charisma = Math.max(9999, Number(founderUser.charisma ?? 9999));
+      founderUser.activeBadge = 'Verified Founder';
+      await founderUser.save();
     }
 
     const existing = await UserModel.findOne({
@@ -334,6 +452,8 @@ export async function createMemberUser(payload: {
     bannerUrl: '',
     level: 1,
     exp: 25,
+    charisma: 0,
+    likedBy: [],
     isPremium: false,
     isVerified: false,
     premiumPlan: '',
@@ -344,6 +464,9 @@ export async function createMemberUser(payload: {
     statusEmoji: '',
     lastWatchDate: '',
     watchStreak: 0,
+    longestStreak: 0,
+    streakDates: [],
+    unlockedStreakFrames: [],
     dailyEpisodesWatched: 0,
     totalEpisodesWatched: 0,
     watchHistory: [],
@@ -374,6 +497,8 @@ export async function updateUserByUid(
     Object.assign(doc, updated);
     doc.markModified('watchHistory');
     doc.markModified('bookmarks');
+    doc.markModified('streakDates');
+    doc.markModified('unlockedStreakFrames');
     await doc.save();
     return doc.toObject();
   }
@@ -442,6 +567,8 @@ export async function findOrCreateGoogleUser(params: {
     bannerUrl: '',
     level: 1,
     exp: 25,
+    charisma: 0,
+    likedBy: [],
     isPremium: false,
     isVerified: false,
     premiumPlan: '',
@@ -452,6 +579,9 @@ export async function findOrCreateGoogleUser(params: {
     statusEmoji: '',
     lastWatchDate: '',
     watchStreak: 0,
+    longestStreak: 0,
+    streakDates: [],
+    unlockedStreakFrames: [],
     dailyEpisodesWatched: 0,
     totalEpisodesWatched: 0,
     watchHistory: [],
@@ -570,6 +700,7 @@ export function toCommunityUserSummary(user: IUser) {
     bannerUrl: pub.bannerUrl || '',
     level: pub.role === 'founder' ? 999999 : pub.level || 1,
     exp: pub.exp || 0,
+    charisma: pub.role === 'founder' ? Math.max(9999, Number(pub.charisma ?? 9999)) : Number(pub.charisma ?? 0),
     isPremium: Boolean(pub.isPremium || pub.role === 'founder'),
     isVerified: Boolean(pub.isVerified || pub.isPremium || pub.role === 'founder'),
     activeBadge: pub.activeBadge || (pub.role === 'founder' ? 'Verified Founder' : 'Member'),

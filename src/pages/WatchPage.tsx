@@ -355,10 +355,20 @@ export function WatchPage() {
                 </span>
               )}
             </div>
-            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-300 font-bold font-mono-tabular">
-              <Flame className="w-3.5 h-3.5" />
-              Streak {reward.streak} Hari
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              {reward.newlyUnlockedFrame && (
+                <Link
+                  to="/profile"
+                  className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/35 text-emerald-600 dark:text-emerald-300 font-extrabold hover:underline"
+                >
+                  <span>Frame Baru: {reward.newlyUnlockedFrame.name}</span>
+                </Link>
+              )}
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-300 font-bold font-mono-tabular">
+                <Flame className="w-3.5 h-3.5" />
+                Streak {reward.streak} Hari
+              </span>
+            </div>
           </div>
         )}
 

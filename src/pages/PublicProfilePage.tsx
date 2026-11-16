@@ -6,6 +6,7 @@ import {
   Clock,
   Crown,
   Flame,
+  Heart,
   MessageCircle,
   Play,
   Sparkles,
@@ -49,10 +50,11 @@ export function PublicProfilePage() {
   const navigate = useNavigate();
   const { user: viewer } = useAuth();
 
-  const [profile, setProfile] = useState<PublicProfileDetail | null>(null);
+  const [profile, setProfile] = useState<(PublicProfileDetail & { charisma?: number }) | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [likeBusy, setLikeBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const loadProfile = async () => {
@@ -87,6 +89,40 @@ export function PublicProfilePage() {
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2600);
+  };
+
+  const handleLikeProfile = async () => {
+    if (!viewer) {
+      showToast('Silakan masuk akun terlebih dahulu untuk menyukai profil ini.');
+      navigate('/profile');
+      return;
+    }
+    if (viewer.uid === profile?.uid) {
+      showToast('Kamu tidak bisa menyukai profil sendiri. Biarkan user lain yang like!');
+      return;
+    }
+    if (likeBusy || !profile) return;
+    setLikeBusy(true);
+    try {
+      const token = getToken();
+      const res = await fetch(`/api/social/profile/${encodeURIComponent(profile.uid)}/like`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      const json = await res.json();
+      if (res.ok && json.ok) {
+        setProfile((prev) =>
+          prev ? { ...prev, charisma: json.charisma, hasLiked: Boolean(json.liked) } : prev
+        );
+        showToast(json.message || 'Berhasil menyukai profil! +1 Charisma (♥)');
+      } else {
+        showToast(json.error || 'Gagal menyukai profil');
+      }
+    } catch {
+      showToast('Gagal menyukai profil');
+    } finally {
+      setLikeBusy(false);
+    }
   };
 
   const handleFriendAction = async (action: 'request' | 'accept' | 'remove') => {
@@ -292,8 +328,27 @@ export function PublicProfilePage() {
                 </div>
               </div>
 
-              {/* Action Buttons */}
+              {/* Action Buttons & Real-Time Like Button */}
               <div className="flex items-center flex-wrap gap-2.5">
+                {rel !== 'self' && (
+                  <button
+                    type="button"
+                    disabled={likeBusy}
+                    onClick={handleLikeProfile}
+                    className={`min-h-[42px] px-4 rounded-xl text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-lg transition-transform hover:scale-105 ${
+                      profile.hasLiked
+                        ? 'bg-rose-700 hover:bg-rose-600 shadow-rose-600/30 ring-2 ring-pink-300/40'
+                        : 'bg-pink-600 hover:bg-pink-500 shadow-pink-600/30'
+                    }`}
+                    title="Sukai profil untuk menaikkan Charisma user ini"
+                  >
+                    <Heart className={`w-4 h-4 fill-current ${profile.hasLiked ? 'text-white' : 'text-pink-200 animate-pulse'}`} />
+                    <span>
+                      {profile.hasLiked ? 'Disukai' : 'Sukai Profil'} ({profile.charisma ?? 0})
+                    </span>
+                  </button>
+                )}
+
                 {rel === 'self' ? (
                   <Link
                     to="/profile/edit"
@@ -406,114 +461,67 @@ export function PublicProfilePage() {
               </div>
               <div className={`rounded-2xl p-3.5 ${themeDef.cardClass}`}>
                 <p className="text-[11px] text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
-                  <Flame className="w-3.5 h-3.5 text-[#E84A18]" />
-                  <span>Streak Harian</span>
+                  <Heart className="w-3.5 h-3.5 text-pink-500 fill-current" />
+                  <span>Charisma</span>
                 </p>
                 <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-                  {profile.watchStreak || 0} Hari
+                  {profile.charisma ?? 0}
                 </p>
               </div>
               <div className={`rounded-2xl p-3.5 ${themeDef.cardClass}`}>
                 <p className="text-[11px] text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
-                  <Play className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Episode Ditonton</span>
+                  <Flame className="w-3.5 h-3.5 text-orange-500" />
+                  <span>Status</span>
                 </p>
-                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-                  {profile.totalEpisodesWatched || 0}
+                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white truncate">
+                  {isTargetFounder ? 'Founder' : hasVip ? 'VIP Member' : 'Member'}
                 </p>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Watchlist Favorit & Aktivitas Terakhir */}
-        <div className="px-4 sm:px-0 mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <section className="rounded-3xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.07] p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-                <Bookmark className="w-4 h-4 text-[#E84A18]" />
-                <span>Watchlist Favorit ({profile.bookmarks.length})</span>
-              </h2>
-            </div>
-
-            {profile.bookmarks.length === 0 ? (
-              <p className="text-xs text-slate-500 dark:text-gray-400 py-6 text-center">
-                Belum ada judul favorit yang disimpan.
-              </p>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {profile.bookmarks.slice(0, 6).map((b) => (
-                  <Link
-                    key={`${b.type}:${b.id}`}
-                    to={`/detail/${b.type}/${encodeURIComponent(b.id)}`}
-                    className="group rounded-2xl overflow-hidden bg-slate-100 dark:bg-[#0D0F14] border border-slate-200 dark:border-white/5 hover:border-[#E84A18]/60 transition-colors"
-                  >
-                    <div className="aspect-[3/4] overflow-hidden bg-slate-800">
-                      {b.poster ? (
-                        <img
-                          src={b.poster}
-                          alt={b.title}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                        />
-                      ) : null}
-                    </div>
-                    <div className="p-2">
-                      <p className="text-[11px] font-bold text-slate-900 dark:text-white truncate">
-                        {b.title}
-                      </p>
-                      <p className="text-[10px] text-slate-500 dark:text-gray-400 uppercase">
-                        {b.type}
-                      </p>
-                    </div>
-                  </Link>
+        {/* Watch History & Bookmarks */}
+        <div className="mt-6 space-y-6">
+          <div className="bg-white dark:bg-[#13151C] rounded-3xl p-5 border border-slate-200 dark:border-white/10 shadow-sm">
+            <h2 className="text-sm font-extrabold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
+              <Play className="w-4 h-4 text-[#E84A18]" />
+              <span>Riwayat Nonton Terakhir</span>
+            </h2>
+            {profile.recentHistory && profile.recentHistory.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {profile.recentHistory.map((item: any, idx: number) => (
+                  <div key={idx} className="rounded-2xl bg-slate-50 dark:bg-[#1A1D26] p-2.5 border border-slate-200 dark:border-white/5 space-y-1.5">
+                    <img src={item.poster || defaultBannerImg} alt="" className="w-full h-28 rounded-xl object-cover" />
+                    <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{item.title}</p>
+                    <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate">{item.episodeTitle || `Ep ${item.episodeNumber}`}</p>
+                  </div>
                 ))}
               </div>
-            )}
-          </section>
-
-          <section className="rounded-3xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.07] p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
-                <Play className="w-4 h-4 text-[#E84A18]" />
-                <span>Terakhir Ditonton</span>
-              </h2>
-            </div>
-
-            {profile.recentHistory.length === 0 ? (
-              <p className="text-xs text-slate-500 dark:text-gray-400 py-6 text-center">
-                Belum ada aktivitas tontonan terbaru.
-              </p>
             ) : (
-              <div className="space-y-2.5">
-                {profile.recentHistory.slice(0, 5).map((h) => (
-                  <Link
-                    key={`${h.type}:${h.episodeId}`}
-                    to={`/detail/${h.type}/${encodeURIComponent(h.id)}`}
-                    className="flex items-center gap-3 p-2.5 rounded-2xl bg-slate-50 dark:bg-[#0D0F14] hover:bg-slate-100 dark:hover:bg-[#171A23] border border-slate-200 dark:border-white/5 transition-colors"
-                  >
-                    <img
-                      src={h.poster || defaultAvatarImg}
-                      alt={h.title}
-                      referrerPolicy="no-referrer"
-                      className="w-12 h-16 rounded-xl object-cover shrink-0 bg-slate-800"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                        {h.title}
-                      </p>
-                      <p className="text-[11px] text-[#E84A18] font-semibold mt-0.5 truncate">
-                        {h.episodeTitle || `Episode ${h.episodeNumber}`}
-                      </p>
-                      <p className="text-[10px] text-slate-500 dark:text-gray-400 uppercase mt-0.5">
-                        {h.type}
-                      </p>
-                    </div>
-                  </Link>
+              <p className="text-xs text-slate-400 italic py-4">Belum ada riwayat tontonan publik.</p>
+            )}
+          </div>
+
+          <div className="bg-white dark:bg-[#13151C] rounded-3xl p-5 border border-slate-200 dark:border-white/10 shadow-sm">
+            <h2 className="text-sm font-extrabold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
+              <Bookmark className="w-4 h-4 text-amber-500" />
+              <span>Daftar Bookmark</span>
+            </h2>
+            {profile.bookmarks && profile.bookmarks.length > 0 ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {profile.bookmarks.map((b: any, idx: number) => (
+                  <div key={idx} className="rounded-2xl bg-slate-50 dark:bg-[#1A1D26] p-2.5 border border-slate-200 dark:border-white/5 space-y-1.5">
+                    <img src={b.poster || defaultBannerImg} alt="" className="w-full h-28 rounded-xl object-cover" />
+                    <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{b.title}</p>
+                    <p className="text-[10px] text-amber-500 font-bold">★ {b.rating || '8.5'}</p>
+                  </div>
                 ))}
               </div>
+            ) : (
+              <p className="text-xs text-slate-400 italic py-4">Belum ada bookmark publik.</p>
             )}
-          </section>
+          </div>
         </div>
       </div>
     </Layout>

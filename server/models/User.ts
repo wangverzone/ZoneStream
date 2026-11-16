@@ -45,11 +45,16 @@ export interface IUser {
   countryCode?: string;
   lastWatchDate?: string;
   watchStreak?: number;
+  longestStreak?: number;
+  streakDates?: string[];
+  unlockedStreakFrames?: string[];
   dailyEpisodesWatched?: number;
   totalEpisodesWatched?: number;
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
   episodeBookmarks: EpisodeBookmarkItem[];
+  charisma?: number;
+  likedBy?: string[];
   lastActiveAt?: Date;
   createdAt?: Date;
   updatedAt?: Date;
@@ -136,11 +141,16 @@ const UserSchema = new Schema<IUserDocument>(
     countryCode: { type: String, default: 'ID' },
     lastWatchDate: { type: String, default: '' },
     watchStreak: { type: Number, default: 0, min: 0 },
+    longestStreak: { type: Number, default: 0, min: 0 },
+    streakDates: { type: [String], default: [] },
+    unlockedStreakFrames: { type: [String], default: [] },
     dailyEpisodesWatched: { type: Number, default: 0, min: 0 },
     totalEpisodesWatched: { type: Number, default: 0, min: 0 },
     watchHistory: { type: [WatchHistorySchema], default: [] },
     bookmarks: { type: [BookmarkSchema], default: [] },
     episodeBookmarks: { type: [EpisodeBookmarkSchema], default: [] },
+    charisma: { type: Number, default: 0, min: 0 },
+    likedBy: { type: [String], default: [] },
     lastActiveAt: { type: Date, default: () => new Date() },
   },
   { timestamps: true }

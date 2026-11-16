@@ -14,6 +14,7 @@ import { WatchPage } from './pages/WatchPage';
 import { CommunityPage } from './pages/CommunityPage';
 import { PublicProfilePage } from './pages/PublicProfilePage';
 import { ChatPage } from './pages/ChatPage';
+import { LeaderboardPage } from './pages/LeaderboardPage';
 
 export default function App() {
   return (
@@ -27,6 +28,8 @@ export default function App() {
             <Route path="/catalog" element={<PageTransition><CatalogPage /></PageTransition>} />
             <Route path="/library" element={<PageTransition><LibraryPage /></PageTransition>} />
             <Route path="/community" element={<PageTransition><CommunityPage /></PageTransition>} />
+            <Route path="/leaderboard" element={<PageTransition><LeaderboardPage /></PageTransition>} />
+            <Route path="/ranking" element={<PageTransition><LeaderboardPage /></PageTransition>} />
             <Route path="/users" element={<PageTransition><CommunityPage /></PageTransition>} />
             <Route path="/u/:uid" element={<PageTransition><PublicProfilePage /></PageTransition>} />
             <Route path="/user/:uid" element={<PageTransition><PublicProfilePage /></PageTransition>} />

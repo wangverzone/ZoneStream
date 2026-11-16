@@ -8,10 +8,12 @@ import {
   type AuthenticatedRequest,
 } from '../auth.ts';
 import {
+  STREAK_FRAME_TIERS,
   createMemberUser,
   findOrCreateGoogleUser,
   findUserByIdentifier,
   findUserByUid,
+  getJakartaDateString,
   sanitizeUser,
   saveOtpCode,
   touchUserLastActive,
@@ -488,6 +490,23 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
     const cleanBorder = typeof activeBorder === 'string' ? activeBorder.trim().slice(0, 64) : undefined;
     const cleanTheme = typeof profileTheme === 'string' ? profileTheme.trim().slice(0, 64) : undefined;
 
+    const streakTier = cleanBorder
+      ? STREAK_FRAME_TIERS.find((t) => t.id === cleanBorder)
+      : undefined;
+    const bestStreak = Math.max(existing.longestStreak || 0, existing.watchStreak || 0);
+    const hasUnlockedStreakBorder = Boolean(
+      streakTier &&
+        (existing.role === 'founder' ||
+          (existing.unlockedStreakFrames || []).includes(streakTier.id) ||
+          bestStreak >= streakTier.minStreak)
+    );
+
+    if (streakTier && !hasUnlockedStreakBorder) {
+      return res.status(403).json({
+        error: `Frame animasi ${streakTier.name} terkunci. Capai ${streakTier.minStreak} hari streak nonton beruntun untuk membukanya!`,
+      });
+    }
+
     const tryingPhotoEdit =
       typeof photoUrl === 'string' && photoUrl !== (existing.photoUrl || '');
     const tryingBannerEdit =
@@ -496,6 +515,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
       typeof cleanBorder === 'string' &&
       cleanBorder.length > 0 &&
       !FREE_BORDERS.has(cleanBorder) &&
+      !hasUnlockedStreakBorder &&
       cleanBorder !== existing.activeBorder;
     const tryingPremiumTheme =
       typeof cleanTheme === 'string' &&
@@ -546,7 +566,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
 
       let nextBorder = current.activeBorder || 'none';
       if (typeof cleanBorder === 'string' && cleanBorder.length > 0) {
-        if (hasPremiumAccess || FREE_BORDERS.has(cleanBorder)) {
+        if (hasPremiumAccess || FREE_BORDERS.has(cleanBorder) || hasUnlockedStreakBorder) {
           nextBorder = cleanBorder;
         }
       }
@@ -639,12 +659,7 @@ router.post('/toggle-ad-preview', requireAuth, async (req: AuthenticatedRequest,
   }
 });
 
-function getJakartaDateString(offsetDays = 0): string {
-  const now = new Date(Date.now() + 7 * 60 * 60 * 1000 + offsetDays * 86_400_000);
-  return now.toISOString().slice(0, 10);
-}
-
-// Record watch history & grant daily watch + episode EXP
+// Record watch history & grant daily watch + episode EXP + Streak Frame rewards
 router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
@@ -662,8 +677,10 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
     let dailyBonusGained = 0;
     let levelUp = false;
     let finalStreak = 1;
+    let finalLongestStreak = 1;
     let finalLevel = 1;
     let isDoubleExp = false;
+    let newlyUnlockedFrame: { id: string; name: string; minStreak: number } | null = null;
 
     const updated = await updateUserByUid(uid, (current) => {
       const hasValidPremium = Boolean(
@@ -689,7 +706,26 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
         nextDailyCount = 1;
         dailyBonusGained = (nextStreak >= 2 ? 75 : 50) * multiplier;
       } else {
-        nextDailyCount += 1;
+        nextStreak = Math.max(1, nextStreak);
+        nextDailyCount = current.lastWatchDate === todayStr ? nextDailyCount + 1 : 1;
+      }
+
+      const nextLongestStreak = Math.max(current.longestStreak || 0, nextStreak);
+      const existingDates = Array.isArray(current.streakDates) ? [...current.streakDates] : [];
+      if (!existingDates.includes(todayStr)) {
+        existingDates.push(todayStr);
+      }
+      const nextStreakDates = Array.from(new Set(existingDates)).sort().slice(-30);
+
+      const prevUnlocked = new Set(Array.isArray(current.unlockedStreakFrames) ? current.unlockedStreakFrames : []);
+      const nextUnlocked = new Set(prevUnlocked);
+      for (const tier of STREAK_FRAME_TIERS) {
+        if (current.role === 'founder' || nextLongestStreak >= tier.minStreak) {
+          if (!prevUnlocked.has(tier.id)) {
+            newlyUnlockedFrame = { id: tier.id, name: tier.name, minStreak: tier.minStreak };
+          }
+          nextUnlocked.add(tier.id);
+        }
       }
 
       expGained = baseEpisodeExp + dailyBonusGained;
@@ -708,6 +744,7 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
       }
 
       finalStreak = nextStreak;
+      finalLongestStreak = nextLongestStreak;
       finalLevel = nextLevel;
 
       const filtered = current.watchHistory.filter((h: WatchHistoryItem) => h.id !== id);
@@ -723,14 +760,24 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
         updatedAt: new Date().toISOString(),
       };
 
+      const nextActiveBorder =
+        newlyUnlockedFrame && (!current.activeBorder || current.activeBorder === 'classic' || current.activeBorder === 'none')
+          ? newlyUnlockedFrame.id
+          : current.activeBorder;
+
       return {
         ...current,
         level: nextLevel,
         exp: nextExp,
+        activeBorder: nextActiveBorder,
         lastWatchDate: todayStr,
         watchStreak: nextStreak,
+        longestStreak: nextLongestStreak,
+        streakDates: nextStreakDates,
+        unlockedStreakFrames: Array.from(nextUnlocked),
         dailyEpisodesWatched: nextDailyCount,
         totalEpisodesWatched: (current.totalEpisodesWatched || 0) + 1,
+        charisma: current.role === 'founder' ? Math.max(9999, current.charisma ?? 9999) : (current.charisma ?? 0),
         watchHistory: [entry, ...filtered].slice(0, 30),
       };
     });
@@ -743,9 +790,11 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
       expGained,
       dailyBonusGained,
       streak: finalStreak,
+      longestStreak: finalLongestStreak,
       levelUp,
       newLevel: finalLevel,
       isDoubleExp,
+      newlyUnlockedFrame,
       user: sanitizeUser(updated),
     });
   } catch (err) {

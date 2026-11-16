@@ -27,6 +27,7 @@ import { CountryFlagBadge } from '../components/CountryFlag';
 import {
   AvatarDecoration,
   DISCORD_AVATAR_DECORATIONS,
+  STREAK_FRAME_REWARDS,
   normalizeDecorationId,
 } from '../components/AvatarDecoration';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
@@ -1186,6 +1187,68 @@ export function EditProfilePage() {
               </button>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1 py-1">
+              {STREAK_FRAME_REWARDS.map((sf) => {
+                const bestStreak = Math.max(user?.longestStreak || 0, user?.watchStreak || 0);
+                const unlocked = Boolean(
+                  user?.role === 'founder' ||
+                    (user?.unlockedStreakFrames || []).includes(sf.id) ||
+                    bestStreak >= sf.minStreak
+                );
+                const selected = normalizeDecorationId(activeBorder) === sf.id;
+                return (
+                  <button
+                    key={sf.id}
+                    type="button"
+                    disabled={!unlocked}
+                    onClick={() => {
+                      setActiveBorder(sf.id);
+                      setEditingField(null);
+                      void triggerAutoSave(
+                        { activeBorder: sf.id },
+                        `Frame Streak ${sf.name} berhasil dipasang!`
+                      );
+                    }}
+                    className={`relative rounded-2xl p-3.5 border flex flex-col items-center text-center gap-2.5 transition-colors ${
+                      selected
+                        ? 'border-[#E84A18] bg-gradient-to-b from-[#E84A18]/20 to-transparent ring-1 ring-[#E84A18]/50 shadow-lg'
+                        : !unlocked
+                        ? 'border-slate-200 dark:border-white/5 bg-slate-100/70 dark:bg-[#171920] opacity-60 cursor-not-allowed'
+                        : 'border-amber-500/30 bg-amber-500/[0.06] hover:bg-amber-500/[0.12]'
+                    }`}
+                  >
+                    <div className="py-1.5">
+                      <AvatarDecoration
+                        src={photoUrl}
+                        alt={sf.name}
+                        decorationId={sf.id}
+                        size="lg"
+                      />
+                    </div>
+                    <div className="min-w-0 w-full">
+                      <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                        {sf.name}
+                      </p>
+                      <p className="text-[10px] text-amber-500 dark:text-amber-300 line-clamp-1 font-semibold">
+                        Reward Streak {sf.tierLabel}
+                      </p>
+                    </div>
+                    {!unlocked ? (
+                      <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-slate-800/80 text-gray-300 text-[9px] font-bold inline-flex items-center gap-0.5">
+                        <Lock className="w-2.5 h-2.5" /> {sf.tierLabel}
+                      </span>
+                    ) : selected ? (
+                      <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#E84A18] text-white flex items-center justify-center shadow">
+                        <Check className="w-3 h-3" />
+                      </span>
+                    ) : (
+                      <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+                        Terbuka
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+
               {DISCORD_AVATAR_DECORATIONS.map((preset) => {
                 const locked = Boolean(preset.vip && !canCustomizePremium);
                 const selected = normalizeDecorationId(activeBorder) === preset.id;

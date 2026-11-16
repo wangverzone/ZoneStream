@@ -7,6 +7,7 @@ export interface IGroupChat {
   avatarUrl: string;
   creatorUid: string;
   members: string[];
+  pendingMembers: string[];
   createdAt?: Date;
 }
 
@@ -20,6 +21,7 @@ const GroupChatSchema = new Schema<IGroupChatDocument>(
     avatarUrl: { type: String, default: '' },
     creatorUid: { type: String, required: true },
     members: { type: [String], default: [] },
+    pendingMembers: { type: [String], default: [] },
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );

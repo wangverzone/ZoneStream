@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 
 export interface DiscordDecorationPreset {
@@ -8,6 +8,50 @@ export interface DiscordDecorationPreset {
   vip: boolean;
   accentColor: string;
 }
+
+export interface StreakFrameReward {
+  id: 'streak-ember' | 'streak-aurora' | 'streak-celestial' | 'streak-eternal';
+  name: string;
+  subtitle: string;
+  minStreak: number;
+  accentColor: string;
+  tierLabel: string;
+}
+
+export const STREAK_FRAME_REWARDS: StreakFrameReward[] = [
+  {
+    id: 'streak-ember',
+    name: 'Ember Pulse 3D',
+    subtitle: 'Cincin bara berputar & aura api dinamis',
+    minStreak: 3,
+    accentColor: '#F97316',
+    tierLabel: '3 Hari',
+  },
+  {
+    id: 'streak-aurora',
+    name: 'Aurora Prism 3D',
+    subtitle: 'Prisma aurora spektrum berotasi & kilau bintang',
+    minStreak: 7,
+    accentColor: '#22D3EE',
+    tierLabel: '7 Hari',
+  },
+  {
+    id: 'streak-celestial',
+    name: 'Celestial Orbit 3D',
+    subtitle: 'Astrolab emas ganda & komet mengorbit',
+    minStreak: 14,
+    accentColor: '#FACC15',
+    tierLabel: '14 Hari',
+  },
+  {
+    id: 'streak-eternal',
+    name: 'Eternal Phoenix 3D',
+    subtitle: 'Sayap api abadi & korona surya berdenyut',
+    minStreak: 30,
+    accentColor: '#F43F5E',
+    tierLabel: '30 Hari',
+  },
+];
 
 export const DISCORD_AVATAR_DECORATIONS: DiscordDecorationPreset[] = [
   {
@@ -134,6 +178,7 @@ export function normalizeDecorationId(rawId?: string): string {
   };
 
   if (legacyMap[id]) return legacyMap[id];
+  if (STREAK_FRAME_REWARDS.some((s) => s.id === id)) return id;
   if (DISCORD_AVATAR_DECORATIONS.some((d) => d.id === id)) return id;
   return 'dragon-crown';
 }
@@ -174,6 +219,7 @@ export function AvatarDecoration({
   const [imgSrc, setImgSrc] = useState<string>(hdSrc);
   const resolvedId = normalizeDecorationId(decorationId);
   const dims = SIZE_MAP[size] || SIZE_MAP.md;
+  const svgUid = useId().replace(/:/g, '');
 
   useEffect(() => {
     setImgSrc(upgradeAvatarUrlToHd(src));
@@ -204,7 +250,7 @@ export function AvatarDecoration({
         <div
           className={`absolute ${dims.svgInset} pointer-events-none z-20 flex items-center justify-center`}
         >
-          {render3DDecorationSvg(resolvedId)}
+          {render3DDecorationSvg(resolvedId, svgUid)}
         </div>
       )}
 
@@ -213,8 +259,266 @@ export function AvatarDecoration({
   );
 }
 
-function render3DDecorationSvg(id: string) {
+function render3DDecorationSvg(id: string, uid = 'g') {
   switch (id) {
+    case 'streak-ember':
+      return (
+        <svg
+          viewBox="0 0 120 120"
+          className="w-full h-full overflow-visible drop-shadow-[0_0_12px_rgba(249,115,22,0.75)]"
+        >
+          <defs>
+            <linearGradient id={`se-fire-${uid}`} x1="0%" y1="100%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#9A3412" />
+              <stop offset="45%" stopColor="#F97316" />
+              <stop offset="80%" stopColor="#FACC15" />
+              <stop offset="100%" stopColor="#FFFBEB" />
+            </linearGradient>
+            <radialGradient id={`se-orb-${uid}`} cx="35%" cy="30%" r="70%">
+              <stop offset="0%" stopColor="#FFFBEB" />
+              <stop offset="45%" stopColor="#FB923C" />
+              <stop offset="100%" stopColor="#C2410C" />
+            </radialGradient>
+          </defs>
+          {/* Outer Pulsing Heat Ring */}
+          <circle
+            cx="60"
+            cy="60"
+            r="43"
+            fill="none"
+            stroke={`url(#se-fire-${uid})`}
+            strokeWidth="3.5"
+            className="animate-streak-pulse"
+          />
+          {/* Rotating Molten Dashed Arc */}
+          <g className="animate-streak-spin">
+            <circle
+              cx="60"
+              cy="60"
+              r="46.5"
+              fill="none"
+              stroke="#FDBA74"
+              strokeWidth="2"
+              strokeDasharray="18 10 6 10"
+              strokeLinecap="round"
+            />
+            <circle cx="60" cy="13.5" r="4" fill={`url(#se-orb-${uid})`} stroke="#FFFBEB" strokeWidth="1" />
+            <circle cx="60" cy="106.5" r="3.5" fill={`url(#se-orb-${uid})`} stroke="#FFFBEB" strokeWidth="0.9" />
+          </g>
+          {/* Top & Bottom Animated Flame Spires */}
+          <path
+            d="M52 17 C54 8, 59 3, 60 1 C61 3, 66 8, 68 17 C63 14, 57 14, 52 17 Z"
+            fill={`url(#se-fire-${uid})`}
+            stroke="#FFFBEB"
+            strokeWidth="1"
+            className="animate-streak-shimmer"
+          />
+          <path
+            d="M17 55 C9 49, 7 39, 13 33 C14 40, 18 45, 22 49 Z"
+            fill={`url(#se-fire-${uid})`}
+            opacity="0.9"
+          />
+          <path
+            d="M103 55 C111 49, 113 39, 107 33 C106 40, 102 45, 98 49 Z"
+            fill={`url(#se-fire-${uid})`}
+            opacity="0.9"
+          />
+        </svg>
+      );
+
+    case 'streak-aurora':
+      return (
+        <svg
+          viewBox="0 0 120 120"
+          className="w-full h-full overflow-visible drop-shadow-[0_0_12px_rgba(34,211,238,0.75)]"
+        >
+          <defs>
+            <linearGradient id={`sa-prism-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#22D3EE" />
+              <stop offset="35%" stopColor="#34D399" />
+              <stop offset="70%" stopColor="#A855F7" />
+              <stop offset="100%" stopColor="#F472B6" />
+            </linearGradient>
+          </defs>
+          <circle cx="60" cy="60" r="42" fill="none" stroke={`url(#sa-prism-${uid})`} strokeWidth="3.5" />
+          <g className="animate-streak-spin">
+            <circle
+              cx="60"
+              cy="60"
+              r="46"
+              fill="none"
+              stroke={`url(#sa-prism-${uid})`}
+              strokeWidth="2.2"
+              strokeDasharray="24 12"
+              strokeLinecap="round"
+            />
+            <polygon points="60,8 63,14 69,17 63,20 60,26 57,20 51,17 57,14" fill="#ECFEFF" />
+          </g>
+          <g className="animate-streak-spin-rev">
+            <circle
+              cx="60"
+              cy="60"
+              r="40"
+              fill="none"
+              stroke="#A5F3FC"
+              strokeWidth="1.2"
+              strokeDasharray="8 14"
+              opacity="0.85"
+            />
+            <circle cx="19" cy="60" r="3.4" fill="#34D399" stroke="#FFFFFF" strokeWidth="1" />
+            <circle cx="101" cy="60" r="3.4" fill="#F472B6" stroke="#FFFFFF" strokeWidth="1" />
+          </g>
+          <polygon
+            points="60,96 65,103 60,110 55,103"
+            fill={`url(#sa-prism-${uid})`}
+            stroke="#FFFFFF"
+            strokeWidth="1.1"
+            className="animate-streak-pulse"
+          />
+        </svg>
+      );
+
+    case 'streak-celestial':
+      return (
+        <svg
+          viewBox="0 0 120 120"
+          className="w-full h-full overflow-visible drop-shadow-[0_0_14px_rgba(250,204,21,0.8)]"
+        >
+          <defs>
+            <linearGradient id={`sc-gold-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="#FFFBEB" />
+              <stop offset="40%" stopColor="#FACC15" />
+              <stop offset="100%" stopColor="#B45309" />
+            </linearGradient>
+            <radialGradient id={`sc-star-${uid}`} cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stopColor="#FFFFFF" />
+              <stop offset="50%" stopColor="#38BDF8" />
+              <stop offset="100%" stopColor="#1D4ED8" />
+            </radialGradient>
+          </defs>
+          <circle cx="60" cy="60" r="42" fill="none" stroke={`url(#sc-gold-${uid})`} strokeWidth="3.5" />
+          <g className="animate-streak-spin-slow">
+            <ellipse
+              cx="60"
+              cy="60"
+              rx="51"
+              ry="19"
+              transform="rotate(-22 60 60)"
+              fill="none"
+              stroke={`url(#sc-gold-${uid})`}
+              strokeWidth="2.4"
+            />
+            <circle cx="15" cy="41" r="4.5" fill={`url(#sc-star-${uid})`} stroke="#FEF08A" strokeWidth="1.2" />
+          </g>
+          <g className="animate-streak-spin-rev">
+            <ellipse
+              cx="60"
+              cy="60"
+              rx="51"
+              ry="19"
+              transform="rotate(22 60 60)"
+              fill="none"
+              stroke="#38BDF8"
+              strokeWidth="1.8"
+              strokeDasharray="16 8"
+            />
+            <circle cx="105" cy="41" r="4" fill={`url(#sc-gold-${uid})`} stroke="#FFFFFF" strokeWidth="1.1" />
+          </g>
+          <path
+            d="M47 18 L53 6 L60 13 L67 6 L73 18 Z"
+            fill={`url(#sc-gold-${uid})`}
+            stroke="#FFFBEB"
+            strokeWidth="1.1"
+            className="animate-streak-shimmer"
+          />
+          <polygon
+            points="60,94 65,103 60,112 55,103"
+            fill={`url(#sc-star-${uid})`}
+            stroke="#FEF08A"
+            strokeWidth="1.2"
+          />
+        </svg>
+      );
+
+    case 'streak-eternal':
+      return (
+        <svg
+          viewBox="0 0 120 120"
+          className="w-full h-full overflow-visible drop-shadow-[0_0_16px_rgba(244,63,94,0.85)]"
+        >
+          <defs>
+            <linearGradient id={`set-wing-${uid}`} x1="0%" y1="100%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#9F1239" />
+              <stop offset="45%" stopColor="#F43F5E" />
+              <stop offset="80%" stopColor="#FACC15" />
+              <stop offset="100%" stopColor="#FFFBEB" />
+            </linearGradient>
+            <radialGradient id={`set-core-${uid}`} cx="35%" cy="30%" r="70%">
+              <stop offset="0%" stopColor="#FFFBEB" />
+              <stop offset="40%" stopColor="#FDE047" />
+              <stop offset="100%" stopColor="#E11D48" />
+            </radialGradient>
+          </defs>
+          {/* Radiant Solar Corona Ring */}
+          <g className="animate-streak-spin">
+            <circle
+              cx="60"
+              cy="60"
+              r="45.5"
+              fill="none"
+              stroke={`url(#set-wing-${uid})`}
+              strokeWidth="2.8"
+              strokeDasharray="14 6 4 6"
+              strokeLinecap="round"
+            />
+          </g>
+          <circle
+            cx="60"
+            cy="60"
+            r="41.8"
+            fill="none"
+            stroke={`url(#set-wing-${uid})`}
+            strokeWidth="3.8"
+            className="animate-streak-pulse"
+          />
+          {/* Left & Right Animated Phoenix Flame Wings */}
+          <path
+            d="M20 58 C1 46, 0 22, 14 14 C15 24, 21 31, 27 35 C9 37, 5 50, 12 61 C18 58, 22 57, 25 59 C11 66, 10 80, 22 86 C25 78, 27 72, 29 66 Z"
+            fill={`url(#set-wing-${uid})`}
+            stroke="#FEF08A"
+            strokeWidth="1.2"
+            className="animate-streak-shimmer"
+          />
+          <path
+            d="M100 58 C119 46, 120 22, 106 14 C105 24, 99 31, 93 35 C111 37, 115 50, 108 61 C102 58, 98 57, 95 59 C109 66, 110 80, 98 86 C95 78, 93 72, 91 66 Z"
+            fill={`url(#set-wing-${uid})`}
+            stroke="#FEF08A"
+            strokeWidth="1.2"
+            className="animate-streak-shimmer"
+          />
+          {/* Phoenix Sovereign Crown & Solar Gem */}
+          <path
+            d="M44 21 L51 6 L60 15 L69 6 L76 21 Q60 16 44 21 Z"
+            fill={`url(#set-wing-${uid})`}
+            stroke="#FFFBEB"
+            strokeWidth="1.1"
+          />
+          <polygon
+            points="60,3 65,12 60,21 55,12"
+            fill={`url(#set-core-${uid})`}
+            stroke="#FFFBEB"
+            strokeWidth="1.2"
+          />
+          <polygon
+            points="60,94 67,104 60,113 53,104"
+            fill={`url(#set-core-${uid})`}
+            stroke="#FEF08A"
+            strokeWidth="1.3"
+            className="animate-streak-pulse"
+          />
+        </svg>
+      );
+
     case 'dragon-crown':
       return (
         <svg

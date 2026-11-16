@@ -3,6 +3,7 @@ import { ChevronDown, Search, Users } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { MediaCard } from '../components/MediaCard';
+import { seedCatalogIndex } from '../utils/catalogSearch';
 import type { MediaCardItem } from '../types';
 
 const TYPE_TABS = [
@@ -84,8 +85,10 @@ export function CatalogPage() {
       .then((r) => r.json())
       .then((json) => {
         if (!active) return;
-        setItems(json.items || []);
+        const loaded = json.items || [];
+        setItems(loaded);
         setHasMore(Boolean(json.hasMore));
+        if (loaded.length > 0) seedCatalogIndex(loaded);
       })
       .catch(() => {
         if (active) {
@@ -117,6 +120,7 @@ export function CatalogPage() {
       const res = await fetch(`/api/stream/catalog?${params.toString()}`);
       const json = await res.json();
       const nextItems: MediaCardItem[] = json.items || [];
+      if (nextItems.length > 0) seedCatalogIndex(nextItems);
       setItems((prev) => {
         const seen = new Set(prev.map((x) => `${x.type}:${x.id}`));
         const merged = [...prev];

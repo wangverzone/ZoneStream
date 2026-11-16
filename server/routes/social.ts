@@ -6,16 +6,21 @@ import {
   findUsersByUids,
   isDbMongoConnected,
   readFallbackJson,
+  readFallbackUsers,
   sanitizeUser,
   searchCommunityUsers,
   toCommunityUserSummary,
   touchUserLastActive,
+  updateUserByUid,
   writeFallbackJson,
 } from '../db.ts';
 import { FriendshipModel, type IFriendship } from '../models/Friendship.ts';
 import { ChatMessageModel, type IChatMessage } from '../models/ChatMessage.ts';
 import { GroupChatModel, type IGroupChat } from '../models/GroupChat.ts';
 import { GroupMessageModel, type IGroupMessage } from '../models/GroupMessage.ts';
+import { GlobalMessageModel, type IGlobalMessage } from '../models/GlobalMessage.ts';
+import { ClanModel, type IClan } from '../models/Clan.ts';
+import { UserModel, type IUser } from '../models/User.ts';
 
 const router = Router();
 
@@ -133,6 +138,168 @@ router.get('/users', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+async function getAllUsersSafe(): Promise<IUser[]> {
+  await connectDB();
+  if (isDbMongoConnected()) {
+    const docs = await UserModel.find({}).lean();
+    return docs as unknown as IUser[];
+  }
+  return Object.values(readFallbackUsers());
+}
+
+async function getAllClansRaw(): Promise<IClan[]> {
+  await connectDB();
+  if (isDbMongoConnected()) {
+    const docs = await ClanModel.find({}).lean();
+    return docs.map((d: any) => ({ ...d, _id: String(d._id) }));
+  }
+  return readFallbackJson<IClan[]>('clans-v1.json', []);
+}
+
+interface UserClanMeta {
+  tag: string;
+  name: string;
+  level: number;
+  isLeader: boolean;
+  clanRank: number;
+}
+
+interface UserRankMeta {
+  charismaRank: number;
+  watchRank: number;
+  levelRank: number;
+  topRank: number | null;
+  topCategory: 'charisma' | 'watchtime' | 'level' | null;
+}
+
+function buildCommunityRankingMeta(usersRaw: IUser[], clansRaw: IClan[]) {
+  const summaries = usersRaw.map((u) => toCommunityUserSummary(u));
+  const sortedClans = enrichClansRealtime(clansRaw, usersRaw);
+  const clanMetaMap = new Map<string, UserClanMeta>();
+
+  sortedClans.forEach((c: any, idx: number) => {
+    const clanRank = idx + 1;
+    const members: string[] = Array.isArray(c.members) ? c.members : [];
+    for (const mUid of members) {
+      const isLeader = c.leaderUid === mUid;
+      const prev = clanMetaMap.get(mUid);
+      // Prioritize a clan the user actually leads, otherwise keep first clan
+      if (!prev || (isLeader && !prev.isLeader)) {
+        clanMetaMap.set(mUid, {
+          tag: c.tag,
+          name: c.name,
+          level: c.level || 1,
+          isLeader,
+          clanRank,
+        });
+      }
+    }
+    if (c.leaderUid && !clanMetaMap.get(c.leaderUid)?.isLeader) {
+      clanMetaMap.set(c.leaderUid, {
+        tag: c.tag,
+        name: c.name,
+        level: c.level || 1,
+        isLeader: true,
+        clanRank,
+      });
+    }
+  });
+
+  const charismaSorted = [...summaries].sort(
+    (a, b) =>
+      (b.charisma ?? 0) - (a.charisma ?? 0) ||
+      (b.level || 1) - (a.level || 1) ||
+      (b.totalEpisodesWatched || 0) - (a.totalEpisodesWatched || 0)
+  );
+  const watchSorted = [...summaries].sort(
+    (a, b) =>
+      (b.totalEpisodesWatched || 0) - (a.totalEpisodesWatched || 0) ||
+      (b.level || 1) - (a.level || 1) ||
+      (b.charisma ?? 0) - (a.charisma ?? 0)
+  );
+  const levelSorted = [...summaries].sort(
+    (a, b) =>
+      (b.level || 1) - (a.level || 1) ||
+      (b.exp || 0) - (a.exp || 0) ||
+      (b.totalEpisodesWatched || 0) - (a.totalEpisodesWatched || 0)
+  );
+
+  const charismaRankMap = new Map<string, number>();
+  charismaSorted.forEach((u, i) => charismaRankMap.set(u.uid, i + 1));
+
+  const watchRankMap = new Map<string, number>();
+  watchSorted.forEach((u, i) => watchRankMap.set(u.uid, i + 1));
+
+  const levelRankMap = new Map<string, number>();
+  levelSorted.forEach((u, i) => levelRankMap.set(u.uid, i + 1));
+
+  const rankMetaMap = new Map<string, UserRankMeta>();
+  for (const s of summaries) {
+    const cRank = charismaRankMap.get(s.uid) || 999;
+    const wRank = watchRankMap.get(s.uid) || 999;
+    const lRank = levelRankMap.get(s.uid) || 999;
+
+    const candidates: Array<{ rank: number; cat: 'charisma' | 'watchtime' | 'level' }> = [];
+    if ((s.charisma ?? 0) > 0 && cRank <= 10) {
+      candidates.push({ rank: cRank, cat: 'charisma' });
+    }
+    if ((s.totalEpisodesWatched || 0) > 0 && wRank <= 10) {
+      candidates.push({ rank: wRank, cat: 'watchtime' });
+    }
+    if (lRank <= 10) {
+      candidates.push({ rank: lRank, cat: 'level' });
+    }
+
+    candidates.sort((a, b) => a.rank - b.rank);
+    const best = candidates[0] || null;
+
+    rankMetaMap.set(s.uid, {
+      charismaRank: cRank,
+      watchRank: wRank,
+      levelRank: lRank,
+      topRank: best ? best.rank : null,
+      topCategory: best ? best.cat : null,
+    });
+  }
+
+  return { summaries, clanMetaMap, rankMetaMap };
+}
+
+// GET /api/social/leaderboard — Real-time public rankings of genuine users (NO BOTS)
+router.get('/leaderboard', async (req: AuthenticatedRequest, res) => {
+  try {
+    const viewerUid = extractViewerUid(req);
+    if (viewerUid) {
+      void touchUserLastActive(viewerUid);
+    }
+
+    const [allUsers, allClans] = await Promise.all([getAllUsersSafe(), getAllClansRaw()]);
+    const { summaries, clanMetaMap, rankMetaMap } = buildCommunityRankingMeta(allUsers, allClans);
+
+    const users = summaries.map((summary) => {
+      const clanMeta = clanMetaMap.get(summary.uid);
+      const rankMeta = rankMetaMap.get(summary.uid);
+      return {
+        ...summary,
+        clan: clanMeta?.tag || '',
+        clanName: clanMeta?.name || '',
+        clanRank: clanMeta?.clanRank || null,
+        isClanLeader: Boolean(clanMeta?.isLeader),
+        charismaRank: rankMeta?.charismaRank || 999,
+        watchRank: rankMeta?.watchRank || 999,
+        levelRank: rankMeta?.levelRank || 999,
+        topRank: rankMeta?.topRank || null,
+        topCategory: rankMeta?.topCategory || null,
+      };
+    });
+
+    return res.json({ ok: true, users });
+  } catch (err) {
+    console.error('[Social Leaderboard Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat leaderboard pengguna' });
+  }
+});
+
 // GET /api/social/profile/:uid — Public profile view for ANY user (including VerzonFounder UID 00000)
 router.get('/profile/:uid', async (req: AuthenticatedRequest, res) => {
   try {
@@ -165,12 +332,17 @@ router.get('/profile/:uid', async (req: AuthenticatedRequest, res) => {
       ).length;
     }
 
+    const likedBy = Array.isArray(target.likedBy) ? target.likedBy : [];
+    const hasLiked = Boolean(viewerUid && likedBy.includes(viewerUid));
+
     return res.json({
       ok: true,
       profile: {
         ...summary,
         friendsCount,
         relationship,
+        charisma: pub.charisma ?? 0,
+        hasLiked,
         bookmarks: (pub.bookmarks || []).slice(0, 12),
         recentHistory: (pub.watchHistory || []).slice(0, 8),
       },
@@ -178,6 +350,59 @@ router.get('/profile/:uid', async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('[Social Public Profile Error]', err);
     return res.status(500).json({ error: 'Gagal memuat profil pengguna' });
+  }
+});
+
+// POST /api/social/profile/:uid/like — Real user-to-user like/unlike to update Charisma in real time
+router.post('/profile/:uid/like', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const viewerUid = req.authUser!.uid;
+    const targetUid = String(req.params.uid || '').trim();
+    if (!targetUid) {
+      return res.status(400).json({ error: 'Target profil tidak valid.' });
+    }
+    if (viewerUid === targetUid) {
+      return res.status(400).json({ error: 'Tidak dapat menyukai profil sendiri. Biarkan user lain yang menyukaimu!' });
+    }
+
+    let liked = false;
+    let finalCharisma = 0;
+
+    const updated = await updateUserByUid(targetUid, (current) => {
+      const prevLikedBy = Array.isArray(current.likedBy) ? [...current.likedBy] : [];
+      const alreadyLiked = prevLikedBy.includes(viewerUid);
+      const nextLikedBy = alreadyLiked
+        ? prevLikedBy.filter((id) => id !== viewerUid)
+        : [...prevLikedBy, viewerUid];
+      liked = !alreadyLiked;
+
+      const isTargetFounder =
+        String(current.email || '').toLowerCase() === 'wanglin72kk@gmail.com' ||
+        current.role === 'founder';
+      finalCharisma = isTargetFounder ? 9999 + nextLikedBy.length : nextLikedBy.length;
+
+      return {
+        ...current,
+        likedBy: nextLikedBy,
+        charisma: finalCharisma,
+      };
+    });
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Profil tidak ditemukan' });
+    }
+
+    return res.json({
+      ok: true,
+      charisma: finalCharisma,
+      liked,
+      message: liked
+        ? 'Berhasil menyukai profil (+1 Charisma ♥)!'
+        : 'Suka pada profil dibatalkan.',
+    });
+  } catch (err) {
+    console.error('[Profile Like Error]', err);
+    return res.status(500).json({ error: 'Gagal menyukai profil' });
   }
 });
 
@@ -733,6 +958,57 @@ router.post('/groups/create', requireAuth, async (req: AuthenticatedRequest, res
   }
 });
 
+// POST /api/social/groups/:groupId/invite — Add/invite friend to group by UID (requires member/admin approval or adds to pending/members)
+router.post('/groups/:groupId/invite', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const groupId = String(req.params.groupId || '').trim();
+    const targetUid = String(req.body?.targetUid || '').trim();
+    if (!targetUid) {
+      return res.status(400).json({ error: 'UID anggota wajib diisi.' });
+    }
+
+    const targetUser = await findUserByUid(targetUid);
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Pengguna dengan UID tersebut tidak ditemukan.' });
+    }
+
+    await connectDB();
+    if (isDbMongoConnected()) {
+      const group = await GroupChatModel.findOne({ groupId });
+      if (!group) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup.' });
+      }
+      if (group.members.includes(targetUid)) {
+        return res.json({ ok: true, message: `${targetUser.name} sudah ada di dalam grup.` });
+      }
+      if (!group.pendingMembers) group.pendingMembers = [];
+      if (!group.pendingMembers.includes(targetUid)) {
+        group.pendingMembers.push(targetUid);
+      }
+      // For immediate convenience or approval flow: if creator or founder invites, or require agreement
+      if (!group.members.includes(targetUid)) {
+        group.members.push(targetUid); // Auto-add upon UID invite with consent
+      }
+      await group.save();
+    } else {
+      const all = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+      const found = all.find((g) => g.groupId === groupId);
+      if (!found) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      if (!found.members.includes(targetUid)) {
+        found.members.push(targetUid);
+      }
+      writeFallbackJson('groups-v1.json', all);
+    }
+
+    return res.json({ ok: true, message: `Berhasil menambahkan ${targetUser.name} (${targetUid}) ke grup!` });
+  } catch (err) {
+    console.error('[Social Group Invite Error]', err);
+    return res.status(500).json({ error: 'Gagal menambahkan anggota ke grup' });
+  }
+});
+
 // POST /api/social/groups/:groupId/avatar — Change group profile picture
 router.post('/groups/:groupId/avatar', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
@@ -877,6 +1153,420 @@ router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedR
     console.error('[Social Group Message Send Error]', err);
     return res.status(500).json({ error: 'Gagal mengirim pesan grup' });
   }
+});
+
+interface StoredGlobalMessage extends IGlobalMessage {
+  _id: string;
+  createdAt: Date | string;
+}
+
+const ALLOWED_GLOBAL_CHANNELS = new Set(['ch1', 'ch2', 'ch3', 'rekrut']);
+
+function normalizeGlobalChannel(raw: unknown): string {
+  const clean = String(raw || 'ch1').trim().toLowerCase();
+  return ALLOWED_GLOBAL_CHANNELS.has(clean) ? clean : 'ch1';
+}
+
+// GET /api/social/global-messages — Persistent Global Chat accessible to ALL users & newly logged-in accounts
+router.get('/global-messages', async (req: AuthenticatedRequest, res) => {
+  try {
+    const channel = normalizeGlobalChannel(req.query.channel);
+    const viewerUid = extractViewerUid(req);
+    if (viewerUid) {
+      void touchUserLastActive(viewerUid);
+    }
+
+    await connectDB();
+    let rawMessages: any[] = [];
+    if (isDbMongoConnected()) {
+      const filter = channel === 'ch1' ? { $or: [{ channel: 'ch1' }, { channel: { $exists: false } }, { channel: '' }] } : { channel };
+      const docs = await GlobalMessageModel.find(filter).sort({ createdAt: 1 }).limit(120);
+      rawMessages = docs.map((d) => ({ ...d.toObject(), _id: String(d._id) }));
+    } else {
+      const all = readFallbackJson<StoredGlobalMessage[]>('global-messages-v1.json', []);
+      rawMessages = all
+        .filter((m) => normalizeGlobalChannel(m.channel) === channel)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        .slice(-120);
+    }
+
+    const [allUsers, allClans] = await Promise.all([getAllUsersSafe(), getAllClansRaw()]);
+    const { summaries, clanMetaMap, rankMetaMap } = buildCommunityRankingMeta(allUsers, allClans);
+    const userMap = new Map(summaries.map((s) => [s.uid, s]));
+
+    const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+    let onlineCount = allUsers.filter(
+      (u) => u.lastActiveAt && new Date(u.lastActiveAt).getTime() >= fiveMinAgo
+    ).length;
+    if (viewerUid && onlineCount < 1) onlineCount = 1;
+
+    const messages = rawMessages.map((m) => {
+      const sender = userMap.get(m.senderUid);
+      const clanMeta = clanMetaMap.get(m.senderUid) || null;
+      const rankMeta = rankMetaMap.get(m.senderUid);
+      return {
+        ...m,
+        channel: normalizeGlobalChannel(m.channel),
+        senderName: sender?.name || m.senderName || 'User',
+        senderUsername: sender?.username || '',
+        senderPhoto: sender?.photoUrl || m.senderPhoto || '',
+        senderRole: sender?.role || 'member',
+        senderIsPremium: Boolean(sender?.isPremium || sender?.role === 'founder'),
+        senderBadge: sender?.activeBadge || 'Member',
+        senderBorder: sender?.activeBorder || 'classic',
+        senderStatusEmoji: sender?.statusEmoji || '',
+        senderLevel: sender?.level || 1,
+        senderCharisma: sender?.charisma ?? 0,
+        senderClan: clanMeta,
+        senderTopRank: rankMeta?.topRank ?? null,
+        senderTopCategory: rankMeta?.topCategory ?? null,
+      };
+    });
+
+    return res.json({ ok: true, channel, onlineCount, messages });
+  } catch (err) {
+    console.error('[Global Chat Load Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat Global Chat' });
+  }
+});
+
+// POST /api/social/global-messages — Send message to Global Chat (for ALL logged-in users & new logins)
+router.post('/global-messages', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const channel = normalizeGlobalChannel(req.body?.channel);
+    const text = String(req.body?.text || '').trim().slice(0, 1500);
+    const mediaUrl = String(req.body?.mediaUrl || '').trim();
+    const mediaType = req.body?.mediaType || '';
+    const sticker = String(req.body?.sticker || '').trim();
+    const replyToId = String(req.body?.replyToId || '').trim();
+    const replySenderUid = String(req.body?.replySenderUid || '').trim();
+    const replySenderName = String(req.body?.replySenderName || '').trim().slice(0, 40);
+    const replySenderIsVerified = Boolean(req.body?.replySenderIsVerified);
+    const replyText = String(req.body?.replyText || '').trim().slice(0, 140);
+
+    if (!text && !mediaUrl && !sticker) {
+      return res.status(400).json({ error: 'Pesan tidak boleh kosong.' });
+    }
+
+    const [sender, allUsers, allClans] = await Promise.all([
+      findUserByUid(meUid),
+      getAllUsersSafe(),
+      getAllClansRaw(),
+    ]);
+    if (!sender) {
+      return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
+    }
+
+    const { clanMetaMap, rankMetaMap } = buildCommunityRankingMeta(allUsers, allClans);
+    const senderSummary = toCommunityUserSummary(sender);
+    const senderClan = clanMetaMap.get(meUid) || null;
+    const senderRank = rankMetaMap.get(meUid);
+
+    const canUseVipSticker = Boolean(senderSummary.isPremium || senderSummary.role === 'founder');
+    const cleanSticker = sticker && canUseVipSticker ? sticker : '';
+    void touchUserLastActive(meUid);
+    await connectDB();
+
+    let created: any;
+    if (isDbMongoConnected()) {
+      const doc = await GlobalMessageModel.create({
+        channel,
+        senderUid: meUid,
+        senderName: senderSummary.name,
+        senderPhoto: senderSummary.photoUrl || '',
+        text,
+        mediaUrl,
+        mediaType,
+        sticker: cleanSticker,
+        replyToId,
+        replySenderUid,
+        replySenderName,
+        replySenderIsVerified,
+        replyText,
+      });
+      created = { ...doc.toObject(), _id: String(doc._id) };
+    } else {
+      const all = readFallbackJson<StoredGlobalMessage[]>('global-messages-v1.json', []);
+      created = {
+        _id: `global_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        channel,
+        senderUid: meUid,
+        senderName: senderSummary.name,
+        senderPhoto: senderSummary.photoUrl || '',
+        text,
+        mediaUrl,
+        mediaType,
+        sticker: cleanSticker,
+        replyToId,
+        replySenderUid,
+        replySenderName,
+        replySenderIsVerified,
+        replyText,
+        createdAt: new Date().toISOString(),
+      };
+      all.push(created);
+      writeFallbackJson('global-messages-v1.json', all.slice(-300));
+    }
+
+    return res.status(201).json({
+      ok: true,
+      message: {
+        ...created,
+        channel,
+        senderUsername: senderSummary.username,
+        senderRole: senderSummary.role,
+        senderIsPremium: senderSummary.isPremium,
+        senderBadge: senderSummary.activeBadge,
+        senderBorder: senderSummary.activeBorder,
+        senderStatusEmoji: senderSummary.statusEmoji,
+        senderLevel: senderSummary.level,
+        senderCharisma: senderSummary.charisma ?? 0,
+        senderClan,
+        senderTopRank: senderRank?.topRank ?? null,
+        senderTopCategory: senderRank?.topCategory ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('[Global Chat Send Error]', err);
+    return res.status(500).json({ error: 'Gagal mengirim pesan Global Chat' });
+  }
+});
+
+// DELETE /api/social/global-messages/:messageId — Delete own global message (or founder)
+router.delete('/global-messages/:messageId', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const messageId = String(req.params.messageId || '').trim();
+    await connectDB();
+
+    if (isDbMongoConnected()) {
+      const msg = await GlobalMessageModel.findById(messageId);
+      if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+      if (msg.senderUid !== meUid && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
+      }
+      await GlobalMessageModel.deleteOne({ _id: messageId });
+    } else {
+      const all = readFallbackJson<StoredGlobalMessage[]>('global-messages-v1.json', []);
+      const found = all.find((m) => m._id === messageId);
+      if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+      if (found.senderUid !== meUid && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
+      }
+      writeFallbackJson(
+        'global-messages-v1.json',
+        all.filter((m) => m._id !== messageId)
+      );
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[Global Chat Delete Error]', err);
+    return res.status(500).json({ error: 'Gagal menghapus pesan' });
+  }
+});
+
+// Helper to enrich clans in real-time from member stats (Level, Charisma/Likes, Episodes Watched)
+function enrichClansRealtime(clansRaw: any[], users: IUser[]) {
+  const userMap = new Map(users.map((u) => [u.uid, toCommunityUserSummary(u)]));
+
+  return clansRaw
+    .map((c) => {
+      const memberIds: string[] = Array.isArray(c.members) ? Array.from(new Set(c.members)) : [];
+      let totalLevel = 0;
+      let totalCharisma = 0;
+      let episodesWatched = 0;
+      const memberProfiles: any[] = [];
+
+      for (const mUid of memberIds) {
+        const m = userMap.get(mUid);
+        if (m) {
+          totalLevel += m.role === 'founder' ? 9999 : (m.level || 1);
+          totalCharisma += m.charisma ?? 0;
+          episodesWatched += m.totalEpisodesWatched || 0;
+          memberProfiles.push({
+            uid: m.uid,
+            name: m.name,
+            photoUrl: m.photoUrl,
+            level: m.level,
+            charisma: m.charisma,
+          });
+        }
+      }
+
+      const leader = userMap.get(c.leaderUid);
+      const computedLevel = Math.max(1, totalLevel || c.level || 1);
+      const realtimeScore = computedLevel * 10 + totalCharisma * 5 + episodesWatched * 3;
+
+      return {
+        ...c,
+        leaderName: leader?.name || c.leaderName || 'Leader',
+        leaderPhoto: leader?.photoUrl || '',
+        avatarUrl: c.avatarUrl || leader?.photoUrl || '',
+        level: computedLevel,
+        charisma: totalCharisma,
+        episodesWatched,
+        members: memberIds,
+        membersCount: memberIds.length,
+        maxMembers: c.maxMembers || 50,
+        memberAvatars: memberProfiles.slice(0, 5),
+        realtimeScore,
+      };
+    })
+    .sort((a, b) => b.realtimeScore - a.realtimeScore || b.level - a.level || b.charisma - a.charisma);
+}
+
+// GET /api/social/clans — List real user-created clans ranked dynamically in real time (NO BOTS)
+router.get('/clans', async (req: AuthenticatedRequest, res) => {
+  try {
+    const viewerUid = extractViewerUid(req);
+    if (viewerUid) {
+      void touchUserLastActive(viewerUid);
+    }
+
+    const [clansRaw, users] = await Promise.all([getAllClansRaw(), getAllUsersSafe()]);
+    const clans = enrichClansRealtime(clansRaw, users);
+    return res.json({ ok: true, clans });
+  } catch (err) {
+    console.error('[Social Clans List Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat klan' });
+  }
+});
+
+// POST /api/social/clans/create — Create clan & auto-rank by real-time stats
+router.post('/clans/create', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const creator = await findUserByUid(meUid);
+    const creatorSummary = creator ? toCommunityUserSummary(creator) : null;
+    const meName = creatorSummary?.name || req.authUser!.username || 'Wibu';
+    const { name, tag, description, status } = req.body;
+    if (!name || !tag) {
+      return res.status(400).json({ error: 'Nama dan Tag Klan wajib diisi' });
+    }
+
+    await connectDB();
+    const clanId = `clan_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const initialLevel = creatorSummary
+      ? creatorSummary.role === 'founder'
+        ? 9999
+        : Math.max(1, creatorSummary.level || 1)
+      : 1;
+    let created: any;
+
+    if (isDbMongoConnected()) {
+      const doc = await ClanModel.create({
+        clanId,
+        name: String(name).trim().slice(0, 40),
+        tag: String(tag).trim().toUpperCase().slice(0, 6),
+        description: String(description || '').trim().slice(0, 200),
+        avatarUrl: creatorSummary?.photoUrl || '',
+        leaderUid: meUid,
+        leaderName: meName,
+        level: initialLevel,
+        members: [meUid],
+        status: status || 'Terbuka',
+      });
+      created = { ...doc.toObject(), _id: String(doc._id) };
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      created = {
+        clanId,
+        name: String(name).trim().slice(0, 40),
+        tag: String(tag).trim().toUpperCase().slice(0, 6),
+        description: String(description || '').trim().slice(0, 200),
+        avatarUrl: creatorSummary?.photoUrl || '',
+        leaderUid: meUid,
+        leaderName: meName,
+        level: initialLevel,
+        members: [meUid],
+        maxMembers: 50,
+        status: status || 'Terbuka',
+        createdAt: new Date().toISOString(),
+      };
+      all.push(created);
+      writeFallbackJson('clans-v1.json', all);
+    }
+
+    return res.status(201).json({
+      ok: true,
+      clan: created,
+      message: 'Klan berhasil dibuat & otomatis masuk peringkat Top Klan real-time!',
+    });
+  } catch (err) {
+    return res.status(500).json({ error: 'Gagal membuat klan' });
+  }
+});
+
+// POST /api/social/clans/join — Join clan
+router.post('/clans/join', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const { clanId } = req.body;
+    if (!clanId) return res.status(400).json({ error: 'Clan ID diperlukan' });
+
+    await connectDB();
+    if (isDbMongoConnected()) {
+      const clan = await ClanModel.findOne({ clanId });
+      if (!clan) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if (clan.members.length >= (clan.maxMembers || 50)) {
+        return res.status(400).json({ error: 'Klan sudah penuh.' });
+      }
+      if (!clan.members.includes(meUid)) {
+        clan.members.push(meUid);
+        await clan.save();
+      }
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === clanId);
+      if (!found) return res.status(404).json({ error: 'Klan tidak ditemukan' });
+      if (!found.members.includes(meUid)) {
+        found.members.push(meUid);
+        writeFallbackJson('clans-v1.json', all);
+      }
+    }
+
+    return res.json({ ok: true, message: 'Berhasil bergabung dengan klan!' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Gagal bergabung dengan klan' });
+  }
+});
+
+// POST /api/social/clans/leave — Leave clan
+router.post('/clans/leave', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const { clanId } = req.body;
+    if (!clanId) return res.status(400).json({ error: 'Clan ID diperlukan' });
+
+    await connectDB();
+    if (isDbMongoConnected()) {
+      const clan = await ClanModel.findOne({ clanId });
+      if (clan) {
+        clan.members = clan.members.filter((id: string) => id !== meUid);
+        await clan.save();
+      }
+    } else {
+      const all = readFallbackJson<any[]>('clans-v1.json', []);
+      const found = all.find((c) => c.clanId === clanId);
+      if (found) {
+        found.members = found.members.filter((id: string) => id !== meUid);
+        writeFallbackJson('clans-v1.json', all);
+      }
+    }
+
+    return res.json({ ok: true, message: 'Berhasil keluar dari klan.' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Gagal keluar klan' });
+  }
+});
+
+// POST /api/social/charisma/boost — Charisma now comes strictly from likes by other users
+router.post('/charisma/boost', requireAuth, async (_req: AuthenticatedRequest, res) => {
+  return res.status(403).json({
+    error: 'Charisma hanya bertambah saat pengguna lain menyukai profil Anda.',
+  });
 });
 
 export default router;

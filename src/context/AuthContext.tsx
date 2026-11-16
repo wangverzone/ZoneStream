@@ -176,6 +176,30 @@ export const AVATAR_BORDER_STYLES: Record<
     previewColor: 'from-indigo-300 via-violet-500 to-amber-300',
     premiumOnly: true,
   },
+  'streak-ember': {
+    label: 'Ember Pulse (3d Streak)',
+    ringClass: 'ring-1 ring-orange-400/50',
+    previewColor: 'from-orange-500 via-amber-400 to-red-600',
+    premiumOnly: false,
+  },
+  'streak-aurora': {
+    label: 'Aurora Prism (7d Streak)',
+    ringClass: 'ring-1 ring-cyan-400/50',
+    previewColor: 'from-cyan-400 via-emerald-400 to-purple-500',
+    premiumOnly: false,
+  },
+  'streak-celestial': {
+    label: 'Celestial Orbit (14d Streak)',
+    ringClass: 'ring-1 ring-yellow-400/50',
+    previewColor: 'from-amber-300 via-yellow-500 to-sky-500',
+    premiumOnly: false,
+  },
+  'streak-eternal': {
+    label: 'Eternal Phoenix (30d Streak)',
+    ringClass: 'ring-1 ring-rose-500/50',
+    previewColor: 'from-rose-500 via-amber-400 to-red-600',
+    premiumOnly: false,
+  },
   none: {
     label: 'Polos (Tanpa Dekorasi)',
     ringClass: 'ring-1 ring-white/15',
@@ -558,9 +582,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             expGained: Number(json.expGained) || 0,
             dailyBonusGained: Number(json.dailyBonusGained) || 0,
             streak: Number(json.streak) || 1,
+            longestStreak: Number(json.longestStreak) || Number(json.streak) || 1,
             levelUp: Boolean(json.levelUp),
             newLevel: Number(json.newLevel) || json.user.level || 1,
             isDoubleExp: Boolean(json.isDoubleExp),
+            newlyUnlockedFrame: json.newlyUnlockedFrame || null,
           };
         }
       } catch {
