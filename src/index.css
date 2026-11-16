@@ -82,67 +82,82 @@
 
 @keyframes streakSpin {
   from {
-    transform: rotate(0deg);
+    transform: translate3d(0, 0, 0) rotate(0deg);
   }
   to {
-    transform: rotate(360deg);
+    transform: translate3d(0, 0, 0) rotate(360deg);
   }
 }
 
 @keyframes streakSpinReverse {
   from {
-    transform: rotate(360deg);
+    transform: translate3d(0, 0, 0) rotate(360deg);
   }
   to {
-    transform: rotate(0deg);
+    transform: translate3d(0, 0, 0) rotate(0deg);
   }
 }
 
 @keyframes streakPulseGlow {
   0%, 100% {
-    transform: scale(1);
-    opacity: 0.85;
+    transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
+    opacity: 0.88;
   }
   50% {
-    transform: scale(1.06);
+    transform: translate3d(0, 0, 0) scale3d(1.045, 1.045, 1);
     opacity: 1;
   }
 }
 
 @keyframes streakShimmerFloat {
   0%, 100% {
-    transform: translateY(0px) scale(1);
-    opacity: 0.78;
+    transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
+    opacity: 0.86;
   }
   50% {
-    transform: translateY(-2px) scale(1.08);
+    transform: translate3d(0, -1.5px, 0) scale3d(1.04, 1.04, 1);
     opacity: 1;
   }
 }
 
 .animate-streak-spin {
   animation: streakSpin 9s linear infinite;
-  transform-origin: center;
+  transform-origin: 50% 50%;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 .animate-streak-spin-slow {
   animation: streakSpin 15s linear infinite;
-  transform-origin: center;
+  transform-origin: 50% 50%;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 .animate-streak-spin-rev {
   animation: streakSpinReverse 11s linear infinite;
-  transform-origin: center;
+  transform-origin: 50% 50%;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 .animate-streak-pulse {
-  animation: streakPulseGlow 2.4s ease-in-out infinite;
-  transform-origin: center;
+  animation: streakPulseGlow 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 .animate-streak-shimmer {
-  animation: streakShimmerFloat 2.8s ease-in-out infinite;
-  transform-origin: center;
+  animation: streakShimmerFloat 2.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {
