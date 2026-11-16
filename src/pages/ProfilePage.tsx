@@ -33,6 +33,10 @@ import {
   Globe,
   Trophy,
   ChevronRight,
+  Upload,
+  ImagePlus,
+  FileCheck2,
+  Loader2,
 } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
@@ -50,6 +54,7 @@ import { FounderUserMonitorPanel } from '../components/FounderUserMonitorPanel';
 import { LevelUpCard } from '../components/LevelUpCard';
 import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
 import { VipBenefitsLog } from '../components/VipBenefitsLog';
+import { OnlineStatusPill } from '../components/ProfileStatusBadges';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
 import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
 import {
@@ -59,6 +64,8 @@ import {
   getPendingClanInvite,
   type ClanInvitePreview,
 } from '../utils/clanInvite';
+import { uploadPaymentProofImage, formatFileSize } from '../utils/imageCompression';
+import { playSoundEffect } from '../utils/soundEffects';
 import type { PaymentTransaction, PremiumPackage } from '../types';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
 
@@ -210,6 +217,15 @@ export function ProfilePage() {
   const [activeTx, setActiveTx] = useState<PaymentTransaction | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copiedText, setCopiedText] = useState(false);
+  const [proofPreviewUrl, setProofPreviewUrl] = useState<string>('');
+  const [proofUploadedUrl, setProofUploadedUrl] = useState<string>('');
+  const [proofStoragePath, setProofStoragePath] = useState<string>('');
+  const [proofSizeLabel, setProofSizeLabel] = useState<string>('');
+  const [proofSenderRef, setProofSenderRef] = useState<string>('');
+  const [uploadingProof, setUploadingProof] = useState<boolean>(false);
+  const [proofUploadPct, setProofUploadPct] = useState<number>(0);
+  const [submittingProof, setSubmittingProof] = useState<boolean>(false);
+  const [proofStatusMsg, setProofStatusMsg] = useState<string | null>(null);
 
   const [showForgotModal, setShowForgotModal] = useState(false);
   const [forgotIdentifier, setForgotIdentifier] = useState('');
@@ -363,8 +379,9 @@ export function ProfilePage() {
 
   const handleGoogleLogin = async () => {
     const hadPendingInvite = Boolean(getPendingClanInvite());
+    const loginPromise = loginWithGoogle();
     setGoogleBusy(true);
-    const ok = await loginWithGoogle();
+    const ok = await loginPromise;
     setGoogleBusy(false);
     if (ok && hadPendingInvite) {
       navigate('/leaderboard?tab=clans');
@@ -435,6 +452,18 @@ export function ProfilePage() {
       .catch(() => setQrDataUrl(''));
   }, [activeTx?.paymentNumber, activeTx?.paymentMethod]);
 
+  const resetProofState = () => {
+    setProofPreviewUrl('');
+    setProofUploadedUrl('');
+    setProofStoragePath('');
+    setProofSizeLabel('');
+    setProofSenderRef('');
+    setUploadingProof(false);
+    setProofUploadPct(0);
+    setSubmittingProof(false);
+    setProofStatusMsg(null);
+  };
+
   const checkTransactionStatus = async (orderId: string, silent = false) => {
     const token = getStoredAuthToken();
     if (!token || !orderId) return;
@@ -449,37 +478,165 @@ export function ProfilePage() {
       const json = await res.json();
       if (res.ok && json.ok) {
         if (json.status === 'paid') {
-          setActiveTx((prev) => (prev ? { ...prev, status: 'paid' } : prev));
+          setActiveTx((prev) =>
+            prev
+              ? { ...prev, ...(json.transaction || {}), status: 'paid', verificationStage: 'verified' }
+              : prev
+          );
           setPaymentError(null);
+          setProofStatusMsg(null);
+          playSoundEffect('levelUp');
           await refreshUser();
+        } else if (json.verificationStage === 'verifying_proof') {
+          setActiveTx((prev) =>
+            prev ? { ...prev, ...(json.transaction || {}), verificationStage: 'verifying_proof' } : prev
+          );
+          setPaymentError(null);
+          setProofStatusMsg(
+            'Webhook & Polling Otomatis: Bukti transfer sedang diverifikasi ke database...'
+          );
         } else if (json.status === 'expired' || json.status === 'failed') {
           setActiveTx((prev) => (prev ? { ...prev, status: json.status } : prev));
           setPaymentError(
-            'Transaksi sudah kedaluwarsa atau gagal di Pakasir. Silakan buat tagihan baru.'
+            'Transaksi sudah kedaluwarsa atau gagal. Silakan buat tagihan baru.'
           );
         } else if (!silent) {
           setPaymentError(
-            'Pembayaran belum terdeteksi masuk di Pakasir. Selesaikan transfer terlebih dahulu.'
+            'Pembayaran belum terdeteksi di mutasi otomatis. Silakan unggah foto Bukti Transfer di bawah untuk verifikasi otomatis instan.'
           );
         }
       } else if (!silent) {
-        setPaymentError(json.error || 'Gagal memeriksa status pembayaran Pakasir.');
+        setPaymentError(json.error || 'Gagal memeriksa status pembayaran.');
       }
     } catch {
       if (!silent) {
-        setPaymentError('Gagal menghubungi server pembayaran Pakasir.');
+        setPaymentError('Gagal menghubungi server pembayaran.');
       }
     } finally {
       if (!silent) setCheckingTx(false);
     }
   };
 
+  const submitPaymentProofToServer = async (
+    orderId: string,
+    uploadedUrl: string,
+    storagePath: string,
+    senderRefText: string
+  ) => {
+    const token = getStoredAuthToken();
+    if (!token || !orderId || !uploadedUrl) return;
+    setSubmittingProof(true);
+    setPaymentError(null);
+    setProofStatusMsg('Mengirim bukti transfer & menjalankan verifikasi otomatis...');
+    try {
+      const res = await fetch(`/api/payment/submit-proof/${encodeURIComponent(orderId)}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          proofImageUrl: uploadedUrl,
+          proofStoragePath: storagePath,
+          senderRef: senderRefText,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setPaymentError(json.error || 'Gagal mengirim bukti transfer.');
+        setProofStatusMsg(null);
+        return;
+      }
+      if (json.status === 'paid') {
+        setActiveTx((prev) =>
+          prev
+            ? { ...prev, ...(json.transaction || {}), status: 'paid', verificationStage: 'verified' }
+            : prev
+        );
+        setProofStatusMsg(null);
+        playSoundEffect('levelUp');
+        await refreshUser();
+      } else {
+        setActiveTx((prev) =>
+          prev
+            ? {
+                ...prev,
+                ...(json.transaction || {}),
+                proofImageUrl: uploadedUrl,
+                verificationStage: 'verifying_proof',
+              }
+            : prev
+        );
+        setProofStatusMsg(
+          json.message ||
+            'Bukti transfer diterima! Sistem sedang memverifikasi & mengaktifkan status Verified secara otomatis...'
+        );
+      }
+    } catch {
+      setPaymentError('Gagal menghubungi server saat mengirim bukti transfer.');
+      setProofStatusMsg(null);
+    } finally {
+      setSubmittingProof(false);
+    }
+  };
+
+  const handleSelectProofFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !activeTx) return;
+
+    setPaymentError(null);
+    setUploadingProof(true);
+    setProofUploadPct(10);
+    setProofStatusMsg('Mengompresi & mengunggah bukti transfer ke Firebase/Server...');
+
+    try {
+      const result = await uploadPaymentProofImage(
+        file,
+        user?.uid || activeTx.uid,
+        activeTx.orderId,
+        (pct) => setProofUploadPct(pct)
+      );
+      setProofPreviewUrl(result.compressed.previewDataUrl);
+      setProofUploadedUrl(result.url);
+      setProofStoragePath(result.storagePath);
+      setProofSizeLabel(
+        `${formatFileSize(result.compressed.compressedSize)}${
+          result.uploadedToFirebase ? ' · Firebase Storage' : ' · Terkompresi'
+        }`
+      );
+      setUploadingProof(false);
+
+      // Immediately submit the uploaded proof to trigger automatic webhook/polling verification
+      await submitPaymentProofToServer(
+        activeTx.orderId,
+        result.url,
+        result.storagePath,
+        proofSenderRef
+      );
+    } catch (err: any) {
+      setUploadingProof(false);
+      setProofStatusMsg(null);
+      setPaymentError(err?.message || 'Gagal memproses foto bukti transfer.');
+    }
+  };
+
   const handleConfirmPayment = async (orderId: string) => {
     const token = getStoredAuthToken();
     if (!token || !orderId) return;
+
+    // If user selected proof image and it's ready, ensure it's submitted or confirmed
     setCheckingTx(true);
     setPaymentError(null);
     try {
+      if (proofUploadedUrl && activeTx?.verificationStage !== 'verifying_proof') {
+        await submitPaymentProofToServer(
+          orderId,
+          proofUploadedUrl,
+          proofStoragePath,
+          proofSenderRef
+        );
+      }
       const res = await fetch(`/api/payment/confirm/${encodeURIComponent(orderId)}`, {
         method: 'POST',
         headers: {
@@ -489,7 +646,13 @@ export function ProfilePage() {
       });
       const json = await res.json();
       if (res.ok && json.ok && json.status === 'paid') {
-        setActiveTx((prev) => (prev ? { ...prev, status: 'paid' } : prev));
+        setActiveTx((prev) =>
+          prev
+            ? { ...prev, ...(json.transaction || {}), status: 'paid', verificationStage: 'verified' }
+            : prev
+        );
+        setProofStatusMsg(null);
+        playSoundEffect('levelUp');
         await refreshUser();
       } else {
         setPaymentError(json.error || 'Gagal memverifikasi pembayaran');
@@ -513,11 +676,12 @@ export function ProfilePage() {
 
   useEffect(() => {
     if (!showUpgradeModal || !activeTx || activeTx.status === 'paid') return;
+    const intervalMs = activeTx.verificationStage === 'verifying_proof' ? 1500 : 3500;
     const poll = setInterval(() => {
       checkTransactionStatus(activeTx.orderId, true);
-    }, 4000);
+    }, intervalMs);
     return () => clearInterval(poll);
-  }, [showUpgradeModal, activeTx?.orderId, activeTx?.status]);
+  }, [showUpgradeModal, activeTx?.orderId, activeTx?.status, activeTx?.verificationStage]);
 
   const handleCreateTransaction = async () => {
     const token = getStoredAuthToken();
@@ -528,6 +692,7 @@ export function ProfilePage() {
     const pkg = packages.find((p) => p.id === selectedPlanId) || packages[1] || packages[0];
     setCreatingTx(true);
     setPaymentError(null);
+    resetProofState();
     try {
       const res = await fetch('/api/payment/create-transaction', {
         method: 'POST',
@@ -543,12 +708,12 @@ export function ProfilePage() {
       });
       const json = await res.json();
       if (!res.ok || !json.transaction) {
-        setPaymentError(json.error || 'Gagal membuat transaksi Pakasir');
+        setPaymentError(json.error || 'Gagal membuat transaksi');
       } else {
         setActiveTx(json.transaction);
       }
     } catch {
-      setPaymentError('Tidak dapat terhubung ke gateway Pakasir');
+      setPaymentError('Tidak dapat terhubung ke server pembayaran');
     } finally {
       setCreatingTx(false);
     }
@@ -1197,6 +1362,11 @@ export function ProfilePage() {
                   <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-700 dark:text-gray-200 font-mono-tabular shadow-sm">
                     UID: {user.uid}
                   </span>
+                  <OnlineStatusPill
+                    dbIsOnline={user.isOnline ?? true}
+                    isOwnProfile={true}
+                    onSyncNow={refreshUser}
+                  />
                 </div>
 
                 {/* Real-Time Level Up Progress Card */}
@@ -1205,6 +1375,10 @@ export function ProfilePage() {
                     level={level}
                     exp={exp}
                     isFounder={isFounderUser}
+                    isPremium={isPremium}
+                    totalWatchMinutes={user.totalWatchMinutes}
+                    totalCommentsCount={user.totalCommentsCount}
+                    totalEpisodesWatched={user.totalEpisodesWatched || historyCount}
                     onOpenXpGuide={() => setShowXpModal(true)}
                   />
                 </div>
@@ -1818,10 +1992,23 @@ export function ProfilePage() {
               </button>
             </div>
             <p className="text-xs text-slate-500 dark:text-gray-400 mb-3">
-              Tonton episode Anime atau Donghua setiap hari! Member <strong>VIP / Founder</strong> otomatis mendapat{' '}
-              <strong className="text-amber-500">2x EXP Lipat Ganda</strong>.
+              Progress bar level meningkat otomatis dari <strong>durasi menonton anime</strong> dan{' '}
+              <strong>jumlah komentar</strong> yang kamu berikan! Member <strong>VIP / Founder</strong> otomatis mendapat{' '}
+              <strong className="text-amber-500">2× EXP Lipat Ganda</strong>.
             </p>
             <ul className="space-y-2.5 text-xs text-slate-700 dark:text-gray-300">
+              <li className="flex items-center justify-between p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                <span className="font-semibold">Durasi Menonton Anime (Per Menit)</span>
+                <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono-tabular">
+                  +15 <span className="text-amber-500">(VIP +30)</span>
+                </span>
+              </li>
+              <li className="flex items-center justify-between p-3 rounded-xl bg-sky-500/10 border border-sky-500/20">
+                <span className="font-semibold">Beri Komentar / Balasan</span>
+                <span className="font-bold text-sky-600 dark:text-sky-400 font-mono-tabular">
+                  +25 <span className="text-amber-500">(VIP +50)</span>
+                </span>
+              </li>
               <li className="flex items-center justify-between p-3 rounded-xl bg-slate-100 dark:bg-[#1B1E26]">
                 <span>Bonus Nonton Harian Pertama</span>
                 <span className="font-bold text-[#E84A18] font-mono-tabular">
@@ -1838,12 +2025,6 @@ export function ProfilePage() {
                 <span>Nonton Episode Baru</span>
                 <span className="font-bold text-[#3B82F6] font-mono-tabular">
                   +30 <span className="text-amber-500">(VIP +60)</span>
-                </span>
-              </li>
-              <li className="flex items-center justify-between p-3 rounded-xl bg-slate-100 dark:bg-[#1B1E26]">
-                <span>Tonton Ulang Episode</span>
-                <span className="font-bold text-[#3B82F6] font-mono-tabular">
-                  +10 <span className="text-amber-500">(VIP +20)</span>
                 </span>
               </li>
             </ul>
@@ -2095,18 +2276,108 @@ export function ProfilePage() {
                   </div>
                 )}
 
+                {/* Upload Bukti Transfer & Auto-Update Verification Section */}
+                <div className="rounded-2xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-extrabold text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <FileCheck2 className="w-4 h-4 text-[#E84A18]" />
+                        <span>Upload Bukti Transfer (Verifikasi Otomatis Instan)</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-gray-400 mt-0.5 leading-snug">
+                        Unggah foto/screenshot bukti pembayaran. Sistem akan memverifikasi mutasi secara otomatis ke database dan mengubah status profilmu menjadi <strong>Verified VIP</strong> tanpa menunggu admin.
+                      </p>
+                    </div>
+                  </div>
+
+                  <input
+                    type="text"
+                    value={proofSenderRef}
+                    onChange={(e) => setProofSenderRef(e.target.value)}
+                    placeholder="Nama pengirim / e-Wallet / catatan referensi (opsional)"
+                    className="w-full h-9 px-3 rounded-xl bg-white dark:bg-[#12141C] border border-slate-200 dark:border-white/10 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-[#E84A18]"
+                  />
+
+                  <label className="w-full cursor-pointer block">
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={handleSelectProofFile}
+                      disabled={uploadingProof || submittingProof}
+                      className="hidden"
+                    />
+                    <div
+                      className={`w-full rounded-xl border-2 border-dashed p-3 transition-all flex items-center justify-between gap-3 ${
+                        proofPreviewUrl
+                          ? 'border-emerald-500/50 bg-emerald-500/5'
+                          : 'border-slate-300 dark:border-white/15 hover:border-[#E84A18] bg-white dark:bg-[#12141C]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        {proofPreviewUrl ? (
+                          <img
+                            src={proofPreviewUrl}
+                            alt="Preview Bukti Transfer"
+                            className="w-12 h-12 rounded-lg object-cover border border-emerald-500/40 shrink-0"
+                          />
+                        ) : (
+                          <span className="w-10 h-10 rounded-xl bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center shrink-0">
+                            {uploadingProof ? (
+                              <Loader2 className="w-5 h-5 animate-spin" />
+                            ) : (
+                              <ImagePlus className="w-5 h-5" />
+                            )}
+                          </span>
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                            {uploadingProof
+                              ? `Mengunggah Bukti Transfer (${proofUploadPct}%)...`
+                              : proofPreviewUrl
+                              ? 'Bukti Transfer Terlampir (Klik untuk ganti)'
+                              : 'Pilih Foto / Screenshot Bukti Transfer'}
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate">
+                            {proofSizeLabel || 'Format JPG, PNG, WebP · Auto-kompresi & sinkronisasi instan'}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="px-3 py-1.5 rounded-lg bg-[#E84A18] text-white text-[11px] font-bold inline-flex items-center gap-1 shrink-0">
+                        <Upload className="w-3.5 h-3.5" />
+                        <span>{proofPreviewUrl ? 'Ganti' : 'Upload'}</span>
+                      </span>
+                    </div>
+                  </label>
+
+                  {(proofStatusMsg || activeTx.verificationStage === 'verifying_proof') && (
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center gap-2.5 text-amber-600 dark:text-amber-300 text-xs font-semibold">
+                      <Loader2 className="w-4 h-4 animate-spin shrink-0 text-[#E84A18]" />
+                      <span>
+                        {proofStatusMsg ||
+                          'Memverifikasi bukti transfer & memperbarui status Verified ke database secara otomatis...'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
                 <div className="space-y-2.5">
                   <button
                     type="button"
-                    disabled={checkingTx}
+                    disabled={checkingTx || uploadingProof || submittingProof}
                     onClick={() => handleConfirmPayment(activeTx.orderId)}
                     className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-[#E84A18] to-[#FF6B35] hover:from-[#F35B2B] hover:to-[#FF7D4D] disabled:opacity-60 text-white font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/30 transition-all"
                   >
-                    <CheckCircle2 className="w-4 h-4" />
+                    {checkingTx || submittingProof ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4" />
+                    )}
                     <span>
-                      {checkingTx
-                        ? 'Mengecek Mutasi di Pakasir...'
-                        : 'Sudah Transfer · Cek Verifikasi Pakasir'}
+                      {checkingTx || submittingProof
+                        ? 'Memverifikasi Pembayaran & Bukti Transfer...'
+                        : proofUploadedUrl
+                        ? 'Verifikasi Bukti Transfer & Aktifkan Status Verified Sekarang'
+                        : 'Sudah Transfer · Cek Verifikasi Otomatis'}
                     </span>
                   </button>
 
@@ -2117,12 +2388,15 @@ export function ProfilePage() {
                     className="w-full min-h-[40px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#1E222D] dark:hover:bg-[#272C3A] text-slate-800 dark:text-gray-200 font-semibold text-xs flex items-center justify-center gap-2 border border-slate-200 dark:border-white/10"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${checkingTx ? 'animate-spin' : ''}`} />
-                    <span>Cek Status Otomatis Pakasir (Auto-Sync 4 Detik)</span>
+                    <span>Sinkronisasi Real-Time Database (Auto-Polling Aktif)</span>
                   </button>
 
                   <button
                     type="button"
-                    onClick={() => setActiveTx(null)}
+                    onClick={() => {
+                      setActiveTx(null);
+                      resetProofState();
+                    }}
                     className="w-full py-1.5 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-gray-400 dark:hover:text-white"
                   >
                     Ganti Paket / Metode Pembayaran

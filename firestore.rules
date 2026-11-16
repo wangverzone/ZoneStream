@@ -6,7 +6,7 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function incoming() {
@@ -24,12 +24,55 @@ service cloud.firestore {
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'email', 'name', 'level', 'exp', 'isPremium'])
         && data.keys().hasOnly(['uid', 'displayUid', 'email', 'name', 'photoUrl', 'level', 'exp', 'isPremium', 'updatedAt'])
-        && data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128
-        && data.email is string && data.email.size() <= 255
+        && data.uid is string && data.uid == request.auth.uid && data.uid.size() >= 1 && data.uid.size() <= 128
+        && (!('displayUid' in data) || (data.displayUid is string && data.displayUid.size() <= 16))
+        && (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500000))
+        && (!('updatedAt' in data) || data.updatedAt is timestamp)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 255
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 60
         && data.level is number && data.level >= 1
         && data.exp is number && data.exp >= 0
         && data.isPremium is bool;
+    }
+
+    function isValidEpisodeAlert(data) {
+      return data.keys().hasAll([
+          'uid',
+          'seriesId',
+          'seriesType',
+          'seriesTitle',
+          'episodeId',
+          'episodeLabel',
+          'poster',
+          'link',
+          'isRead',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'seriesId',
+          'seriesType',
+          'seriesTitle',
+          'episodeId',
+          'episodeLabel',
+          'poster',
+          'link',
+          'isRead',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string && data.uid == request.auth.uid && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.seriesId is string && data.seriesId.size() >= 1 && data.seriesId.size() <= 128
+        && data.seriesType is string && (data.seriesType == 'anime' || data.seriesType == 'donghua')
+        && data.seriesTitle is string && data.seriesTitle.size() >= 1 && data.seriesTitle.size() <= 140
+        && data.episodeId is string && data.episodeId.size() >= 1 && data.episodeId.size() <= 160
+        && data.episodeLabel is string && data.episodeLabel.size() >= 1 && data.episodeLabel.size() <= 80
+        && data.poster is string && data.poster.size() <= 2000
+        && data.link is string && data.link.size() >= 1 && data.link.size() <= 300
+        && data.isRead is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
     }
 
     match /users/{userId} {
@@ -43,9 +86,57 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(userId) && request.auth.uid == userId
         && isValidUserProfile(incoming())
         && incoming().uid == existing().uid
+        && incoming().email == existing().email
         && incoming().isPremium == existing().isPremium
+        && incoming().level == existing().level
+        && incoming().exp == existing().exp
         && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'photoUrl', 'updatedAt']);
       allow delete: if false;
+
+      match /episode_alerts/{alertId} {
+        allow get: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(alertId)
+          && request.auth.uid == userId
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+
+        allow list: if isSignedIn()
+          && request.auth.uid == userId
+          && existing().uid == request.auth.uid;
+
+        allow create: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(alertId)
+          && request.auth.uid == userId
+          && isValidEpisodeAlert(incoming())
+          && incoming().isRead == false
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+
+        allow update: if isSignedIn()
+          && isValidId(userId)
+          && isValidId(alertId)
+          && request.auth.uid == userId
+          && isValidEpisodeAlert(incoming())
+          && incoming().uid == existing().uid
+          && incoming().seriesId == existing().seriesId
+          && incoming().seriesType == existing().seriesType
+          && incoming().seriesTitle == existing().seriesTitle
+          && incoming().episodeId == existing().episodeId
+          && incoming().episodeLabel == existing().episodeLabel
+          && incoming().poster == existing().poster
+          && incoming().link == existing().link
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt'])
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && get(/databases/$(database)/documents/users/$(userId)).data.uid == request.auth.uid;
+
+        allow delete: if false;
+      }
     }
   }
 }

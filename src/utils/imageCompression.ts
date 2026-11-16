@@ -359,3 +359,95 @@ export async function uploadCompressedChatImage(
     };
   }
 }
+
+/**
+ * Compresses a payment receipt / bukti transfer image to <= 800KB and uploads to Firebase Storage
+ * (`payment-proofs/{uid}/{orderId}-...`), with automatic fallback to compressed data URL.
+ */
+export async function uploadPaymentProofImage(
+  file: File,
+  uid: string,
+  orderId: string,
+  onProgress?: (pct: number) => void
+): Promise<ChatImageUploadResult> {
+  onProgress?.(10);
+  const compressed = await compressImageForChat(file, {
+    maxSizeBytes: 800 * 1024,
+    maxDimension: 1400,
+    initialQuality: 0.88,
+    minQuality: 0.5,
+  });
+
+  if (compressed.width < 80 || compressed.height < 80) {
+    throw new Error('Resolusi foto bukti transfer terlalu kecil atau tidak terbaca.');
+  }
+
+  onProgress?.(30);
+  const safeUid = String(uid || 'anonymous').replace(/[^a-zA-Z0-9_-]/g, '');
+  const safeOrder = String(orderId || 'order').replace(/[^a-zA-Z0-9_-]/g, '');
+  const ext = compressed.mimeType === 'image/webp' ? 'webp' : 'jpg';
+  const storagePath = `payment-proofs/${safeUid}/${safeOrder}-${Date.now()}.${ext}`;
+  const storageRef = ref(storage, storagePath);
+
+  try {
+    const downloadUrl = await new Promise<string>((resolve, reject) => {
+      const uploadTask = uploadBytesResumable(storageRef, compressed.file, {
+        contentType: compressed.mimeType,
+        customMetadata: {
+          uid: safeUid,
+          orderId: safeOrder,
+          originalSize: String(compressed.originalSize),
+          compressedSize: String(compressed.compressedSize),
+        },
+      });
+
+      const timeoutId = setTimeout(() => {
+        try {
+          uploadTask.cancel();
+        } catch {
+          // ignore
+        }
+        reject(new Error('Upload Firebase Storage timeout'));
+      }, 9000);
+
+      uploadTask.on(
+        'state_changed',
+        (snapshot) => {
+          if (snapshot.totalBytes > 0) {
+            const pct = 30 + Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 65);
+            onProgress?.(Math.min(98, pct));
+          }
+        },
+        (err) => {
+          clearTimeout(timeoutId);
+          reject(err);
+        },
+        async () => {
+          clearTimeout(timeoutId);
+          try {
+            const url = await getDownloadURL(uploadTask.snapshot.ref);
+            onProgress?.(100);
+            resolve(url);
+          } catch (err) {
+            reject(err);
+          }
+        }
+      );
+    });
+
+    return {
+      url: downloadUrl,
+      storagePath,
+      uploadedToFirebase: true,
+      compressed,
+    };
+  } catch {
+    onProgress?.(100);
+    return {
+      url: compressed.previewDataUrl,
+      storagePath,
+      uploadedToFirebase: false,
+      compressed,
+    };
+  }
+}

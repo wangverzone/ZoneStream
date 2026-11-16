@@ -97,14 +97,21 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
         </div>
       </div>
 
-      {/* Bottom Title & Episode Bar */}
+      {/* Bottom Title, Episode & Genre Bar */}
       <div className="absolute inset-x-0 bottom-0 p-2.5 pt-12 bg-gradient-to-t from-[#090A0F] via-[#090A0F]/85 to-transparent">
-        {item.episodeLabel && (
-          <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#E84A18]/20 border border-[#E84A18]/35 text-[#FF7A4D] text-[10px] font-bold mb-1 max-w-full truncate">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#FF6B35] shrink-0" />
-            <span className="truncate">{item.episodeLabel}</span>
-          </div>
-        )}
+        <div className="flex items-center flex-wrap gap-1 mb-1">
+          {item.episodeLabel && (
+            <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#E84A18]/20 border border-[#E84A18]/35 text-[#FF7A4D] text-[10px] font-bold max-w-full truncate">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#FF6B35] shrink-0" />
+              <span className="truncate">{item.episodeLabel}</span>
+            </div>
+          )}
+          {Array.isArray(item.genres) && item.genres.length > 0 && (
+            <span className="px-1.5 py-0.5 rounded bg-white/10 backdrop-blur-sm border border-white/10 text-gray-200 text-[9px] font-semibold truncate max-w-[110px]">
+              {item.genres.slice(0, 2).join(' · ')}
+            </span>
+          )}
+        </div>
         <h3 className="text-xs font-bold text-white line-clamp-2 leading-snug group-hover:text-[#FF8559] transition-colors">
           {item.title}
         </h3>

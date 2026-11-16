@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { requireAuth, type AuthenticatedRequest } from '../auth.ts';
-import { connectDB, findUserByUid } from '../db.ts';
+import { connectDB, findUserByUid, sanitizeUser, updateUserByUid } from '../db.ts';
 import { CommentModel } from '../models/Comment.ts';
 import { UserModel } from '../models/User.ts';
 import { createNotification } from '../notifications.ts';
+
+const getExpNeededForLevel = (level: number) => Math.max(100, level * 200);
 
 const router = Router();
 
@@ -252,14 +254,59 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       }
     };
 
+    // Award Comment EXP (+25 base, +50 for VIP/Founder) & increment totalCommentsCount
+    let expGained = 0;
+    let levelUp = false;
+    let finalLevel = user.level || 1;
+    let finalCommentsCount = (user.totalCommentsCount || 0) + 1;
+
+    const updatedUser = await updateUserByUid(user.uid, (current) => {
+      const multiplier = hasVipPrivilege ? 2 : 1;
+      expGained = 25 * multiplier;
+      let nextExp = (current.exp || 0) + expGained;
+      let nextLevel = current.level || 1;
+      if (current.role === 'founder') {
+        nextLevel = 999999;
+        nextExp = 0;
+        levelUp = false;
+      } else {
+        while (nextExp >= getExpNeededForLevel(nextLevel)) {
+          nextExp -= getExpNeededForLevel(nextLevel);
+          nextLevel += 1;
+          levelUp = true;
+        }
+      }
+      finalLevel = nextLevel;
+      finalCommentsCount = Math.max(1, (current.totalCommentsCount || 0) + 1);
+      return {
+        ...current,
+        level: nextLevel,
+        exp: nextExp,
+        totalCommentsCount: finalCommentsCount,
+      };
+    });
+
+    payload.authorLevel = finalLevel;
+
+    const expReward = {
+      expGained,
+      levelUp,
+      newLevel: finalLevel,
+      totalCommentsCount: finalCommentsCount,
+      isDoubleExp: hasVipPrivilege,
+    };
+
     if (mongoOk) {
       const created = await CommentModel.create(payload);
       await notifyReplyTarget();
       const obj = created.toObject();
       return res.status(201).json({
         ok: true,
+        expReward,
+        user: updatedUser ? sanitizeUser(updatedUser) : undefined,
         comment: {
           ...obj,
+          authorLevel: finalLevel,
           _id: String(obj._id),
           createdAt: obj.createdAt
             ? new Date(obj.createdAt).toISOString()
@@ -275,7 +322,12 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
     };
     memoryComments.unshift(memDoc);
     await notifyReplyTarget();
-    return res.status(201).json({ ok: true, comment: memDoc });
+    return res.status(201).json({
+      ok: true,
+      expReward,
+      user: updatedUser ? sanitizeUser(updatedUser) : undefined,
+      comment: memDoc,
+    });
   } catch (err) {
     console.error('[Comments POST Error]', err);
     return res.status(500).json({ error: 'Gagal mengirim komentar' });

@@ -103,7 +103,7 @@ export function CommentSection({
   mediaTitle: string;
   episodeTitle?: string;
 }) {
-  const { user, isPremium } = useAuth();
+  const { user, isPremium, applyUserSnapshot, refreshUser } = useAuth();
   const canUseVipEmoji = Boolean(isPremium || user?.role === 'founder');
   const isFounder = user?.role === 'founder';
 
@@ -118,6 +118,12 @@ export function CommentSection({
   const [emojiTab, setEmojiTab] = useState<'free' | 'vip'>('free');
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [commentExpNotice, setCommentExpNotice] = useState<{
+    expGained: number;
+    levelUp: boolean;
+    newLevel: number;
+    totalCommentsCount: number;
+  } | null>(null);
 
   // Inline Reply Composer state (renders directly inside the target root comment)
   const [activeReplyParentId, setActiveReplyParentId] = useState<string | null>(null);
@@ -200,6 +206,15 @@ export function CommentSection({
         setText('');
         setSelectedSticker('');
         setShowEmojiPicker(false);
+        if (json.user) {
+          applyUserSnapshot(json.user);
+        } else {
+          void refreshUser();
+        }
+        if (json.expReward?.expGained) {
+          setCommentExpNotice(json.expReward);
+          window.setTimeout(() => setCommentExpNotice(null), 5000);
+        }
         await loadComments();
       }
     } catch {
@@ -262,6 +277,15 @@ export function CommentSection({
         setReplySticker('');
         setShowReplyEmojiPicker(false);
         setActiveReplyParentId(null);
+        if (json.user) {
+          applyUserSnapshot(json.user);
+        } else {
+          void refreshUser();
+        }
+        if (json.expReward?.expGained) {
+          setCommentExpNotice(json.expReward);
+          window.setTimeout(() => setCommentExpNotice(null), 5000);
+        }
         await loadComments();
       }
     } catch {
@@ -509,6 +533,17 @@ export function CommentSection({
 
                 {errorMsg && (
                   <p className="mt-2 text-xs font-semibold text-rose-500">{errorMsg}</p>
+                )}
+
+                {commentExpNotice && (
+                  <div className="mt-2.5 px-3 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-between gap-2 text-xs text-emerald-700 dark:text-emerald-300 font-bold">
+                    <span>
+                      +{commentExpNotice.expGained} EXP dari Komentar!{' '}
+                      {commentExpNotice.levelUp
+                        ? `Selamat, naik ke Lv. ${commentExpNotice.newLevel}!`
+                        : `Total ${commentExpNotice.totalCommentsCount} komentar meningkatkan progress level profilmu.`}
+                    </span>
+                  </div>
                 )}
               </div>
 

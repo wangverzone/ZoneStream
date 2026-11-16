@@ -1184,18 +1184,34 @@ const ANILIST_GENRE_MAP: Record<string, string> = {
   adventure: 'Adventure',
   fantasy: 'Fantasy',
   'martial-arts': 'Action',
+  cultivation: 'Fantasy',
   comedy: 'Comedy',
   romance: 'Romance',
   'sci-fi': 'Sci-Fi',
+  mecha: 'Mecha',
   drama: 'Drama',
+  'slice-of-life': 'Slice of Life',
   supernatural: 'Supernatural',
   isekai: 'Fantasy',
   mystery: 'Mystery',
+  psychological: 'Psychological',
+  thriller: 'Thriller',
   magic: 'Fantasy',
   historical: 'Drama',
   school: 'Slice of Life',
   horror: 'Horror',
   sports: 'Sports',
+  music: 'Music',
+};
+
+const ANILIST_TAG_MAP: Record<string, string> = {
+  isekai: 'Isekai',
+  'martial-arts': 'Martial Arts',
+  cultivation: 'Cultivation',
+  magic: 'Magic',
+  school: 'School',
+  historical: 'Historical',
+  reincarnation: 'Reincarnation',
 };
 
 function mapAniListMediaToCard(media: any) {
@@ -1223,6 +1239,18 @@ function mapAniListMediaToCard(media: any) {
     : `Ep ${airedEps}`;
   const rating = media.averageScore ? (media.averageScore / 10).toFixed(2) : '8.45';
 
+  const baseGenres = Array.isArray(media.genres)
+    ? media.genres.filter((g: unknown): g is string => typeof g === 'string' && g.trim().length > 0)
+    : [];
+  const tagNames = Array.isArray(media.tags)
+    ? media.tags
+        .map((t: any) => (typeof t?.name === 'string' ? t.name.trim() : ''))
+        .filter((n: string) =>
+          ['Isekai', 'Martial Arts', 'Cultivation', 'Magic', 'School', 'Historical', 'Reincarnation'].includes(n)
+        )
+    : [];
+  const genres = Array.from(new Set([...baseGenres, ...tagNames]));
+
   return {
     id: slug,
     anilistId: Number(media.id),
@@ -1236,6 +1264,7 @@ function mapAniListMediaToCard(media: any) {
     episodeLabel,
     totalEpisodes: airedEps,
     isNew: !isCompleted,
+    genres,
   };
 }
 
@@ -1274,6 +1303,8 @@ export async function searchGlobalAniList(
                   episodes
                   averageScore
                   bannerImage
+                  genres
+                  tags { name }
                   nextAiringEpisode { episode }
                   title { english romaji native }
                   coverImage { extraLarge large }
@@ -1313,7 +1344,27 @@ export async function browseGlobalAniList(
   filterType: string = 'all',
   genre?: string
 ): Promise<Array<NonNullable<ReturnType<typeof mapAniListMediaToCard>>>> {
-  const mappedGenre = genre ? ANILIST_GENRE_MAP[genre.toLowerCase()] : undefined;
+  const rawGenreSlugs = String(genre || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  const mappedGenres = Array.from(
+    new Set(rawGenreSlugs.map((g) => ANILIST_GENRE_MAP[g]).filter(Boolean))
+  );
+  const mappedTags = Array.from(
+    new Set(rawGenreSlugs.map((g) => ANILIST_TAG_MAP[g]).filter(Boolean))
+  );
+
+  const genreFilterVars: Record<string, any> = {};
+  if (mappedGenres.length === 1 && mappedTags.length === 0) {
+    genreFilterVars.genre = mappedGenres[0];
+  } else if (mappedGenres.length > 0) {
+    genreFilterVars.genre_in = mappedGenres;
+  }
+  if (mappedTags.length > 0) {
+    genreFilterVars.tag_in = mappedTags;
+  }
 
   const fetchBatch = async (variables: Record<string, any>) => {
     const controller = new AbortController();
@@ -1329,7 +1380,7 @@ export async function browseGlobalAniList(
         },
         body: JSON.stringify({
           query: `
-            query ($page: Int, $perPage: Int, $countryOfOrigin: CountryCode, $format: MediaFormat, $status: MediaStatus, $genre: String) {
+            query ($page: Int, $perPage: Int, $countryOfOrigin: CountryCode, $format: MediaFormat, $status: MediaStatus, $genre: String, $genre_in: [String], $tag_in: [String]) {
               Page(page: $page, perPage: $perPage) {
                 media(
                   type: ANIME
@@ -1338,6 +1389,8 @@ export async function browseGlobalAniList(
                   format: $format
                   status: $status
                   genre: $genre
+                  genre_in: $genre_in
+                  tag_in: $tag_in
                   sort: [TRENDING_DESC, POPULARITY_DESC]
                 ) {
                   id
@@ -1347,6 +1400,8 @@ export async function browseGlobalAniList(
                   episodes
                   averageScore
                   bannerImage
+                  genres
+                  tags { name }
                   nextAiringEpisode { episode }
                   title { english romaji native }
                   coverImage { extraLarge large }
@@ -1374,7 +1429,7 @@ export async function browseGlobalAniList(
       page,
       perPage: 28,
       countryOfOrigin: 'CN',
-      genre: mappedGenre,
+      ...genreFilterVars,
     });
   }
 
@@ -1383,14 +1438,14 @@ export async function browseGlobalAniList(
       page,
       perPage: 28,
       countryOfOrigin: 'JP',
-      genre: mappedGenre,
+      ...genreFilterVars,
     });
   }
 
   if (filterType === 'movie') {
     const [jpMovies, cnMovies] = await Promise.all([
-      fetchBatch({ page, perPage: 18, format: 'MOVIE', countryOfOrigin: 'JP', genre: mappedGenre }),
-      fetchBatch({ page, perPage: 10, format: 'MOVIE', countryOfOrigin: 'CN', genre: mappedGenre }),
+      fetchBatch({ page, perPage: 18, format: 'MOVIE', countryOfOrigin: 'JP', ...genreFilterVars }),
+      fetchBatch({ page, perPage: 10, format: 'MOVIE', countryOfOrigin: 'CN', ...genreFilterVars }),
     ]);
     return [...jpMovies, ...cnMovies];
   }
@@ -1402,22 +1457,22 @@ export async function browseGlobalAniList(
         perPage: 18,
         status: 'FINISHED',
         countryOfOrigin: 'JP',
-        genre: mappedGenre,
+        ...genreFilterVars,
       }),
       fetchBatch({
         page,
         perPage: 14,
         status: 'FINISHED',
         countryOfOrigin: 'CN',
-        genre: mappedGenre,
+        ...genreFilterVars,
       }),
     ]);
     return [...cnDone, ...jpDone];
   }
 
   const [jpList, cnList] = await Promise.all([
-    fetchBatch({ page, perPage: 18, countryOfOrigin: 'JP', genre: mappedGenre }),
-    fetchBatch({ page, perPage: 18, countryOfOrigin: 'CN', genre: mappedGenre }),
+    fetchBatch({ page, perPage: 18, countryOfOrigin: 'JP', ...genreFilterVars }),
+    fetchBatch({ page, perPage: 18, countryOfOrigin: 'CN', ...genreFilterVars }),
   ]);
 
   const interleaved: Array<NonNullable<ReturnType<typeof mapAniListMediaToCard>>> = [];

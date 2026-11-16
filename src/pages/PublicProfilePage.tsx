@@ -22,6 +22,7 @@ import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import { AvatarDecoration } from '../components/AvatarDecoration';
 import { LevelUpCard } from '../components/LevelUpCard';
+import { OnlineStatusPill } from '../components/ProfileStatusBadges';
 import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
 import type { PublicProfileDetail, RelationshipStatus } from '../types';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
@@ -343,6 +344,11 @@ export function PublicProfilePage() {
                         </span>
                       );
                     })()}
+                    <OnlineStatusPill
+                      dbIsOnline={Boolean(profile.isOnline)}
+                      isOwnProfile={rel === 'self'}
+                      onSyncNow={() => loadProfile(true)}
+                    />
                   </div>
                 </div>
               </div>
@@ -464,6 +470,10 @@ export function PublicProfilePage() {
                 level={profile.level}
                 exp={profile.exp ?? 0}
                 isFounder={isTargetFounder}
+                isPremium={profile.isPremium}
+                totalWatchMinutes={profile.totalWatchMinutes}
+                totalCommentsCount={profile.totalCommentsCount}
+                totalEpisodesWatched={profile.totalEpisodesWatched}
               />
             </div>
 

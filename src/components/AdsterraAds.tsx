@@ -282,6 +282,13 @@ export function AdsterraGlobalManager() {
     const isStreamingPage =
       location.pathname.startsWith('/watch') || location.pathname.startsWith('/detail');
 
+    if (!isStreamingPage) {
+      document
+        .querySelectorAll('script[data-adsterra="popunder"], script[data-adsterra="social-bar"]')
+        .forEach((el) => el.remove());
+      return;
+    }
+
     if (isStreamingPage && !document.querySelector('script[data-adsterra="popunder"]')) {
       const pop = document.createElement('script');
       pop.setAttribute('data-cfasync', 'false');

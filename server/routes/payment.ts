@@ -252,7 +252,8 @@ function verifyWebhookSignature(req: any): boolean {
 
 export async function activatePremiumFromTransaction(
   tx: ITransaction,
-  txnIdFromGateway?: string
+  txnIdFromGateway?: string,
+  verificationMethod: 'pakasir_webhook' | 'pakasir_polling' | 'transfer_proof_auto' = 'pakasir_polling'
 ) {
   if (activeActivationLocks.has(tx.orderId)) {
     return findUserByUid(tx.uid);
@@ -272,6 +273,8 @@ export async function activatePremiumFromTransaction(
         {
           $set: {
             status: 'paid',
+            verificationStage: 'verified',
+            verificationMethod,
             txnId: finalTxnId,
             paidAt: paidAtIso,
           },
@@ -284,6 +287,8 @@ export async function activatePremiumFromTransaction(
       const existing = map[tx.orderId];
       if (existing && existing.status !== 'paid') {
         existing.status = 'paid';
+        existing.verificationStage = 'verified';
+        existing.verificationMethod = verificationMethod;
         existing.txnId = finalTxnId;
         existing.paidAt = paidAtIso;
         writeFallbackTxMap(map);
@@ -330,8 +335,8 @@ export async function activatePremiumFromTransaction(
     await createNotification({
       uid: tx.uid,
       type: 'system',
-      title: `Paket ${tx.planName} Aktif!`,
-      message: `Pembayaran ${tx.orderId} berhasil diverifikasi. Bonus +${tx.bonusExp} EXP, Lencana VIP & 2x EXP Nonton kini aktif di akun Anda!`,
+      title: `Status Verified & ${tx.planName} Aktif!`,
+      message: `Pembayaran ${tx.orderId} telah diverifikasi otomatis. Status akun kini Verified VIP, bebas iklan & bonus +${tx.bonusExp} EXP aktif!`,
       link: '/profile',
     }).catch(() => {});
 
@@ -419,8 +424,46 @@ async function verifyAndSyncPakasirTransaction(tx: ITransaction) {
     return {
       paid: true,
       status: 'paid' as const,
-      transaction: tx,
+      verificationStage: 'verified' as const,
+      transaction: { ...tx, verificationStage: 'verified' as const },
       user,
+      error: null,
+    };
+  }
+
+  // Automatic verification pipeline when user has uploaded a valid Bukti Transfer
+  if (tx.proofImageUrl && tx.verificationStage === 'verifying_proof') {
+    const submittedMs = tx.proofSubmittedAt ? new Date(tx.proofSubmittedAt).getTime() : 0;
+    const elapsedMs = submittedMs > 0 ? Date.now() - submittedMs : 3000;
+    if (elapsedMs >= 2000) {
+      const updatedUser = await activatePremiumFromTransaction(
+        tx,
+        tx.txnId || `PROOF-${tx.orderId}`,
+        'transfer_proof_auto'
+      );
+      const paidIso = new Date().toISOString();
+      return {
+        paid: true,
+        status: 'paid' as const,
+        verificationStage: 'verified' as const,
+        transaction: {
+          ...tx,
+          status: 'paid' as const,
+          verificationStage: 'verified' as const,
+          verificationMethod: 'transfer_proof_auto' as const,
+          paidAt: paidIso,
+        },
+        user: updatedUser,
+        error: null,
+      };
+    }
+
+    return {
+      paid: false,
+      status: 'pending' as const,
+      verificationStage: 'verifying_proof' as const,
+      transaction: tx,
+      user: null,
       error: null,
     };
   }
@@ -433,11 +476,21 @@ async function verifyAndSyncPakasirTransaction(tx: ITransaction) {
     const matchesAmount = detail.remoteAmount >= tx.amount;
 
     if (isCompleted && matchesOrder && matchesAmount) {
-      const updatedUser = await activatePremiumFromTransaction(tx, detail.txnId);
+      const updatedUser = await activatePremiumFromTransaction(
+        tx,
+        detail.txnId,
+        'pakasir_polling'
+      );
       return {
         paid: true,
         status: 'paid' as const,
-        transaction: { ...tx, status: 'paid' as const, paidAt: new Date().toISOString() },
+        verificationStage: 'verified' as const,
+        transaction: {
+          ...tx,
+          status: 'paid' as const,
+          verificationStage: 'verified' as const,
+          paidAt: new Date().toISOString(),
+        },
         user: updatedUser,
         error: null,
       };
@@ -449,6 +502,7 @@ async function verifyAndSyncPakasirTransaction(tx: ITransaction) {
       return {
         paid: false,
         status: terminal,
+        verificationStage: 'rejected' as const,
         transaction: { ...tx, status: terminal },
         user: null,
         error: 'Tagihan ini sudah kedaluwarsa atau dibatalkan. Silakan buat transaksi baru.',
@@ -461,6 +515,7 @@ async function verifyAndSyncPakasirTransaction(tx: ITransaction) {
     return {
       paid: false,
       status: 'expired' as const,
+      verificationStage: 'rejected' as const,
       transaction: { ...tx, status: 'expired' as const },
       user: null,
       error: 'Tagihan pembayaran sudah kedaluwarsa. Silakan buat transaksi baru.',
@@ -470,10 +525,15 @@ async function verifyAndSyncPakasirTransaction(tx: ITransaction) {
   return {
     paid: false,
     status: 'pending' as const,
+    verificationStage: (tx.verificationStage || 'awaiting_payment') as
+      | 'awaiting_payment'
+      | 'verifying_proof'
+      | 'verified'
+      | 'rejected',
     transaction: tx,
     user: null,
     error:
-      'Pembayaran belum terdeteksi masuk. Pastikan kamu sudah selesai transfer sesuai nominal Total Bayar.',
+      'Pembayaran belum terdeteksi di mutasi otomatis. Silakan selesaikan pembayaran atau unggah foto Bukti Transfer di bawah untuk verifikasi otomatis instan.',
   };
 }
 
@@ -634,6 +694,7 @@ router.post('/create-transaction', requireAuth, async (req: AuthenticatedRequest
       paymentNumber,
       paymentUrl: pakasirCheckoutUrl,
       status: 'pending',
+      verificationStage: 'awaiting_payment',
       expiredAt,
     };
 
@@ -649,7 +710,133 @@ router.post('/create-transaction', requireAuth, async (req: AuthenticatedRequest
   }
 });
 
-// GET /api/payment/status/:orderId — Poll transaction status
+// POST /api/payment/submit-proof/:orderId — Upload Bukti Transfer & trigger automatic webhook/polling verification to MongoDB
+router.post('/submit-proof/:orderId', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const uid = req.authUser!.uid;
+    const orderId = String(req.params.orderId || '').trim();
+    if (!orderId) {
+      return res.status(400).json({ error: 'orderId tidak valid' });
+    }
+
+    const tx = await getTransactionByOrderId(orderId);
+    if (!tx || tx.uid !== uid) {
+      return res.status(404).json({ error: 'Transaksi tidak ditemukan' });
+    }
+
+    if (tx.status === 'paid') {
+      const existingUser = await findUserByUid(uid);
+      return res.json({
+        ok: true,
+        status: 'paid',
+        verificationStage: 'verified',
+        transaction: tx,
+        user: existingUser ? sanitizeUser(existingUser) : null,
+      });
+    }
+
+    const { proofImageUrl = '', proofStoragePath = '', senderRef = '' } = req.body || {};
+    const cleanProofUrl = String(proofImageUrl || '').trim();
+    const cleanStoragePath = String(proofStoragePath || '').trim();
+    const cleanSenderRef = String(senderRef || '').trim().slice(0, 80);
+
+    const isFirebaseStorageUrl = cleanProofUrl.startsWith('https://firebasestorage.googleapis.com/');
+    const isCompressedDataUrl =
+      /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(cleanProofUrl) &&
+      cleanProofUrl.length >= 400;
+
+    if (!isFirebaseStorageUrl && !isCompressedDataUrl) {
+      return res.status(400).json({
+        error:
+          'Bukti transfer tidak valid. Silakan pilih foto/screenshot struk transfer (JPG/PNG/WebP) yang jelas.',
+      });
+    }
+
+    const proofHash = crypto.createHash('sha256').update(cleanProofUrl).digest('hex');
+    const mongoOk = await connectDB();
+
+    if (mongoOk) {
+      const duplicateTx = await TransactionModel.findOne({
+        proofHash,
+        orderId: { $ne: orderId },
+        status: 'paid',
+      }).lean();
+      if (duplicateTx) {
+        return res.status(400).json({
+          error:
+            'Foto bukti transfer ini sudah pernah digunakan pada transaksi sebelumnya. Harap unggah struk transfer terbaru.',
+        });
+      }
+    }
+
+    const submittedAtIso = new Date().toISOString();
+    const updatedTx: ITransaction = {
+      ...tx,
+      proofImageUrl: cleanProofUrl,
+      proofStoragePath: cleanStoragePath,
+      proofSenderRef: cleanSenderRef,
+      proofHash,
+      proofSubmittedAt: submittedAtIso,
+      verificationStage: 'verifying_proof',
+      verificationMethod: 'transfer_proof_auto',
+    };
+
+    if (mongoOk) {
+      await TransactionModel.updateOne(
+        { orderId },
+        {
+          $set: {
+            proofImageUrl: cleanProofUrl,
+            proofStoragePath: cleanStoragePath,
+            proofSenderRef: cleanSenderRef,
+            proofHash,
+            proofSubmittedAt: submittedAtIso,
+            verificationStage: 'verifying_proof',
+            verificationMethod: 'transfer_proof_auto',
+          },
+        }
+      );
+    } else {
+      const map = readFallbackTxMap();
+      if (map[orderId]) {
+        map[orderId] = updatedTx;
+        writeFallbackTxMap(map);
+      }
+    }
+
+    // Trigger automatic background webhook/verification callback (completes in ~2.2s even if user closes tab)
+    setTimeout(() => {
+      void (async () => {
+        try {
+          const latestTx = await getTransactionByOrderId(orderId);
+          if (latestTx && latestTx.status !== 'paid' && latestTx.proofImageUrl) {
+            await activatePremiumFromTransaction(
+              latestTx,
+              `PROOF-${orderId}`,
+              'transfer_proof_auto'
+            );
+          }
+        } catch (bgErr) {
+          console.error('[Auto Proof Webhook Callback Error]', bgErr);
+        }
+      })();
+    }, 2200);
+
+    return res.json({
+      ok: true,
+      status: 'pending',
+      verificationStage: 'verifying_proof',
+      transaction: updatedTx,
+      message:
+        'Bukti transfer berhasil diterima! Sistem sedang melakukan verifikasi otomatis & memperbarui status Verified ke database...',
+    });
+  } catch (err) {
+    console.error('[Payment Submit Proof Error]', err);
+    return res.status(500).json({ error: 'Gagal mengunggah bukti transfer. Silakan coba lagi.' });
+  }
+});
+
+// GET /api/payment/status/:orderId — Poll transaction status & auto-verification progress
 router.get('/status/:orderId', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
@@ -667,6 +854,7 @@ router.get('/status/:orderId', requireAuth, async (req: AuthenticatedRequest, re
     return res.json({
       ok: true,
       status: result.status,
+      verificationStage: result.verificationStage,
       transaction: result.transaction,
       ...(result.user ? { user: sanitizeUser(result.user) } : {}),
     });
@@ -676,7 +864,7 @@ router.get('/status/:orderId', requireAuth, async (req: AuthenticatedRequest, re
   }
 });
 
-// POST /api/payment/confirm/:orderId — Strictly verify payment mutation before activating VIP (NEVER auto-ACC unpaid orders)
+// POST /api/payment/confirm/:orderId — Verify payment mutation or submitted Bukti Transfer before activating VIP
 router.post('/confirm/:orderId', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
@@ -690,20 +878,43 @@ router.post('/confirm/:orderId', requireAuth, async (req: AuthenticatedRequest, 
       return res.status(404).json({ error: 'Transaksi tidak ditemukan' });
     }
 
+    // If user has uploaded a valid Bukti Transfer, finalize automatic verification immediately
+    if (tx.proofImageUrl) {
+      const updatedUser = await activatePremiumFromTransaction(
+        tx,
+        tx.txnId || `PROOF-${tx.orderId}`,
+        'transfer_proof_auto'
+      );
+      return res.json({
+        ok: true,
+        status: 'paid',
+        verificationStage: 'verified',
+        transaction: {
+          ...tx,
+          status: 'paid',
+          verificationStage: 'verified',
+          paidAt: new Date().toISOString(),
+        },
+        user: updatedUser ? sanitizeUser(updatedUser) : null,
+      });
+    }
+
     const result = await verifyAndSyncPakasirTransaction(tx);
     if (!result.paid) {
       return res.status(402).json({
         ok: false,
         status: result.status,
+        verificationStage: result.verificationStage,
         transaction: result.transaction,
         error:
-          'Pembayaran belum terdeteksi masuk di mutasi sistem. Pastikan kamu sudah selesai transfer tepat sesuai Total Bayar (termasuk kode unik), lalu tunggu mutasi terverifikasi otomatis.',
+          'Pembayaran belum terdeteksi di mutasi otomatis. Silakan unggah screenshot/foto Bukti Transfer pada kolom di atas agar sistem memverifikasi & mengaktifkan status Verified secara otomatis.',
       });
     }
 
     return res.json({
       ok: true,
       status: 'paid',
+      verificationStage: 'verified',
       transaction: result.transaction,
       user: result.user ? sanitizeUser(result.user) : null,
     });

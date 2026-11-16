@@ -1163,10 +1163,11 @@ function mapGlobalAniListCard(g: any) {
     rating: g.rating || deterministicScore(g.id),
     episodeLabel: g.episodeLabel || 'Ongoing',
     isNew: Boolean(g.isNew),
+    genres: Array.isArray(g.genres) ? g.genres : [],
   };
 }
 
-function mapDonghuaCatalogCard(d: any, fallbackLabel = 'Donghua') {
+function mapDonghuaCatalogCard(d: any, fallbackLabel = 'Donghua', extraGenres: string[] = []) {
   const { cleanSeriesTitle: t, episodeLabel } = parseSeriesAndEpisode(
     d.title || '',
     d.current_episode || d.type || fallbackLabel
@@ -1175,6 +1176,12 @@ function mapDonghuaCatalogCard(d: any, fallbackLabel = 'Donghua') {
   rememberPoster(d.slug, rawPoster);
   rememberPoster(t, rawPoster);
   const resolvedPoster = rawPoster || lookupPoster(d.slug, t);
+  const rawGenres = Array.isArray(d.genres)
+    ? cleanGenreList(d.genres, [])
+    : Array.isArray(d.genreList)
+    ? cleanGenreList(d.genreList, [])
+    : [];
+  const mergedGenres = Array.from(new Set([...rawGenres, ...extraGenres].filter(Boolean)));
   return {
     id: d.slug,
     type: 'donghua' as const,
@@ -1184,10 +1191,11 @@ function mapDonghuaCatalogCard(d: any, fallbackLabel = 'Donghua') {
     rating: deterministicScore(d.slug || t || 'dh'),
     episodeLabel,
     isNew: !String(d.status || '').toLowerCase().includes('comp'),
+    genres: mergedGenres,
   };
 }
 
-function mapAnimeCatalogCard(a: any, defaultStatus = 'Ongoing') {
+function mapAnimeCatalogCard(a: any, defaultStatus = 'Ongoing', extraGenres: string[] = []) {
   const status = a.status || defaultStatus;
   const isCompleted = String(status).toLowerCase().includes('comp') || Boolean(a.score);
   const rawEpLabel = a.episodes
@@ -1200,6 +1208,12 @@ function mapAnimeCatalogCard(a: any, defaultStatus = 'Ongoing') {
   rememberPoster(a.animeId, rawPoster);
   rememberPoster(t, rawPoster);
   const resolvedPoster = rawPoster || lookupPoster(a.animeId, t);
+  const rawGenres = Array.isArray(a.genres)
+    ? cleanGenreList(a.genres, [])
+    : Array.isArray(a.genreList)
+    ? cleanGenreList(a.genreList, [])
+    : [];
+  const mergedGenres = Array.from(new Set([...rawGenres, ...extraGenres].filter(Boolean)));
   return {
     id: a.animeId,
     type: 'anime' as const,
@@ -1209,6 +1223,7 @@ function mapAnimeCatalogCard(a: any, defaultStatus = 'Ongoing') {
     rating: a.score || deterministicScore(a.animeId || t || 'an'),
     episodeLabel,
     isNew: !isCompleted,
+    genres: mergedGenres,
   };
 }
 
@@ -1226,6 +1241,20 @@ function getGuaranteedCloudBackup(seed: string): string {
   return GUARANTEED_CLOUD_STREAMS[Math.abs(h) % GUARANTEED_CLOUD_STREAMS.length];
 }
 
+function itemMatchesGenreSlugs(item: any, genreSlugs: string[]): boolean {
+  if (genreSlugs.length === 0) return true;
+  const itemGenres: string[] = Array.isArray(item.genres)
+    ? item.genres.map((g: string) => String(g || '').toLowerCase())
+    : [];
+  if (itemGenres.length === 0) return true;
+  return genreSlugs.some((slug) => {
+    const clean = slug.replace(/-/g, ' ').toLowerCase();
+    return itemGenres.some(
+      (ig) => ig.includes(clean) || clean.includes(ig) || ig.replace(/\s+/g, '-') === slug
+    );
+  });
+}
+
 // GET /api/stream/catalog
 router.get('/catalog', async (req, res) => {
   try {
@@ -1238,6 +1267,19 @@ router.get('/catalog', async (req, res) => {
       genre === 'donghua' || genre === 'anime' || genre === 'movie' || genre === 'completed'
         ? genre
         : type;
+
+    const genreSlugs = genre
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(
+        (s) =>
+          s &&
+          s !== 'all' &&
+          s !== 'donghua' &&
+          s !== 'anime' &&
+          s !== 'movie' &&
+          s !== 'completed'
+      );
 
     if (q) {
       const normalizedQ = normalizeSearchQuery(q);
@@ -1294,40 +1336,48 @@ router.get('/catalog', async (req, res) => {
         }
       }
 
-      const unique = await enrichMissingPosters(dedupeCatalogItems(results));
+      let unique = await enrichMissingPosters(dedupeCatalogItems(results));
+      if (genreSlugs.length > 0) {
+        const filteredByGenre = unique.filter((item) => itemMatchesGenreSlugs(item, genreSlugs));
+        if (filteredByGenre.length > 0) {
+          unique = filteredByGenre;
+        }
+      }
       unique.sort(
         (a, b) => scoreSearchRelevance(b, normalizedQ, q) - scoreSearchRelevance(a, normalizedQ, q)
       );
       return res.json({ ok: true, items: unique, hasMore: false });
     }
 
-    if (
-      genre &&
-      genre !== 'all' &&
-      genre !== 'donghua' &&
-      genre !== 'anime' &&
-      genre !== 'movie' &&
-      genre !== 'completed'
-    ) {
+    if (genreSlugs.length > 0) {
+      const primaryGenre = genreSlugs[0];
+      const extraGenreLabels = genreSlugs.map((g) =>
+        g
+          .split('-')
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(' ')
+      );
       const p1 = (page - 1) * 2 + 1;
       const p2 = p1 + 1;
       const [animeGenre1, animeGenre2, donghuaGenre1, donghuaGenre2, globalGenre] =
         await Promise.allSettled([
           (async () => {
-            const s = await fetchSankaOrNull<any>(`/genre/${encodeURIComponent(genre)}?page=${p1}`);
+            const s = await fetchSankaOrNull<any>(
+              `/genre/${encodeURIComponent(primaryGenre)}?page=${p1}`
+            );
             if (s?.data?.animeList?.length) return s.data.animeList;
-            return await scrapeOtakudesuCatalog(p1, genre);
+            return await scrapeOtakudesuCatalog(p1, primaryGenre);
           })(),
-          scrapeOtakudesuCatalog(p2, genre),
+          scrapeOtakudesuCatalog(p2, primaryGenre),
           (async () => {
             const s = await fetchSankaOrNull<any>(
-              `/donghua/genres/${encodeURIComponent(genre)}/${p1}`
+              `/donghua/genres/${encodeURIComponent(primaryGenre)}/${p1}`
             );
             if (s?.data?.length) return s.data;
-            return await scrapeDonghiveCatalog(p1, undefined, genre);
+            return await scrapeDonghiveCatalog(p1, undefined, primaryGenre);
           })(),
-          scrapeDonghiveCatalog(p2, undefined, genre),
-          browseGlobalAniList(page, type, genre),
+          scrapeDonghiveCatalog(p2, undefined, primaryGenre),
+          browseGlobalAniList(page, type, genreSlugs.join(',')),
         ]);
 
       const dItems = [
@@ -1335,14 +1385,14 @@ router.get('/catalog', async (req, res) => {
         ...(donghuaGenre2.status === 'fulfilled' ? donghuaGenre2.value || [] : []),
       ]
         .filter((d: any) => d?.slug)
-        .map((d: any) => mapDonghuaCatalogCard(d));
+        .map((d: any) => mapDonghuaCatalogCard(d, 'Donghua', extraGenreLabels));
 
       const aItems = [
         ...(animeGenre1.status === 'fulfilled' ? animeGenre1.value || [] : []),
         ...(animeGenre2.status === 'fulfilled' ? animeGenre2.value || [] : []),
       ]
         .filter((a: any) => a?.animeId)
-        .map((a: any) => mapAnimeCatalogCard(a, 'Anime'));
+        .map((a: any) => mapAnimeCatalogCard(a, 'Anime', extraGenreLabels));
 
       const gItems =
         globalGenre.status === 'fulfilled'

@@ -50,6 +50,8 @@ export interface IUser {
   unlockedStreakFrames?: string[];
   dailyEpisodesWatched?: number;
   totalEpisodesWatched?: number;
+  totalWatchMinutes?: number;
+  totalCommentsCount?: number;
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
   episodeBookmarks: EpisodeBookmarkItem[];
@@ -64,7 +66,10 @@ export interface IUser {
   updatedAt?: Date;
 }
 
-export type PublicUser = Omit<IUser, 'passwordHash'>;
+export type PublicUser = Omit<IUser, 'passwordHash'> & {
+  isOnline?: boolean;
+  dbSyncedAt?: string;
+};
 
 export interface IUserDocument extends IUser, Document {}
 
@@ -150,6 +155,8 @@ const UserSchema = new Schema<IUserDocument>(
     unlockedStreakFrames: { type: [String], default: [] },
     dailyEpisodesWatched: { type: Number, default: 0, min: 0 },
     totalEpisodesWatched: { type: Number, default: 0, min: 0 },
+    totalWatchMinutes: { type: Number, default: 0, min: 0 },
+    totalCommentsCount: { type: Number, default: 0, min: 0 },
     watchHistory: { type: [WatchHistorySchema], default: [] },
     bookmarks: { type: [BookmarkSchema], default: [] },
     episodeBookmarks: { type: [EpisodeBookmarkSchema], default: [] },

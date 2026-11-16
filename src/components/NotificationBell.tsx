@@ -18,6 +18,13 @@ import { resolveFallbackPosterUrl } from './MediaCard';
 import type { MediaCardItem, UserNotificationItem, UserNotificationType } from '../types';
 import { useAppLanguage } from '../utils/language';
 import { playSoundEffect } from '../utils/soundEffects';
+import {
+  FAVORITE_BOOKMARKS_CHANGED_EVENT,
+  markAllFirestoreEpisodeAlertsAsRead,
+  markFirestoreEpisodeAlertAsRead,
+  subscribeToFirestoreEpisodeAlerts,
+  syncFavoriteEpisodesWithFirestore,
+} from '../utils/firestoreEpisodeAlerts';
 
 const STREAM_SEEN_KEY = 'zonestream_seen_stream_notifs_v3';
 const STREAM_INIT_KEY = 'zonestream_seen_stream_init_v3';
@@ -126,7 +133,7 @@ export function NotificationBell({
   compact?: boolean;
   className?: string;
 }) {
-  const { user } = useAuth();
+  const { user, getLocalBookmarks } = useAuth();
   const { lang } = useAppLanguage();
   const navigate = useNavigate();
   const isEn = lang === 'en';
@@ -135,6 +142,8 @@ export function NotificationBell({
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'activity' | 'releases'>('activity');
   const [notifications, setNotifications] = useState<UserNotificationItem[]>([]);
+  const [firestoreAlerts, setFirestoreAlerts] = useState<UserNotificationItem[]>([]);
+  const [liveEpisodeToast, setLiveEpisodeToast] = useState<UserNotificationItem | null>(null);
   const [unreadActivityCount, setUnreadActivityCount] = useState(0);
   const [latestReleases, setLatestReleases] = useState<MediaCardItem[]>(() => sharedLatestEpisodes);
   const [seenReleaseIds, setSeenReleaseIds] = useState<string[]>(() => {
@@ -207,6 +216,58 @@ export function NotificationBell({
     [loadPersonalNotifications, loadStreamReleases]
   );
 
+  // Subscribe to Firebase Firestore real-time favorite episode alerts (`/users/{uid}/episode_alerts`)
+  useEffect(() => {
+    const unsub = subscribeToFirestoreEpisodeAlerts(isEn, (incomingFsAlerts) => {
+      setFirestoreAlerts(incomingFsAlerts);
+    });
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [user?.uid, isEn]);
+
+  // Sync favorited anime/donghua bookmarks with newly uploaded episodes in Firebase Firestore
+  const runFirestoreFavoriteSync = useCallback(async () => {
+    const bookmarks = getLocalBookmarks();
+    if (!bookmarks.length || !latestReleases.length) return;
+    try {
+      const { allAlerts, newlyUploadedAlerts } = await syncFavoriteEpisodesWithFirestore({
+        user,
+        bookmarks,
+        latestEpisodes: latestReleases,
+        isEn,
+      });
+      setFirestoreAlerts((prev) => (prev.length >= allAlerts.length ? prev : allAlerts));
+      if (newlyUploadedAlerts.length > 0 && !compact) {
+        playSoundEffect('notification');
+        setLiveEpisodeToast(newlyUploadedAlerts[0]);
+      }
+    } catch {
+      // Ignore transient Firestore sync errors
+    }
+  }, [user, getLocalBookmarks, latestReleases, isEn, compact]);
+
+  useEffect(() => {
+    void runFirestoreFavoriteSync();
+  }, [runFirestoreFavoriteSync, user?.bookmarks?.length]);
+
+  useEffect(() => {
+    const onBookmarksChanged = () => {
+      void runFirestoreFavoriteSync();
+      void loadPersonalNotifications();
+    };
+    window.addEventListener(FAVORITE_BOOKMARKS_CHANGED_EVENT, onBookmarksChanged);
+    return () => {
+      window.removeEventListener(FAVORITE_BOOKMARKS_CHANGED_EVENT, onBookmarksChanged);
+    };
+  }, [runFirestoreFavoriteSync, loadPersonalNotifications]);
+
+  useEffect(() => {
+    if (!liveEpisodeToast) return;
+    const t = setTimeout(() => setLiveEpisodeToast(null), 7000);
+    return () => clearTimeout(t);
+  }, [liveEpisodeToast]);
+
   // Initial sync & live background polling
   useEffect(() => {
     loadStreamReleases(false);
@@ -214,7 +275,8 @@ export function NotificationBell({
 
     const interval = setInterval(() => {
       loadPersonalNotifications();
-    }, 12_000);
+      loadStreamReleases(true);
+    }, 15_000);
 
     const onFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -261,7 +323,31 @@ export function NotificationBell({
     return releaseItems.filter((item) => !seen.has(item.notifKey)).length;
   }, [releaseItems, seenReleaseIds]);
 
-  const totalUnread = unreadActivityCount + unreadReleaseCount;
+  const mergedNotifications = useMemo(() => {
+    const byLink = new Map<string, UserNotificationItem>();
+    for (const fsItem of firestoreAlerts) {
+      byLink.set(fsItem.link || fsItem._id, fsItem);
+    }
+    for (const item of notifications) {
+      const key = item.type === 'favorite_episode' ? item.link || item._id : item._id;
+      if (!byLink.has(key)) {
+        byLink.set(key, item);
+      } else if (item.isRead) {
+        const existing = byLink.get(key)!;
+        byLink.set(key, { ...existing, isRead: true });
+      }
+    }
+    return Array.from(byLink.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [firestoreAlerts, notifications]);
+
+  const unreadMergedActivityCount = useMemo(
+    () => mergedNotifications.filter((n) => !n.isRead).length,
+    [mergedNotifications]
+  );
+
+  const totalUnread = Math.max(unreadActivityCount, unreadMergedActivityCount) + unreadReleaseCount;
 
   const markReleasesAsRead = useCallback(
     (keysToMark?: string[]) => {
@@ -282,11 +368,15 @@ export function NotificationBell({
   const handleMarkSingleRead = async (item: UserNotificationItem) => {
     if (!item.isRead) {
       setNotifications((prev) =>
-        prev.map((n) => (n._id === item._id ? { ...n, isRead: true } : n))
+        prev.map((n) => (n._id === item._id || n.link === item.link ? { ...n, isRead: true } : n))
+      );
+      setFirestoreAlerts((prev) =>
+        prev.map((n) => (n._id === item._id || n.link === item.link ? { ...n, isRead: true } : n))
       );
       setUnreadActivityCount((c) => Math.max(0, c - 1));
+      void markFirestoreEpisodeAlertAsRead(user?.uid || 'guest', item._id).catch(() => {});
       const token = getSessionToken();
-      if (token) {
+      if (token && !item._id.startsWith('fs_')) {
         fetch(`/api/user/notifications/${encodeURIComponent(item._id)}/read`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
@@ -299,7 +389,9 @@ export function NotificationBell({
 
   const handleMarkAllRead = async () => {
     markReleasesAsRead();
-    if (user && unreadActivityCount > 0) {
+    setFirestoreAlerts((prev) => prev.map((n) => ({ ...n, isRead: true })));
+    void markAllFirestoreEpisodeAlertsAsRead(user?.uid || 'guest').catch(() => {});
+    if (user && (unreadActivityCount > 0 || unreadMergedActivityCount > 0)) {
       setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
       setUnreadActivityCount(0);
       const token = getSessionToken();
@@ -474,7 +566,7 @@ export function NotificationBell({
           {/* Notification Items List */}
           <div className="max-h-80 overflow-y-auto p-2 space-y-1.5">
             {activeTab === 'activity' ? (
-              !user ? (
+              !user && mergedNotifications.length === 0 ? (
                 <div className="py-6 px-4 text-center">
                   <div className="w-10 h-10 rounded-xl bg-[#E84A18]/15 border border-[#E84A18]/30 text-[#E84A18] flex items-center justify-center mx-auto mb-2.5">
                     <Bell className="w-5 h-5" />
@@ -504,7 +596,7 @@ export function NotificationBell({
                     </button>
                   </div>
                 </div>
-              ) : loading && notifications.length === 0 ? (
+              ) : loading && mergedNotifications.length === 0 ? (
                 <div className="space-y-2 p-1">
                   {[0, 1, 2].map((i) => (
                     <div
@@ -513,7 +605,7 @@ export function NotificationBell({
                     />
                   ))}
                 </div>
-              ) : notifications.length === 0 ? (
+              ) : mergedNotifications.length === 0 ? (
                 <div className="py-6 px-4 text-center">
                   <p className="text-xs font-bold text-slate-800 dark:text-gray-100">
                     {isEn ? 'No personal notifications yet' : 'Belum ada notifikasi pribadi'}
@@ -535,7 +627,7 @@ export function NotificationBell({
                   </button>
                 </div>
               ) : (
-                notifications.map((item) => {
+                mergedNotifications.map((item) => {
                   const { Icon, bg } = getNotificationIcon(item.type);
                   const thumb = item.poster || item.actorPhoto;
                   return (
@@ -582,9 +674,16 @@ export function NotificationBell({
                         <p className="text-[11px] text-slate-600 dark:text-gray-300 mt-0.5 line-clamp-2 leading-snug">
                           {item.message}
                         </p>
-                        <p className="text-[10px] text-slate-400 dark:text-gray-500 mt-1 font-medium">
-                          {formatRelativeTime(item.createdAt, isEn)}
-                        </p>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <p className="text-[10px] text-slate-400 dark:text-gray-500 font-medium">
+                            {formatRelativeTime(item.createdAt, isEn)}
+                          </p>
+                          {item.type === 'favorite_episode' && (
+                            <span className="px-1.5 py-0.2 rounded bg-[#E84A18]/15 text-[#E84A18] text-[9px] font-bold">
+                              Favorit
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </button>
                   );
@@ -633,6 +732,52 @@ export function NotificationBell({
                 </Link>
               ))
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Real-Time Favorite Anime Episode Upload Toast Alert */}
+      {liveEpisodeToast && !compact && (
+        <div className="fixed bottom-20 sm:bottom-6 right-4 z-[90] w-[min(calc(100vw-2rem),22rem)] rounded-2xl bg-white dark:bg-[#141722] border border-[#E84A18]/40 shadow-2xl p-3 flex items-start gap-3">
+          {liveEpisodeToast.poster ? (
+            <img
+              src={resolveFallbackPosterUrl(liveEpisodeToast.poster, 0) || liveEpisodeToast.poster}
+              alt=""
+              className="w-11 h-14 rounded-xl object-cover shrink-0 bg-slate-200 dark:bg-[#1F222C]"
+            />
+          ) : (
+            <span className="w-10 h-10 rounded-xl bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center shrink-0">
+              <Tv className="w-5 h-5" />
+            </span>
+          )}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#E84A18]">
+                {isEn ? 'Favorite Anime Alert' : 'Notifikasi Anime Favorit'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLiveEpisodeToast(null)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                aria-label="Tutup"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <p className="text-xs font-bold text-slate-900 dark:text-white line-clamp-2 mt-0.5 leading-snug">
+              {liveEpisodeToast.message}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                const target = liveEpisodeToast;
+                setLiveEpisodeToast(null);
+                void handleMarkSingleRead(target);
+              }}
+              className="mt-2 px-3 py-1 rounded-lg bg-[#E84A18] hover:bg-[#d13f11] text-white text-[11px] font-bold transition-colors"
+            >
+              {isEn ? 'Watch Now' : 'Tonton Sekarang'}
+            </button>
           </div>
         </div>
       )}

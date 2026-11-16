@@ -9,6 +9,7 @@ import {
 } from '../auth.ts';
 import {
   STREAK_FRAME_TIERS,
+  connectDB,
   createMemberUser,
   findOrCreateGoogleUser,
   findUserByIdentifier,
@@ -19,11 +20,13 @@ import {
   saveOtpCode,
   setAllUsersBanStatus,
   setUserBanStatus,
+  setUserOnlinePresence,
   touchUserLastActive,
   touchUserLogin,
   updateUserByUid,
   verifyAndConsumeOtpCode,
 } from '../db.ts';
+import { CommentModel } from '../models/Comment.ts';
 import type { BookmarkItem, WatchHistoryItem } from '../models/User.ts';
 import {
   getUserNotifications,
@@ -485,11 +488,49 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
       }));
       if (updated) user = updated;
     }
-    void touchUserLastActive(user.uid);
+    const preserveOffline = req.query.preserveOffline === '1';
+    if (!preserveOffline) {
+      user.lastActiveAt = new Date();
+      void touchUserLastActive(user.uid);
+    }
+    try {
+      const mongoOk = await connectDB();
+      if (mongoOk) {
+        const dbCommentCount = await CommentModel.countDocuments({ uid: user.uid });
+        if (dbCommentCount > (user.totalCommentsCount || 0)) {
+          const synced = await updateUserByUid(user.uid, (cur) => ({
+            ...cur,
+            totalCommentsCount: Math.max(cur.totalCommentsCount || 0, dbCommentCount),
+          }));
+          if (synced) user = synced;
+        }
+      }
+    } catch {
+      // Keep current totalCommentsCount on transient DB error
+    }
     return res.json({ ok: true, user: sanitizeUser(user) });
   } catch (err) {
     console.error('[User Me Error]', err);
     return res.status(500).json({ error: 'Gagal memuat profil' });
+  }
+});
+
+// Sync real-time connection presence (Online / Offline) with database
+router.post('/presence', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const online = Boolean(req.body?.online ?? true);
+    const updated = await setUserOnlinePresence(req.authUser!.uid, online);
+    if (!updated) {
+      return res.status(404).json({ error: 'Akun tidak ditemukan' });
+    }
+    return res.json({
+      ok: true,
+      isOnline: online,
+      user: sanitizeUser(updated),
+    });
+  } catch (err) {
+    console.error('[User Presence Error]', err);
+    return res.status(500).json({ error: 'Gagal menyinkronkan status koneksi' });
   }
 });
 
@@ -831,6 +872,10 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
         unlockedStreakFrames: Array.from(nextUnlocked),
         dailyEpisodesWatched: nextDailyCount,
         totalEpisodesWatched: (current.totalEpisodesWatched || 0) + 1,
+        totalWatchMinutes: Math.max(
+          (current.totalWatchMinutes || 0) + 5,
+          ((current.totalEpisodesWatched || 0) + 1) * 18
+        ),
         charisma: current.role === 'founder' ? Math.max(9999, current.charisma ?? 9999) : (current.charisma ?? 0),
         watchHistory: [entry, ...filtered].slice(0, 30),
       };
@@ -913,6 +958,95 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('[History Error]', err);
     return res.status(500).json({ error: 'Gagal menyimpan history' });
+  }
+});
+
+// Record live watch duration (in minutes) & grant dynamic EXP (+15 EXP/min, +30 VIP/Founder)
+router.post('/watch-duration', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const uid = req.authUser!.uid;
+    const rawMinutes = Number(req.body?.minutes ?? 1);
+    const minutes = Math.min(10, Math.max(1, Math.round(rawMinutes || 1)));
+    const cleanTitle = String(req.body?.title || 'Anime').trim().slice(0, 60);
+
+    let expGained = 0;
+    let levelUp = false;
+    let finalLevel = 1;
+    let isDoubleExp = false;
+    let finalWatchMinutes = 0;
+
+    const updated = await updateUserByUid(uid, (current) => {
+      const hasValidPremium = Boolean(
+        current.role === 'founder' ||
+          (current.isPremium &&
+            (!current.premiumExpiryDate ||
+              new Date(current.premiumExpiryDate).getTime() >= Date.now()))
+      );
+      const multiplier = hasValidPremium ? 2 : 1;
+      isDoubleExp = multiplier === 2;
+
+      expGained = minutes * 15 * multiplier;
+      let nextExp = (current.exp || 0) + expGained;
+      let nextLevel = current.level || 1;
+
+      if (current.role === 'founder') {
+        nextLevel = 999999;
+        nextExp = 0;
+        levelUp = false;
+      } else {
+        while (nextExp >= getExpNeededForLevel(nextLevel)) {
+          nextExp -= getExpNeededForLevel(nextLevel);
+          nextLevel += 1;
+          levelUp = true;
+        }
+      }
+
+      finalLevel = nextLevel;
+      const baseMinutes = Math.max(
+        current.totalWatchMinutes || 0,
+        (current.totalEpisodesWatched || current.watchHistory?.length || 0) * 18
+      );
+      finalWatchMinutes = baseMinutes + minutes;
+
+      return {
+        ...current,
+        level: nextLevel,
+        exp: nextExp,
+        totalWatchMinutes: finalWatchMinutes,
+      };
+    });
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Akun tidak ditemukan' });
+    }
+
+    if (levelUp) {
+      void recordClanActivity({
+        actorUid: uid,
+        actorName: updated.name,
+        actorPhoto: updated.photoUrl,
+        type: 'level_up',
+        title: `Naik ke Level ${finalLevel}`,
+        detail: `+${expGained} EXP dari durasi menonton ${cleanTitle}`,
+        expGained,
+        newLevel: finalLevel,
+        streakDay: updated.watchStreak || 1,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      expGained,
+      minutesAdded: minutes,
+      totalWatchMinutes: finalWatchMinutes,
+      levelUp,
+      newLevel: finalLevel,
+      isDoubleExp,
+      user: sanitizeUser(updated),
+    });
+  } catch (err) {
+    console.error('[Watch Duration Error]', err);
+    return res.status(500).json({ error: 'Gagal memperbarui durasi tontonan' });
   }
 });
 

@@ -157,6 +157,21 @@ export function sanitizeUser(user: IUser): PublicUser {
   }
   pub.unlockedStreakFrames = Array.from(unlockedSet);
 
+  const episodesCount = Math.max(
+    Number(pub.totalEpisodesWatched || 0),
+    Array.isArray(pub.watchHistory) ? pub.watchHistory.length : 0
+  );
+  pub.totalEpisodesWatched = episodesCount;
+  pub.totalWatchMinutes = Math.max(
+    Number(pub.totalWatchMinutes || 0),
+    episodesCount * 18
+  );
+  pub.totalCommentsCount = Math.max(0, Number(pub.totalCommentsCount || 0));
+
+  const lastActiveMs = pub.lastActiveAt ? new Date(pub.lastActiveAt).getTime() : 0;
+  const computedOnline = lastActiveMs > 0 && Date.now() - lastActiveMs < 3 * 60 * 1000;
+  const dbSyncedAt = new Date().toISOString();
+
   if (
     pub.role !== 'founder' &&
     !isWhitelisted &&
@@ -167,9 +182,15 @@ export function sanitizeUser(user: IUser): PublicUser {
     return {
       ...pub,
       isPremium: false,
+      isOnline: computedOnline,
+      dbSyncedAt,
     };
   }
-  return pub;
+  return {
+    ...pub,
+    isOnline: computedOnline,
+    dbSyncedAt,
+  };
 }
 
 export async function connectDB(): Promise<boolean> {
@@ -730,6 +751,15 @@ export async function touchUserLastActive(uid: string): Promise<void> {
   }
 }
 
+export async function setUserOnlinePresence(uid: string, online: boolean): Promise<IUser | null> {
+  if (!uid) return null;
+  const targetDate = online ? new Date() : new Date(Date.now() - 10 * 60 * 1000);
+  return updateUserByUid(uid, (cur) => ({
+    ...cur,
+    lastActiveAt: targetDate,
+  }));
+}
+
 export async function touchUserLogin(uid: string): Promise<void> {
   if (!uid) return;
   const now = new Date();
@@ -872,6 +902,8 @@ export function toCommunityUserSummary(user: IUser) {
     countryCode: (pub.countryCode || 'ID').toUpperCase(),
     watchStreak: pub.watchStreak || 0,
     totalEpisodesWatched: pub.totalEpisodesWatched || 0,
+    totalWatchMinutes: pub.totalWatchMinutes || 0,
+    totalCommentsCount: pub.totalCommentsCount || 0,
     bookmarksCount: Array.isArray(pub.bookmarks) ? pub.bookmarks.length : 0,
     lastActiveAt: pub.lastActiveAt ? new Date(pub.lastActiveAt).toISOString() : '',
     isOnline,

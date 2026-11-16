@@ -42,12 +42,88 @@
         }
       },
       "required": ["uid", "email", "name", "level", "exp", "isPremium"]
+    },
+    "FavoriteEpisodeAlert": {
+      "title": "FavoriteEpisodeAlert",
+      "description": "Real-time notification alert when a new episode of a favorited anime or donghua is uploaded",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "seriesId": {
+          "type": "string",
+          "description": "Anime or Donghua series slug/ID",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "seriesType": {
+          "type": "string",
+          "enum": ["anime", "donghua"],
+          "maxLength": 16
+        },
+        "seriesTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "episodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "episodeLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "poster": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "link": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "isRead": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "seriesId",
+        "seriesType",
+        "seriesTitle",
+        "episodeId",
+        "episodeLabel",
+        "poster",
+        "link",
+        "isRead",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Private user profile document"
+    },
+    "/users/{userId}/episode_alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/FavoriteEpisodeAlert" },
+      "description": "Real-time favorite anime episode upload notifications for a specific user"
     }
   }
 }

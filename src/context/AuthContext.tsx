@@ -1,5 +1,10 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
-import { signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
+import {
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signOut as firebaseSignOut,
+} from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
 import { playSoundEffect } from '../utils/soundEffects';
 import {
@@ -74,6 +79,11 @@ interface AuthContextValue {
   }) => Promise<boolean>;
   toggleFounderAdPreview: () => Promise<boolean>;
   recordWatchHistory: (item: Omit<WatchHistoryItem, 'updatedAt'>) => Promise<WatchHistoryReward>;
+  recordWatchDuration: (
+    minutes: number,
+    meta?: { title?: string }
+  ) => Promise<WatchHistoryReward>;
+  applyUserSnapshot: (nextUser: UserProfile) => void;
   toggleBookmark: (item: Omit<BookmarkItem, 'addedAt'>) => Promise<boolean>;
   toggleEpisodeBookmark: (item: Omit<EpisodeBookmarkItem, 'addedAt'>) => Promise<boolean>;
   getLocalHistory: () => WatchHistoryItem[];
@@ -388,7 +398,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      const resp = await fetch('/api/user/me', {
+      const manualOffline = localStorage.getItem('zonestream_manual_offline_v1') === 'true';
+      const meUrl = manualOffline ? '/api/user/me?preserveOffline=1' : '/api/user/me';
+      const resp = await fetch(meUrl, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!resp.ok) {
@@ -425,9 +437,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [setUser]);
 
+  const exchangeFirebaseGoogleIdToken = useCallback(
+    async (idToken: string): Promise<boolean> => {
+      const resp = await fetch('/api/user/firebase-google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      });
+      const json = await resp.json();
+      if (!resp.ok) {
+        setAuthError(json.error || 'Gagal masuk dengan akun Google');
+        return false;
+      }
+      localStorage.setItem(TOKEN_STORAGE_KEY, json.token);
+      setUser(json.user);
+      localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
+      return true;
+    },
+    [setUser]
+  );
+
   useEffect(() => {
-    loadSession();
-  }, [loadSession]);
+    let active = true;
+    void (async () => {
+      try {
+        const redirectResult = await getRedirectResult(auth);
+        if (active && redirectResult?.user) {
+          const idToken = await redirectResult.user.getIdToken();
+          await exchangeFirebaseGoogleIdToken(idToken);
+          setLoading(false);
+          return;
+        }
+      } catch (err: any) {
+        const msg = String(err?.code || err?.message || '');
+        if (msg.includes('unauthorized-domain')) {
+          setAuthError(
+            'Domain belum terdaftar di Firebase Authorized Domains (tambahkan domain ini di Firebase Console -> Authentication -> Settings).'
+          );
+        }
+      }
+      if (active) {
+        await loadSession();
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [loadSession, exchangeFirebaseGoogleIdToken]);
 
   // Real-time session heartbeat: detect ban / role / VIP changes within <= 5s across tabs & active playback
   useEffect(() => {
@@ -506,27 +562,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const loginWithGoogle = async (): Promise<boolean> => {
+    // Trigger signInWithPopup synchronously before any React state update so the browser preserves user activation
+    const popupPromise = signInWithPopup(auth, googleProvider);
     setAuthError(null);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
+      const result = await popupPromise;
       const idToken = await result.user.getIdToken();
-      const resp = await fetch('/api/user/firebase-google', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken }),
-      });
-      const json = await resp.json();
-      if (!resp.ok) {
-        setAuthError(json.error || 'Gagal masuk dengan akun Google');
-        return false;
-      }
-      localStorage.setItem(TOKEN_STORAGE_KEY, json.token);
-      setUser(json.user);
-      localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
-      return true;
+      return await exchangeFirebaseGoogleIdToken(idToken);
     } catch (err: any) {
       const msg = String(err?.code || err?.message || '');
-      if (msg.includes('popup-closed-by-user')) {
+      if (msg.includes('popup-blocked') || msg.includes('cancelled-popup-request')) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return false;
+        } catch {
+          setAuthError(
+            'Pop-up diblokir oleh browser. Izinkan pop-up untuk situs ini di ikon kanan atas address bar atau gunakan Email & Password.'
+          );
+          return false;
+        }
+      } else if (msg.includes('popup-closed-by-user')) {
         setAuthError('Popup login Google ditutup sebelum selesai.');
       } else if (msg.includes('unauthorized-domain')) {
         setAuthError(
@@ -699,6 +754,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return emptyReward;
   };
 
+  const recordWatchDuration = async (
+    minutes: number,
+    meta?: { title?: string }
+  ): Promise<WatchHistoryReward> => {
+    const emptyReward: WatchHistoryReward = {
+      expGained: 0,
+      dailyBonusGained: 0,
+      streak: user?.watchStreak || 1,
+      levelUp: false,
+      newLevel: user?.level || 1,
+      isDoubleExp: false,
+    };
+    const token = getToken();
+    if (!token) return emptyReward;
+    try {
+      const resp = await fetch('/api/user/watch-duration', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          minutes: Math.max(1, Math.round(minutes || 1)),
+          title: meta?.title || 'Anime',
+        }),
+      });
+      const json = await resp.json();
+      if (resp.ok && json.user) {
+        setUser(json.user);
+        return {
+          expGained: Number(json.expGained) || 0,
+          dailyBonusGained: 0,
+          streak: json.user.watchStreak || 1,
+          levelUp: Boolean(json.levelUp),
+          newLevel: Number(json.newLevel) || json.user.level || 1,
+          isDoubleExp: Boolean(json.isDoubleExp),
+        };
+      }
+    } catch {
+      // Ignore transient network error
+    }
+    return emptyReward;
+  };
+
+  const applyUserSnapshot = useCallback(
+    (nextUser: UserProfile) => {
+      if (nextUser && nextUser.uid) {
+        setUser(nextUser);
+      }
+    },
+    [setUser]
+  );
+
   const toggleBookmark = async (item: Omit<BookmarkItem, 'addedAt'>): Promise<boolean> => {
     const token = getToken();
     if (token) {
@@ -714,6 +822,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const json = await resp.json();
         if (resp.ok && json.user) {
           setUser(json.user);
+          window.dispatchEvent(new CustomEvent('zonestream:bookmarks-changed'));
           return Boolean(json.bookmarked);
         }
       } catch {
@@ -730,6 +839,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const next = { ...guestData, bookmarks: nextBookmarks };
     setGuestData(next);
     writeGuestData(next);
+    window.dispatchEvent(new CustomEvent('zonestream:bookmarks-changed'));
     return !exists;
   };
 
@@ -791,6 +901,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         updateProfile,
         toggleFounderAdPreview,
         recordWatchHistory,
+        recordWatchDuration,
+        applyUserSnapshot,
         toggleBookmark,
         toggleEpisodeBookmark,
         getLocalHistory,

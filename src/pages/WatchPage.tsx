@@ -70,6 +70,7 @@ export function WatchPage() {
     isPremium,
     loading: authLoading,
     recordWatchHistory,
+    recordWatchDuration,
     toggleEpisodeBookmark,
     getLocalEpisodeBookmarks,
   } = useAuth();
@@ -202,6 +203,28 @@ export function WatchPage() {
     }).then((res) => {
       if (res.expGained > 0) setReward(res);
     });
+
+    const durationInterval = window.setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      void recordWatchDuration(1, { title: finalSeriesTitle }).then((durRes) => {
+        if (durRes.expGained > 0) {
+          setReward((prev) => ({
+            expGained: (prev?.expGained || 0) + durRes.expGained,
+            dailyBonusGained: prev?.dailyBonusGained || 0,
+            streak: durRes.streak || prev?.streak || 1,
+            longestStreak: prev?.longestStreak,
+            levelUp: Boolean(prev?.levelUp || durRes.levelUp),
+            newLevel: durRes.newLevel || prev?.newLevel || 1,
+            isDoubleExp: Boolean(prev?.isDoubleExp || durRes.isDoubleExp),
+            newlyUnlockedFrame: prev?.newlyUnlockedFrame || null,
+          }));
+        }
+      });
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(durationInterval);
+    };
   }, [adUnlocked, stream?.episodeId]);
 
   const handleBack = () => {

@@ -58,9 +58,15 @@ export interface UserProfile {
   unlockedStreakFrames?: string[];
   dailyEpisodesWatched?: number;
   totalEpisodesWatched?: number;
+  totalWatchMinutes?: number;
+  totalCommentsCount?: number;
   charisma?: number;
   isBanned?: boolean;
   banReason?: string;
+  isOnline?: boolean;
+  lastActiveAt?: string;
+  lastLoginAt?: string;
+  dbSyncedAt?: string;
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
   episodeBookmarks: EpisodeBookmarkItem[];
@@ -128,6 +134,12 @@ export interface PaymentTransaction {
   paymentNumber: string;
   paymentUrl: string;
   status: 'pending' | 'paid' | 'expired' | 'failed';
+  verificationStage?: 'awaiting_payment' | 'verifying_proof' | 'verified' | 'rejected';
+  verificationMethod?: 'pakasir_webhook' | 'pakasir_polling' | 'transfer_proof_auto';
+  proofImageUrl?: string;
+  proofStoragePath?: string;
+  proofSenderRef?: string;
+  proofSubmittedAt?: string;
   expiredAt?: string;
   paidAt?: string | null;
 }
@@ -183,6 +195,7 @@ export interface MediaCardItem {
   rating: string;
   isNew?: boolean;
   releaseDate?: string;
+  genres?: string[];
 }
 
 export interface ScheduleDay {
@@ -265,6 +278,8 @@ export interface PublicCommunityUser {
   countryCode?: string;
   watchStreak: number;
   totalEpisodesWatched: number;
+  totalWatchMinutes?: number;
+  totalCommentsCount?: number;
   bookmarksCount: number;
   charisma?: number;
   clan?: string;
