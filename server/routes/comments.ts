@@ -4,8 +4,11 @@ import { connectDB, findUserByUid, sanitizeUser, updateUserByUid } from '../db.t
 import { CommentModel } from '../models/Comment.ts';
 import { UserModel } from '../models/User.ts';
 import { createNotification } from '../notifications.ts';
-
-const getExpNeededForLevel = (level: number) => Math.max(100, level * 200);
+import {
+  applyExpAndLevelRewards,
+  recordCoinLedgerEntry,
+  tryClaimCommentExpWindow,
+} from '../coins.ts';
 
 const router = Router();
 
@@ -254,37 +257,43 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       }
     };
 
-    // Award Comment EXP (+25 base, +50 for VIP/Founder) & increment totalCommentsCount
+    // Award Comment EXP (+25 base, +50 for VIP/Founder) with anti-spam guard & Level-Up Coin rewards
     let expGained = 0;
     let levelUp = false;
+    let coinsGained = 0;
+    let finalCoins = user.coins || 0;
     let finalLevel = user.level || 1;
     let finalCommentsCount = (user.totalCommentsCount || 0) + 1;
+    const canEarnCommentExp = tryClaimCommentExpWindow(user.uid, cleanText.toLowerCase());
 
     const updatedUser = await updateUserByUid(user.uid, (current) => {
       const multiplier = hasVipPrivilege ? 2 : 1;
-      expGained = 25 * multiplier;
-      let nextExp = (current.exp || 0) + expGained;
-      let nextLevel = current.level || 1;
-      if (current.role === 'founder') {
-        nextLevel = 999999;
-        nextExp = 0;
-        levelUp = false;
-      } else {
-        while (nextExp >= getExpNeededForLevel(nextLevel)) {
-          nextExp -= getExpNeededForLevel(nextLevel);
-          nextLevel += 1;
-          levelUp = true;
-        }
-      }
-      finalLevel = nextLevel;
+      expGained = canEarnCommentExp ? 25 * multiplier : 0;
+      const expRes = applyExpAndLevelRewards(current, expGained);
+      levelUp = expRes.levelUp;
+      coinsGained = expRes.coinsGained;
+      finalCoins = expRes.nextCoins;
+      finalLevel = expRes.nextLevel;
       finalCommentsCount = Math.max(1, (current.totalCommentsCount || 0) + 1);
       return {
         ...current,
-        level: nextLevel,
-        exp: nextExp,
+        level: expRes.nextLevel,
+        exp: expRes.nextExp,
+        coins: expRes.nextCoins,
+        totalCoinsEarned: expRes.nextTotalCoinsEarned,
         totalCommentsCount: finalCommentsCount,
       };
     });
+
+    if (coinsGained > 0) {
+      void recordCoinLedgerEntry({
+        uid: user.uid,
+        type: 'level_up',
+        amount: coinsGained,
+        balanceAfter: finalCoins,
+        note: `Naik ke Level ${finalLevel} dari aktivitas komentar`,
+      });
+    }
 
     payload.authorLevel = finalLevel;
 
@@ -292,6 +301,8 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       expGained,
       levelUp,
       newLevel: finalLevel,
+      coinsGained,
+      newCoins: finalCoins,
       totalCommentsCount: finalCommentsCount,
       isDoubleExp: hasVipPrivilege,
     };

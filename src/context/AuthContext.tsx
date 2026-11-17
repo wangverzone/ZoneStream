@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import {
+  onAuthStateChanged,
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
@@ -7,6 +8,7 @@ import {
 } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
 import { playSoundEffect } from '../utils/soundEffects';
+import { logSessionEvent } from '../utils/sessionLogger';
 import {
   acceptClanInvite,
   CLAN_INVITE_RESOLVED_EVENT,
@@ -27,8 +29,63 @@ const LEGACY_TOKEN_KEY = 'donghive_session_token_v1';
 const GUEST_STORAGE_KEY = 'zonestream_guest_profile_v1';
 const USER_CACHE_KEY = 'zonestream_user_cache_v2';
 
+function readStoredToken(): string {
+  try {
+    const primary = localStorage.getItem(TOKEN_STORAGE_KEY);
+    if (primary) return primary;
+    const legacy = localStorage.getItem(LEGACY_TOKEN_KEY);
+    if (legacy) {
+      try {
+        localStorage.setItem(TOKEN_STORAGE_KEY, legacy);
+      } catch {
+        // ignore migration write failure
+      }
+      return legacy;
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+function compactUserForStorage(u: UserProfile): UserProfile {
+  const safePhoto =
+    u.photoUrl && u.photoUrl.startsWith('data:image/') && u.photoUrl.length > 100_000
+      ? ''
+      : u.photoUrl;
+  const safeBanner =
+    u.bannerUrl && u.bannerUrl.startsWith('data:image/') && u.bannerUrl.length > 100_000
+      ? ''
+      : u.bannerUrl;
+  return {
+    ...u,
+    photoUrl: safePhoto,
+    bannerUrl: safeBanner,
+    watchHistory: Array.isArray(u.watchHistory) ? u.watchHistory.slice(0, 15) : [],
+  };
+}
+
+function writeCachedUser(u: UserProfile | null) {
+  try {
+    if (!u) {
+      localStorage.removeItem(USER_CACHE_KEY);
+    } else {
+      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(compactUserForStorage(u)));
+    }
+  } catch {
+    // Evict stale cache if localStorage quota is full so token writes never fail
+    try {
+      localStorage.removeItem(USER_CACHE_KEY);
+    } catch {
+      // Ignore storage restrictions
+    }
+  }
+}
+
 function readCachedUser(): UserProfile | null {
   try {
+    const token = readStoredToken();
+    if (!token) return null;
     const raw = localStorage.getItem(USER_CACHE_KEY);
     if (!raw) return null;
     return JSON.parse(raw) as UserProfile;
@@ -37,16 +94,62 @@ function readCachedUser(): UserProfile | null {
   }
 }
 
-function writeCachedUser(u: UserProfile | null) {
+function safePersistToken(token: string, uid?: string, source = 'auth'): boolean {
   try {
-    if (!u) {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    logSessionEvent('token_saved', {
+      uid,
+      hasJwt: true,
+      hasFirebaseUser: Boolean(auth.currentUser),
+      detail: { source },
+    });
+    return true;
+  } catch (err) {
+    // Recover from QuotaExceededError by clearing non-critical cache entries first
+    try {
       localStorage.removeItem(USER_CACHE_KEY);
-    } else {
-      localStorage.setItem(USER_CACHE_KEY, JSON.stringify(u));
+      localStorage.removeItem(LEGACY_TOKEN_KEY);
+      localStorage.setItem(TOKEN_STORAGE_KEY, token);
+      logSessionEvent('token_storage_recovered', {
+        level: 'warn',
+        uid,
+        hasJwt: true,
+        detail: { source, reason: err instanceof Error ? err.message : 'quota_exceeded' },
+      });
+      return true;
+    } catch (retryErr) {
+      logSessionEvent('token_storage_recovered', {
+        level: 'error',
+        uid,
+        hasJwt: false,
+        detail: {
+          source,
+          failed: true,
+          error: retryErr instanceof Error ? retryErr.message : String(retryErr),
+        },
+      });
+      return false;
     }
-  } catch {
-    // Ignore storage quota issues
   }
+}
+
+function clearStoredTokens(reason: string, uid?: string) {
+  try {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+    localStorage.removeItem(USER_CACHE_KEY);
+    localStorage.setItem('zonestream_is_premium', 'false');
+    localStorage.removeItem('donghive_is_premium');
+  } catch {
+    // ignore storage errors
+  }
+  logSessionEvent('token_removed', {
+    level: reason === 'explicit_logout' ? 'info' : 'warn',
+    uid,
+    hasJwt: false,
+    hasFirebaseUser: Boolean(auth.currentUser),
+    detail: { reason },
+  });
 }
 
 interface AuthContextValue {
@@ -74,6 +177,7 @@ interface AuthContextValue {
     activeBorder?: string;
     activeBadge?: string;
     profileTheme?: string;
+    profileBgColor?: string;
     statusEmoji?: string;
     newPassword?: string;
   }) => Promise<boolean>;
@@ -364,6 +468,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [lastClanInviteResult, setLastClanInviteResult] = useState<ClanInviteResolveResult | null>(null);
   const resolvingInviteRef = useRef<string | null>(null);
   const lastKnownLevelRef = useRef<{ uid: string; level: number } | null>(null);
+  const sessionEpochRef = useRef<number>(0);
+  const inFlightSessionRef = useRef<Promise<void> | null>(null);
+  const explicitLogoutRef = useRef<boolean>(false);
 
   const setUser = useCallback((next: UserProfile | null) => {
     if (next) {
@@ -385,60 +492,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     writeCachedUser(next);
   }, []);
 
-  const getToken = () =>
-    localStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || '';
-
-  const loadSession = useCallback(async () => {
-    const token = getToken();
-    if (!token) {
-      setUser(null);
-      localStorage.setItem('zonestream_is_premium', 'false');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const manualOffline = localStorage.getItem('zonestream_manual_offline_v1') === 'true';
-      const meUrl = manualOffline ? '/api/user/me?preserveOffline=1' : '/api/user/me';
-      const resp = await fetch(meUrl, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!resp.ok) {
-        let banMsg: string | null = null;
-        if (resp.status === 403) {
-          try {
-            const errJson = await resp.json();
-            if (errJson?.banned) {
-              banMsg = errJson.error || 'Akun Anda telah dibanned oleh Founder.';
-            }
-          } catch {
-            // ignore JSON parse failure
-          }
-        }
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
-        localStorage.removeItem(LEGACY_TOKEN_KEY);
-        firebaseSignOut(auth).catch(() => {});
-        setUser(null);
-        localStorage.setItem('zonestream_is_premium', 'false');
-        if (banMsg) {
-          setAuthError(banMsg);
-        }
-      } else {
-        const json = await resp.json();
-        if (json.user) {
-          setUser(json.user);
-          localStorage.setItem('zonestream_is_premium', String(Boolean(json.user.isPremium)));
-        }
-      }
-    } catch {
-      // Keep token on transient network error
-    } finally {
-      setLoading(false);
-    }
-  }, [setUser]);
+  const getToken = () => readStoredToken();
 
   const exchangeFirebaseGoogleIdToken = useCallback(
-    async (idToken: string): Promise<boolean> => {
+    async (idToken: string, source = 'google_oauth'): Promise<boolean> => {
+      const epochAtStart = sessionEpochRef.current;
       const resp = await fetch('/api/user/firebase-google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -447,29 +505,217 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const json = await resp.json();
       if (!resp.ok) {
         setAuthError(json.error || 'Gagal masuk dengan akun Google');
+        logSessionEvent('login_google_error', {
+          level: 'warn',
+          hasJwt: Boolean(readStoredToken()),
+          hasFirebaseUser: Boolean(auth.currentUser),
+          detail: { source, status: resp.status, error: json.error },
+        });
         return false;
       }
-      localStorage.setItem(TOKEN_STORAGE_KEY, json.token);
+      if (epochAtStart !== sessionEpochRef.current && explicitLogoutRef.current) {
+        return false;
+      }
+      explicitLogoutRef.current = false;
+      sessionEpochRef.current += 1;
+      safePersistToken(json.token, json.user?.uid, source);
       setUser(json.user);
-      localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
+      try {
+        localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
+      } catch {
+        // ignore
+      }
+      logSessionEvent('login_google_success', {
+        uid: json.user?.uid,
+        hasJwt: true,
+        hasFirebaseUser: Boolean(auth.currentUser),
+        detail: { source, role: json.user?.role },
+      });
       return true;
     },
     [setUser]
   );
 
+  const loadSession = useCallback(async () => {
+    if (inFlightSessionRef.current) {
+      return inFlightSessionRef.current;
+    }
+
+    const run = (async () => {
+      const epochAtStart = sessionEpochRef.current;
+      const token = readStoredToken();
+      if (!token) {
+        if (epochAtStart === sessionEpochRef.current) {
+          setUser(null);
+          try {
+            localStorage.setItem('zonestream_is_premium', 'false');
+          } catch {
+            // ignore
+          }
+          setLoading(false);
+        }
+        return;
+      }
+
+      logSessionEvent('session_restore_start', {
+        hasJwt: true,
+        hasFirebaseUser: Boolean(auth.currentUser),
+        detail: { epoch: epochAtStart },
+      });
+
+      try {
+        const manualOffline = localStorage.getItem('zonestream_manual_offline_v1') === 'true';
+        const meUrl = manualOffline ? '/api/user/me?preserveOffline=1' : '/api/user/me';
+        const resp = await fetch(meUrl, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        // Guard against stale async completion if user logged in/out while request was in flight
+        if (epochAtStart !== sessionEpochRef.current || readStoredToken() !== token) {
+          return;
+        }
+
+        if (resp.ok) {
+          const json = await resp.json();
+          if (json.user) {
+            setUser(json.user);
+            try {
+              localStorage.setItem('zonestream_is_premium', String(Boolean(json.user.isPremium)));
+            } catch {
+              // ignore
+            }
+            logSessionEvent('session_restore_ok', {
+              uid: json.user.uid,
+              hasJwt: true,
+              hasFirebaseUser: Boolean(auth.currentUser),
+            });
+          }
+          return;
+        }
+
+        // Only explicit 401 (expired/invalid JWT) or 403 banned should invalidate a stored session.
+        // Never log out on 404/429/500/502/503/504 transient errors!
+        if (resp.status === 403) {
+          let errJson: any = null;
+          try {
+            errJson = await resp.json();
+          } catch {
+            // ignore JSON parse failure
+          }
+          if (errJson?.banned) {
+            const banMsg = errJson.error || 'Akun Anda telah dibanned oleh Founder.';
+            sessionEpochRef.current += 1;
+            clearStoredTokens('http_403_banned', user?.uid);
+            firebaseSignOut(auth).catch(() => {});
+            setUser(null);
+            setAuthError(banMsg);
+            logSessionEvent('session_invalidated_banned', {
+              level: 'error',
+              hasJwt: false,
+              detail: { status: 403, banReason: errJson.banReason || '' },
+            });
+            return;
+          }
+        }
+
+        if (resp.status === 401) {
+          // If Firebase Auth still has an active Google session, attempt seamless JWT recovery first
+          if (auth.currentUser && !explicitLogoutRef.current) {
+            try {
+              const freshIdToken = await auth.currentUser.getIdToken(true);
+              const recovered = await exchangeFirebaseGoogleIdToken(
+                freshIdToken,
+                'jwt_401_firebase_recovery'
+              );
+              if (recovered) {
+                logSessionEvent('firebase_session_recovered', {
+                  hasJwt: true,
+                  hasFirebaseUser: true,
+                  detail: { trigger: 'http_401' },
+                });
+                return;
+              }
+            } catch {
+              // Fall through to explicit invalidation if Firebase token refresh also fails
+            }
+          }
+
+          sessionEpochRef.current += 1;
+          clearStoredTokens('http_401_unauthorized', user?.uid);
+          firebaseSignOut(auth).catch(() => {});
+          setUser(null);
+          logSessionEvent('session_invalidated_401', {
+            level: 'warn',
+            hasJwt: false,
+            detail: { status: 401 },
+          });
+          return;
+        }
+
+        // Transient HTTP errors (404/429/500/502/503/504): keep token & active session intact!
+        logSessionEvent('session_preserved_on_transient_error', {
+          level: 'warn',
+          uid: user?.uid,
+          hasJwt: true,
+          hasFirebaseUser: Boolean(auth.currentUser),
+          detail: { status: resp.status },
+        });
+      } catch (err) {
+        // Network error / server restarting: preserve token & cached session
+        logSessionEvent('session_preserved_on_transient_error', {
+          level: 'warn',
+          uid: user?.uid,
+          hasJwt: Boolean(readStoredToken()),
+          hasFirebaseUser: Boolean(auth.currentUser),
+          detail: { error: err instanceof Error ? err.message : 'network_error' },
+        });
+      } finally {
+        setLoading(false);
+      }
+    })();
+
+    inFlightSessionRef.current = run;
+    try {
+      await run;
+    } finally {
+      if (inFlightSessionRef.current === run) {
+        inFlightSessionRef.current = null;
+      }
+    }
+  }, [setUser, exchangeFirebaseGoogleIdToken, user?.uid]);
+
   useEffect(() => {
     let active = true;
+    const initialToken = readStoredToken();
+    const initialCached = readCachedUser();
+
+    logSessionEvent('session_init', {
+      uid: initialCached?.uid,
+      hasJwt: Boolean(initialToken),
+      hasFirebaseUser: Boolean(auth.currentUser),
+      detail: { hasCachedProfile: Boolean(initialCached) },
+    });
+
     void (async () => {
       try {
         const redirectResult = await getRedirectResult(auth);
         if (active && redirectResult?.user) {
+          logSessionEvent('firebase_redirect_result', {
+            hasJwt: Boolean(readStoredToken()),
+            hasFirebaseUser: true,
+            detail: { email: redirectResult.user.email },
+          });
           const idToken = await redirectResult.user.getIdToken();
-          await exchangeFirebaseGoogleIdToken(idToken);
+          await exchangeFirebaseGoogleIdToken(idToken, 'google_redirect_result');
           setLoading(false);
           return;
         }
       } catch (err: any) {
         const msg = String(err?.code || err?.message || '');
+        logSessionEvent('login_google_error', {
+          level: 'warn',
+          detail: { source: 'getRedirectResult', code: msg },
+        });
         if (msg.includes('unauthorized-domain')) {
           setAuthError(
             'Domain belum terdaftar di Firebase Authorized Domains (tambahkan domain ini di Firebase Console -> Authentication -> Settings).'
@@ -480,19 +726,76 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await loadSession();
       }
     })();
+
+    // Monitor Firebase Auth state cleanly: recover Google sessions if JWT is missing,
+    // and NEVER wipe Email/Password JWT sessions when fbUser is null.
+    const unsubscribeAuth = onAuthStateChanged(auth, (fbUser) => {
+      if (!active) return;
+      const currentJwt = readStoredToken();
+      logSessionEvent('firebase_auth_state_changed', {
+        hasJwt: Boolean(currentJwt),
+        hasFirebaseUser: Boolean(fbUser),
+        detail: {
+          fbUid: fbUser?.uid || null,
+          fbEmail: fbUser?.email || null,
+          explicitLogout: explicitLogoutRef.current,
+        },
+      });
+
+      if (fbUser && !currentJwt && !explicitLogoutRef.current) {
+        void (async () => {
+          try {
+            const idToken = await fbUser.getIdToken();
+            if (!active || readStoredToken() || explicitLogoutRef.current) return;
+            const ok = await exchangeFirebaseGoogleIdToken(idToken, 'onAuthStateChanged_recovery');
+            if (ok) {
+              logSessionEvent('firebase_session_recovered', {
+                hasJwt: true,
+                hasFirebaseUser: true,
+                detail: { trigger: 'onAuthStateChanged' },
+              });
+            }
+          } catch {
+            // ignore silent recovery errors
+          } finally {
+            if (active) setLoading(false);
+          }
+        })();
+      }
+    });
+
+    // Cross-tab localStorage synchronization
+    const onStorageChange = (e: StorageEvent) => {
+      if (e.key !== TOKEN_STORAGE_KEY) return;
+      logSessionEvent('cross_tab_storage_sync', {
+        hasJwt: Boolean(e.newValue),
+        detail: { hadOldValue: Boolean(e.oldValue), hasNewValue: Boolean(e.newValue) },
+      });
+      if (!e.newValue) {
+        sessionEpochRef.current += 1;
+        setUser(null);
+      } else if (e.newValue !== e.oldValue) {
+        sessionEpochRef.current += 1;
+        void loadSession();
+      }
+    };
+    window.addEventListener('storage', onStorageChange);
+
     return () => {
       active = false;
+      unsubscribeAuth();
+      window.removeEventListener('storage', onStorageChange);
     };
-  }, [loadSession, exchangeFirebaseGoogleIdToken]);
+  }, [loadSession, exchangeFirebaseGoogleIdToken, setUser]);
 
-  // Real-time session heartbeat: detect ban / role / VIP changes within <= 5s across tabs & active playback
+  // Real-time session heartbeat: detect ban / role / VIP changes reliably without aggressive polling
   useEffect(() => {
     if (!user) return;
     const poll = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
         void loadSession();
       }
-    }, 5_000);
+    }, 15_000);
     const onFocusOrVisible = () => {
       if (document.visibilityState === 'visible') {
         void loadSession();
@@ -515,8 +818,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const attemptKey = `${user.uid}:${pendingCode}`;
     if (resolvingInviteRef.current === attemptKey) return;
 
-    const token =
-      localStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY) || '';
+    const token = readStoredToken();
     if (!token) return;
 
     resolvingInviteRef.current = attemptKey;
@@ -540,6 +842,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (identifier: string, password: string): Promise<boolean> => {
     setAuthError(null);
+    explicitLogoutRef.current = false;
     try {
       const resp = await fetch('/api/user/login', {
         method: 'POST',
@@ -549,11 +852,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const json = await resp.json();
       if (!resp.ok) {
         setAuthError(json.error || 'Login gagal');
+        logSessionEvent('login_password_failed', {
+          level: 'warn',
+          detail: { status: resp.status, error: json.error },
+        });
         return false;
       }
-      localStorage.setItem(TOKEN_STORAGE_KEY, json.token);
+      sessionEpochRef.current += 1;
+      safePersistToken(json.token, json.user?.uid, 'login_password');
       setUser(json.user);
-      localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
+      try {
+        localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
+      } catch {
+        // ignore
+      }
+      logSessionEvent('login_password_success', {
+        uid: json.user?.uid,
+        hasJwt: true,
+        detail: { role: json.user?.role },
+      });
       return true;
     } catch {
       setAuthError('Tidak dapat terhubung ke server');
@@ -564,13 +881,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const loginWithGoogle = async (): Promise<boolean> => {
     // Trigger signInWithPopup synchronously before any React state update so the browser preserves user activation
     const popupPromise = signInWithPopup(auth, googleProvider);
+    explicitLogoutRef.current = false;
     setAuthError(null);
+    logSessionEvent('login_google_popup_start', {
+      hasJwt: Boolean(readStoredToken()),
+      hasFirebaseUser: Boolean(auth.currentUser),
+    });
     try {
       const result = await popupPromise;
       const idToken = await result.user.getIdToken();
-      return await exchangeFirebaseGoogleIdToken(idToken);
+      return await exchangeFirebaseGoogleIdToken(idToken, 'google_popup');
     } catch (err: any) {
       const msg = String(err?.code || err?.message || '');
+      logSessionEvent('login_google_error', {
+        level: 'warn',
+        detail: { source: 'google_popup', code: msg },
+      });
       if (msg.includes('popup-blocked') || msg.includes('cancelled-popup-request')) {
         try {
           await signInWithRedirect(auth, googleProvider);
@@ -602,6 +928,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     code: string
   ): Promise<boolean> => {
     setAuthError(null);
+    explicitLogoutRef.current = false;
     try {
       const resp = await fetch('/api/user/register', {
         method: 'POST',
@@ -613,9 +940,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setAuthError(json.error || 'Pendaftaran gagal');
         return false;
       }
-      localStorage.setItem(TOKEN_STORAGE_KEY, json.token);
+      sessionEpochRef.current += 1;
+      safePersistToken(json.token, json.user?.uid, 'register');
       setUser(json.user);
-      localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
+      try {
+        localStorage.setItem('zonestream_is_premium', String(Boolean(json.user?.isPremium)));
+      } catch {
+        // ignore
+      }
+      logSessionEvent('register_success', {
+        uid: json.user?.uid,
+        hasJwt: true,
+      });
       return true;
     } catch {
       setAuthError('Tidak dapat terhubung ke server');
@@ -624,12 +960,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const logout = () => {
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
-    localStorage.removeItem(LEGACY_TOKEN_KEY);
-    localStorage.setItem('zonestream_is_premium', 'false');
-    localStorage.removeItem('donghive_is_premium');
+    const prevUid = user?.uid;
+    explicitLogoutRef.current = true;
+    sessionEpochRef.current += 1;
+    clearStoredTokens('explicit_logout', prevUid);
     firebaseSignOut(auth).catch(() => {});
     setUser(null);
+    logSessionEvent('explicit_logout', {
+      uid: prevUid,
+      hasJwt: false,
+      hasFirebaseUser: false,
+    });
   };
 
   const updateProfile = async (data: {
@@ -640,6 +981,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     activeBorder?: string;
     activeBadge?: string;
     profileTheme?: string;
+    profileBgColor?: string;
     statusEmoji?: string;
     newPassword?: string;
   }): Promise<boolean> => {
@@ -657,6 +999,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ...(typeof data.activeBorder === 'string' ? { activeBorder: data.activeBorder } : {}),
         ...(typeof data.activeBadge === 'string' ? { activeBadge: data.activeBadge } : {}),
         ...(typeof data.profileTheme === 'string' ? { profileTheme: data.profileTheme } : {}),
+        ...(typeof data.profileBgColor === 'string'
+          ? { profileBgColor: data.profileBgColor }
+          : {}),
         ...(typeof data.statusEmoji === 'string' ? { statusEmoji: data.statusEmoji } : {}),
       };
       writeCachedUser(optimistic);
@@ -734,6 +1079,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             longestStreak: Number(json.longestStreak) || Number(json.streak) || 1,
             levelUp: Boolean(json.levelUp),
             newLevel: Number(json.newLevel) || json.user.level || 1,
+            coinsGained: Number(json.coinsGained) || 0,
+            newCoins: Number(json.newCoins) || json.user.coins || 0,
             isDoubleExp: Boolean(json.isDoubleExp),
             newlyUnlockedFrame: json.newlyUnlockedFrame || null,
           };
@@ -764,6 +1111,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       streak: user?.watchStreak || 1,
       levelUp: false,
       newLevel: user?.level || 1,
+      coinsGained: 0,
+      newCoins: user?.coins || 0,
       isDoubleExp: false,
     };
     const token = getToken();
@@ -789,6 +1138,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           streak: json.user.watchStreak || 1,
           levelUp: Boolean(json.levelUp),
           newLevel: Number(json.newLevel) || json.user.level || 1,
+          coinsGained: Number(json.coinsGained) || 0,
+          newCoins: Number(json.newCoins) || json.user.coins || 0,
           isDoubleExp: Boolean(json.isDoubleExp),
         };
       }

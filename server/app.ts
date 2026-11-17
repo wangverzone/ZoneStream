@@ -5,6 +5,7 @@ import commentRoutes from './routes/comments.ts';
 import paymentRoutes from './routes/payment.ts';
 import socialRoutes from './routes/social.ts';
 import telegramRoutes from './routes/telegram.ts';
+import coinsRoutes from './routes/coins.ts';
 import { connectDB } from './db.ts';
 
 export function createApp() {
@@ -43,6 +44,7 @@ export function createApp() {
   app.use('/api/payment', ensureDb, paymentRoutes);
   app.use('/api/social', ensureDb, socialRoutes);
   app.use('/api/telegram', ensureDb, telegramRoutes);
+  app.use('/api/coins', ensureDb, coinsRoutes);
 
   return app;
 }

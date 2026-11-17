@@ -187,10 +187,13 @@ interface AvatarDecorationProps {
   src?: string;
   alt?: string;
   decorationId?: string;
+  bgColor?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
   children?: React.ReactNode;
 }
+
+const HEX_COLOR_RE = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/;
 
 const SIZE_MAP: Record<
   NonNullable<AvatarDecorationProps['size']>,
@@ -211,6 +214,7 @@ export function AvatarDecoration({
   src,
   alt = 'Avatar',
   decorationId,
+  bgColor,
   size = 'md',
   className = '',
   children,
@@ -220,6 +224,10 @@ export function AvatarDecoration({
   const resolvedId = normalizeDecorationId(decorationId);
   const dims = SIZE_MAP[size] || SIZE_MAP.md;
   const svgUid = useId().replace(/:/g, '');
+  const cleanBg =
+    typeof bgColor === 'string' && HEX_COLOR_RE.test(bgColor.trim())
+      ? bgColor.trim()
+      : '';
 
   useEffect(() => {
     setImgSrc(upgradeAvatarUrlToHd(src));
@@ -229,8 +237,23 @@ export function AvatarDecoration({
     <div
       className={`relative inline-flex items-center justify-center shrink-0 select-none ${dims.box} ${className}`}
     >
+      {cleanBg && (
+        <div
+          aria-hidden="true"
+          className="absolute -inset-1.5 rounded-full blur-md opacity-55 pointer-events-none z-0"
+          style={{ backgroundColor: cleanBg }}
+        />
+      )}
       <div
         className={`${dims.img} rounded-full overflow-hidden bg-[#12151E] ring-2 ring-white/25 dark:ring-white/20 shadow-[0_8px_24px_rgba(0,0,0,0.55)] relative z-10`}
+        style={
+          cleanBg
+            ? {
+                backgroundColor: cleanBg,
+                boxShadow: `0 0 0 2px ${cleanBg}88, 0 10px 26px ${cleanBg}55`,
+              }
+            : undefined
+        }
       >
         <img
           src={imgSrc || defaultAvatarImg}

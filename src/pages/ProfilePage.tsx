@@ -6,28 +6,38 @@ import {
   Bookmark,
   Check,
   CheckCircle2,
+  Coins,
   Copy,
   Crown,
   Diamond,
   ExternalLink,
   Eye,
   Flame,
+  Gift,
   History,
   KeyRound,
+  LayoutGrid,
   Lock,
   LogOut,
   MailCheck,
   MessageCircle,
+  Moon,
+  Palette,
   Pencil,
   QrCode,
   RefreshCw,
   Send,
+  Settings,
   ShieldBan,
+  ShieldCheck,
   Smile,
   Sparkles,
   Star,
+  Sun,
   UserPlus,
   Users,
+  Volume2,
+  Wallet,
   X,
   Zap,
   Globe,
@@ -38,7 +48,7 @@ import {
   FileCheck2,
   Loader2,
 } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { TelegramCsButton } from '../components/TelegramCsButton';
 import { ThemeToggle } from '../components/ThemeToggle';
@@ -52,10 +62,14 @@ import {
 } from '../components/AvatarDecoration';
 import { FounderUserMonitorPanel } from '../components/FounderUserMonitorPanel';
 import { LevelUpCard } from '../components/LevelUpCard';
+import { DailyCheckInCard } from '../components/DailyCheckInCard';
+import { CoinWalletCard } from '../components/CoinWalletCard';
+import { CoinTransactionHistoryModal } from '../components/CoinTransactionHistoryModal';
+import { GiftPremiumModal } from '../components/GiftPremiumModal';
 import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
 import { VipBenefitsLog } from '../components/VipBenefitsLog';
-import { OnlineStatusPill } from '../components/ProfileStatusBadges';
-import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
+import { useAuth, PROFILE_THEMES } from '../context/AuthContext';
+import { useTheme } from '../context/ThemeContext';
 import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
 import {
   CLAN_INVITE_RESOLVED_EVENT,
@@ -188,8 +202,10 @@ export function ProfilePage() {
     getLocalHistory,
     getLocalBookmarks,
   } = useAuth();
-  const { lang, changeLanguage } = useAppLanguage();
+  const { lang, currentLanguageOption, changeLanguage } = useAppLanguage();
+  const { isDark, setTheme } = useTheme();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
   const [identifier, setIdentifier] = useState('');
@@ -207,6 +223,9 @@ export function ProfilePage() {
   const [googleBusy, setGoogleBusy] = useState(false);
 
   const [showXpModal, setShowXpModal] = useState(false);
+  const [showGiftCoinModal, setShowGiftCoinModal] = useState(false);
+  const [showCoinHistoryModal, setShowCoinHistoryModal] = useState(false);
+  const [giftCoinMode, setGiftCoinMode] = useState<'gift' | 'self'>('gift');
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [packages, setPackages] = useState<PremiumPackage[]>(FALLBACK_PACKAGES);
   const [selectedPlanId, setSelectedPlanId] = useState<string>('vip_20k');
@@ -237,6 +256,7 @@ export function ProfilePage() {
   const [equippingFrameId, setEquippingFrameId] = useState<string>('');
   const [streakFrameNotice, setStreakFrameNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [pendingClanInvite, setPendingClanInviteState] = useState<ClanInvitePreview | null>(null);
+  const [settingsSection, setSettingsSection] = useState<'appearance' | 'sound' | 'account'>('appearance');
 
   useEffect(() => {
     if (user) {
@@ -292,7 +312,7 @@ export function ProfilePage() {
       if (document.visibilityState === 'visible') {
         void refreshUser();
       }
-    }, 5000);
+    }, 15_000);
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         void refreshUser();
@@ -354,9 +374,25 @@ export function ProfilePage() {
     }
   };
 
-  const borderStyle =
-    AVATAR_BORDER_STYLES[user?.activeBorder || 'classic']?.ringClass ||
-    AVATAR_BORDER_STYLES.classic.ringClass;
+  const rawTab = searchParams.get('tab');
+  const activeProfileTab: 'overview' | 'wallet' | 'streak' | 'settings' | 'founder' =
+    rawTab === 'wallet' ||
+    rawTab === 'streak' ||
+    rawTab === 'settings' ||
+    (rawTab === 'founder' && isFounderUser)
+      ? rawTab
+      : 'overview';
+
+  const setActiveProfileTab = (
+    tab: 'overview' | 'wallet' | 'streak' | 'settings' | 'founder'
+  ) => {
+    if (tab === 'overview') {
+      setSearchParams({}, { replace: true });
+    } else {
+      setSearchParams({ tab }, { replace: true });
+    }
+  };
+
   const activeTheme =
     PROFILE_THEMES[user?.profileTheme || 'default'] || PROFILE_THEMES.default;
 
@@ -1248,731 +1284,1077 @@ export function ProfilePage() {
     );
   }
 
+  const userCoins = Math.max(0, Math.floor(Number(user?.coins ?? 0)));
+
   return (
     <Layout>
-      <div className="max-w-3xl mx-auto pb-8">
-        {/* Top Banner + Overlapping Avatar + 3D Discord Profile Theme Aura */}
+      <div className="max-w-5xl mx-auto pb-12 sm:px-4 sm:pt-4">
+        {/* Clean Profile Header Shell */}
         <div
-          className={`relative pb-6 sm:rounded-b-3xl overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.45)] ${activeTheme.shellClass}`}
+          className={`relative sm:rounded-3xl overflow-hidden border-b sm:border border-slate-200 dark:border-white/[0.08] shadow-sm dark:shadow-[0_18px_45px_rgba(0,0,0,0.45)] ${activeTheme.shellClass}`}
+          style={
+            user?.profileBgColor
+              ? {
+                  backgroundImage: `radial-gradient(ellipse at top, ${user.profileBgColor}34 0%, transparent 72%)`,
+                }
+              : undefined
+          }
         >
-          <div className="relative h-56 sm:h-72 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
+          {/* Cover Banner */}
+          <div className="relative h-44 sm:h-60 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
             <img
               src={user?.bannerUrl || defaultBannerImg}
               alt="Latar Belakang Profil"
               referrerPolicy="no-referrer"
               decoding="async"
               fetchPriority="high"
-              className="w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] brightness-[1.02] transition-transform duration-500"
+              className="w-full h-full object-cover object-center contrast-[1.04] saturate-[1.06] transition-transform duration-500"
             />
-            {/* Crisp bottom-focused scrim so top 70% of banner stays crystal clear */}
-            <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#090A0E] via-[#090A0E]/65 to-transparent pointer-events-none" />
-            <div className="absolute inset-0 ring-1 ring-inset ring-white/10 pointer-events-none" />
+            {user?.profileBgColor && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 opacity-30 mix-blend-soft-light pointer-events-none"
+                style={{ backgroundColor: user.profileBgColor }}
+              />
+            )}
+            <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/75 via-black/30 to-transparent pointer-events-none" />
 
             <div className="absolute top-3.5 right-3.5 sm:top-4 sm:right-4 z-20 flex items-center gap-2">
-              <TelegramCsButton />
-              <div className="lg:hidden">
-                <ThemeToggle compact />
-              </div>
               {user && (
                 <Link
                   to="/profile/edit"
                   aria-label="Edit Foto Profil & Latar Belakang"
-                  className="min-h-[38px] sm:min-h-[40px] px-3.5 rounded-xl bg-black/65 hover:bg-[#E84A18] border border-white/20 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-[0_8px_20px_rgba(0,0,0,0.5)]"
+                  className="min-h-[38px] px-3.5 rounded-xl bg-black/60 hover:bg-[#E84A18] border border-white/20 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-md whitespace-nowrap shrink-0"
                 >
                   <Pencil className="w-3.5 h-3.5" />
                   <span>Edit Profil</span>
                 </Link>
               )}
-            </div>
-          </div>
-
-          <div className="relative z-10 -mt-16 sm:-mt-20 flex flex-col items-center px-4">
-            <AvatarDecoration
-              src={user?.photoUrl}
-              alt={user?.name || 'ZoneStream'}
-              decorationId={user?.activeBorder}
-              size="xl"
-            >
-              {user && (
-                <Link
-                  to="/profile/edit"
-                  aria-label="Ubah Foto Profil"
-                  className="absolute bottom-0.5 right-0.5 z-30 w-9 h-9 rounded-full bg-gradient-to-br from-[#FF6B35] to-[#E84A18] hover:from-[#FF7D4D] hover:to-[#F35B2B] text-white flex items-center justify-center border-2 border-[#F5F7FB] dark:border-[#090A0E] shadow-[0_6px_16px_rgba(232,74,24,0.55)] transition-transform active:scale-95"
-                >
-                  <Pencil className="w-3.5 h-3.5" />
-                </Link>
-              )}
-            </AvatarDecoration>
-
-            <div className="mt-3.5 flex items-center justify-center gap-1.5 flex-wrap">
-              <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
-                {user?.name || 'Memuat...'}
-              </h1>
-              <CountryFlagBadge countryCode={user?.countryCode} size="sm" />
-              {hasVipBadge && (
-                <VerifiedBadge
-                  size="lg"
-                  isFounder={isFounderUser}
-                  badgeLabel={user?.activeBadge}
-                />
-              )}
-              {hasVipBadge && user?.statusEmoji && (
-                <StatusEmojiBadge statusEmoji={user.statusEmoji} size="md" />
-              )}
-            </div>
-
-            {user && (
-              <>
-                {user.bio ? (
-                  <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-200 mt-1 text-center max-w-md font-medium">
-                    {user.bio}
-                  </p>
-                ) : null}
-                <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF] mt-0.5">{user.email}</p>
-                <div className="mt-3 flex items-center justify-center flex-wrap gap-2">
-                  <span
-                    className={`px-3.5 py-1 rounded-full text-xs font-extrabold inline-flex items-center gap-1.5 shadow-[0_6px_18px_rgba(0,0,0,0.3)] ${
-                      badgePreset?.pillClass ||
-                      (isFounderUser
-                        ? 'bg-gradient-to-r from-amber-500 via-orange-500 to-[#E84A18] text-white shadow-[#E84A18]/30 ring-1 ring-amber-300/40'
-                        : isPremium
-                        ? 'bg-gradient-to-r from-sky-500 to-blue-600 text-white shadow-sky-500/30 ring-1 ring-sky-300/40'
-                        : 'bg-white dark:bg-[#1A1D26] text-slate-700 dark:text-gray-200 border border-slate-200 dark:border-white/10')
-                    }`}
-                  >
-                    {hasVipBadge && <BadgeIcon className="w-3.5 h-3.5" />}
-                    <span>{user.activeBadge || (isPremium ? 'Verified VIP' : 'Member')}</span>
-                  </span>
-                  <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-800 dark:text-gray-100 font-mono-tabular shadow-sm">
-                    Lv. {levelDisplay}
-                  </span>
-                  {userClan && (
-                    <Link
-                      to="/leaderboard?tab=clans"
-                      className="px-3 py-1 rounded-full bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-xs font-extrabold text-amber-400 shadow-sm inline-flex items-center gap-1.5 transition-colors"
-                    >
-                      <span>[{userClan.tag}] {userClan.name}</span>
-                      {userClan.leaderUid === user.uid && (userClan.pendingCount || 0) > 0 && (
-                        <span className="px-1.5 py-0.5 rounded-full bg-amber-400 text-slate-950 text-[10px] font-extrabold leading-none">
-                          {userClan.pendingCount} ACC
-                        </span>
-                      )}
-                    </Link>
-                  )}
-                  <span className="px-3 py-1 rounded-full bg-white/90 dark:bg-[#181B24]/95 border border-slate-200 dark:border-white/15 text-xs font-bold text-slate-700 dark:text-gray-200 font-mono-tabular shadow-sm">
-                    UID: {user.uid}
-                  </span>
-                  <OnlineStatusPill
-                    dbIsOnline={user.isOnline ?? true}
-                    isOwnProfile={true}
-                    onSyncNow={refreshUser}
-                  />
-                </div>
-
-                {/* Real-Time Level Up Progress Card */}
-                <div className="mt-4 w-full max-w-md">
-                  <LevelUpCard
-                    level={level}
-                    exp={exp}
-                    isFounder={isFounderUser}
-                    isPremium={isPremium}
-                    totalWatchMinutes={user.totalWatchMinutes}
-                    totalCommentsCount={user.totalCommentsCount}
-                    totalEpisodesWatched={user.totalEpisodesWatched || historyCount}
-                    onOpenXpGuide={() => setShowXpModal(true)}
-                  />
-                </div>
-
-                {/* Social & Messenger Shortcuts */}
-                <div className="mt-3.5 flex items-center justify-center flex-wrap gap-2">
-                  <Link
-                    to={`/u/${user.uid}`}
-                    className="px-3.5 py-2 rounded-xl bg-white dark:bg-[#181B25] hover:border-[#E84A18] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white inline-flex items-center gap-1.5 shadow-sm transition-colors"
-                  >
-                    <Eye className="w-3.5 h-3.5 text-[#E84A18]" />
-                    <span>Profil Publik</span>
-                  </Link>
-                  <Link
-                    to="/chat"
-                    className="px-3.5 py-2 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-md shadow-emerald-500/20 transition-colors"
-                  >
-                    <MessageCircle className="w-3.5 h-3.5" />
-                    <span>Chat</span>
-                  </Link>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Bento Stats Strip */}
-        <div className="px-4 mt-5 grid grid-cols-4 gap-2.5">
-          <Link
-            to="/library?tab=history"
-            className={`rounded-2xl border p-3 text-center hover:border-[#E84A18]/40 transition-colors shadow-sm dark:shadow-none ${activeTheme.cardClass}`}
-          >
-            <History className="w-4 h-4 text-[#E84A18] mx-auto mb-1" />
-            <p className="text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-              {historyCount}
-            </p>
-            <p className="text-[10px] text-slate-500 dark:text-[#9CA3AF]">Ditonton</p>
-          </Link>
-
-          <Link
-            to="/library"
-            className={`rounded-2xl border p-3 text-center hover:border-[#E84A18]/40 transition-colors shadow-sm dark:shadow-none ${activeTheme.cardClass}`}
-          >
-            <Bookmark className="w-4 h-4 text-[#3B82F6] mx-auto mb-1" />
-            <p className="text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-              {bookmarkCount}
-            </p>
-            <p className="text-[10px] text-slate-500 dark:text-[#9CA3AF]">Watchlist</p>
-          </Link>
-
-          <div className={`rounded-2xl border p-3 text-center shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
-            <Flame className="w-4 h-4 text-amber-500 mx-auto mb-1" />
-            <p className="text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-              {watchStreak}h
-            </p>
-            <p className="text-[10px] text-slate-500 dark:text-[#9CA3AF]">Streak</p>
-          </div>
-
-          <div className={`rounded-2xl border p-3 text-center shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
-            <BadgeCheck
-              className={`w-4 h-4 mx-auto mb-1 ${
-                hasVipBadge ? 'text-sky-500 dark:text-sky-400' : 'text-slate-400 dark:text-gray-500'
-              }`}
-            />
-            <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate mt-0.5">
-              {isFounderUser ? 'Founder' : isPremium ? 'VIP' : 'Gratis'}
-            </p>
-            <p className="text-[10px] text-slate-500 dark:text-[#9CA3AF]">Status</p>
-          </div>
-        </div>
-
-        {/* Daily Watch Streak & Animated Frame Rewards Dashboard */}
-        <div className="px-4 mt-4">
-          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
-            {/* Header Row */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-slate-100 dark:border-white/[0.06]">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-rose-600 text-white flex items-center justify-center shadow-md shadow-orange-500/25 shrink-0">
-                  <Flame className="w-5 h-5 fill-current" />
-                </div>
-                <div className="min-w-0">
-                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white">
-                    Daily Watch Streak
-                  </h3>
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                    <span className="font-mono-tabular font-bold text-orange-500 dark:text-amber-400">
-                      {watchStreak} Hari Beruntun
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono-tabular">
-                      Rekor Terbaik: {longestStreak} Hari
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono-tabular">
-                      Hari Ini: {dailyEpisodesToday} Ep
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {watchedToday ? (
-                <span className="px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-300 text-xs font-bold inline-flex items-center gap-1.5 shrink-0">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Streak Terjaga Hari Ini</span>
-                </span>
-              ) : (
-                <Link
-                  to="/catalog"
-                  className="px-3.5 py-2 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors shrink-0"
-                >
-                  <span>Tonton 1 Ep Sekarang</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
-              )}
-            </div>
-
-            {/* 7-Day Rolling Consistency Calendar (Jakarta WIB) */}
-            <div className="py-3.5 border-b border-slate-100 dark:border-white/[0.06]">
-              <div className="flex items-center justify-between mb-2.5 text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                <span>Kalender Konsistensi 7 Hari Terakhir</span>
-                <span className="font-mono-tabular">
-                  {last7Days.filter((d) => watchedDateSet.has(d.dateStr)).length}/7 Hari Aktif
-                </span>
-              </div>
-              <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
-                {last7Days.map((day) => {
-                  const isDone = watchedDateSet.has(day.dateStr);
-                  return (
-                    <div
-                      key={day.dateStr}
-                      className={`rounded-xl py-2 px-1 flex flex-col items-center justify-center gap-1 border text-center transition-colors ${
-                        isDone
-                          ? 'bg-gradient-to-b from-orange-500/15 to-rose-500/10 border-orange-500/40 text-orange-600 dark:text-amber-300'
-                          : day.isToday
-                          ? 'bg-slate-100 dark:bg-white/[0.04] border-dashed border-[#E84A18]/60 text-slate-700 dark:text-gray-200'
-                          : 'bg-slate-50 dark:bg-white/[0.02] border-slate-200/80 dark:border-white/[0.05] text-slate-400 dark:text-gray-500'
-                      }`}
-                    >
-                      <span className="text-[10px] font-semibold leading-none">{day.shortDay}</span>
-                      <div
-                        className={`w-6 h-6 rounded-full flex items-center justify-center ${
-                          isDone
-                            ? 'bg-gradient-to-br from-orange-500 to-rose-500 text-white shadow-sm'
-                            : day.isToday
-                            ? 'border border-[#E84A18]/60 text-[#E84A18]'
-                            : 'bg-slate-200/70 dark:bg-white/[0.05]'
-                        }`}
-                      >
-                        {isDone ? (
-                          <Check className="w-3.5 h-3.5 stroke-[2.5]" />
-                        ) : (
-                          <span className="text-[10px] font-mono-tabular font-bold">{day.dayNum}</span>
-                        )}
-                      </div>
-                      <span className="text-[9px] font-mono-tabular leading-none opacity-80">
-                        {day.isToday ? 'Hari Ini' : day.dayNum}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Frame Rewards Gallery (3, 7, 14, 30 Consecutive Days) */}
-            <div className="pt-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                <div>
-                  <h4 className="text-xs font-extrabold text-slate-900 dark:text-white">
-                    Hadiah Frame Profil Animasi Eksklusif
-                  </h4>
-                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                    Tonton anime setiap hari tanpa putus untuk membuka &amp; memasang bingkai avatar animasi.
-                  </p>
-                </div>
-              </div>
-
-              {streakFrameNotice && (
-                <div
-                  className={`mb-3 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 border ${
-                    streakFrameNotice.type === 'ok'
-                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-300'
-                      : 'bg-rose-500/10 border-rose-500/30 text-rose-500'
-                  }`}
-                >
-                  <span>{streakFrameNotice.text}</span>
-                  <button
-                    type="button"
-                    onClick={() => setStreakFrameNotice(null)}
-                    className="opacity-70 hover:opacity-100"
-                    aria-label="Tutup notifikasi"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {STREAK_FRAME_REWARDS.map((frame) => {
-                  const unlocked = Boolean(
-                    isFounderUser ||
-                      unlockedFramesSet.has(frame.id) ||
-                      bestStreakForRewards >= frame.minStreak
-                  );
-                  const equipped = normalizeDecorationId(user?.activeBorder) === frame.id;
-                  const progressNum = isFounderUser
-                    ? frame.minStreak
-                    : Math.min(bestStreakForRewards, frame.minStreak);
-                  const pct = Math.round((progressNum / frame.minStreak) * 100);
-                  const busy = equippingFrameId === frame.id;
-
-                  return (
-                    <div
-                      key={frame.id}
-                      className={`rounded-xl border p-3 flex items-center gap-3 transition-colors ${
-                        equipped
-                          ? 'bg-[#E84A18]/[0.08] border-[#E84A18]/60'
-                          : unlocked
-                          ? 'bg-slate-50 dark:bg-[#171A23] border-slate-200 dark:border-white/10'
-                          : 'bg-slate-50/60 dark:bg-[#12141B] border-slate-200/70 dark:border-white/[0.05]'
-                      }`}
-                    >
-                      <div className="p-1 shrink-0">
-                        <AvatarDecoration
-                          src={user?.photoUrl}
-                          alt={frame.name}
-                          decorationId={frame.id}
-                          size="md"
-                        />
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
-                            {frame.name}
-                          </p>
-                          <span className="text-[10px] font-mono-tabular font-bold text-orange-500 dark:text-amber-400 shrink-0">
-                            {frame.tierLabel}
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate mt-0.5">
-                          {frame.subtitle}
-                        </p>
-
-                        <div className="mt-2 flex items-center gap-2">
-                          <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
-                            <div
-                              className="h-full rounded-full transition-all duration-300"
-                              style={{
-                                width: `${pct}%`,
-                                backgroundColor: frame.accentColor,
-                              }}
-                            />
-                          </div>
-                          <span className="text-[10px] font-mono-tabular text-slate-500 dark:text-gray-400 shrink-0">
-                            {progressNum}/{frame.minStreak}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="shrink-0">
-                        {equipped ? (
-                          <span className="px-2.5 py-1.5 rounded-lg bg-[#E84A18]/20 text-[#E84A18] dark:text-[#FF8A65] text-[11px] font-extrabold inline-flex items-center gap-1">
-                            <Check className="w-3 h-3" />
-                            <span>Aktif</span>
-                          </span>
-                        ) : unlocked ? (
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onClick={() => void handleEquipStreakFrame(frame.id, frame.name)}
-                            className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-950 hover:opacity-90 text-[11px] font-extrabold transition-opacity disabled:opacity-50"
-                          >
-                            {busy ? '...' : 'Pasang'}
-                          </button>
-                        ) : (
-                          <span
-                            className="px-2.5 py-1.5 rounded-lg bg-slate-200/80 dark:bg-white/[0.06] text-slate-500 dark:text-gray-400 text-[10px] font-bold inline-flex items-center gap-1"
-                            title={`Capai ${frame.minStreak} hari beruntun untuk membuka`}
-                          >
-                            <Lock className="w-3 h-3" />
-                            <span>{frame.minStreak - progressNum}h lagi</span>
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Subscription Management Panel */}
-        <div className="px-4 mt-4">
-          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
-            <div className="flex items-center justify-between gap-3 mb-3 pb-3 border-b border-slate-100 dark:border-white/5">
-              <div className="flex items-center gap-2.5">
-                <span className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-500 to-[#E84A18] text-white flex items-center justify-center shadow-md">
-                  <Crown className="w-4 h-4" />
-                </span>
-                <div>
-                  <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
-                    Manajemen Langganan &amp; Level VIP
-                  </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                    Status akun, level kultivasi, dan masa aktif VIP Anda
-                  </p>
-                </div>
-              </div>
-              <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wide ${
-                isPremium || user?.role === 'founder'
-                  ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300 border border-amber-500/30'
-                  : 'bg-slate-200 dark:bg-white/10 text-slate-600 dark:text-gray-300'
-              }`}>
-                {user?.role === 'founder' ? 'Founder Lifetime' : isPremium ? 'VIP Aktif' : 'Free Member'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 mb-4">
-              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-                  Level Akun Anda
-                </span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-base font-extrabold text-slate-900 dark:text-white">
-                    Lv. {levelDisplay}
-                  </span>
-                  <span className="text-[11px] text-[#E84A18] font-bold">
-                    ({user?.exp || 0} EXP)
-                  </span>
-                </div>
-              </div>
-
-              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3">
-                <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block mb-1">
-                  Masa Aktif Premium
-                </span>
-                <span className="text-xs font-extrabold text-slate-900 dark:text-white truncate block">
-                  {user?.role === 'founder'
-                    ? 'Seumur Hidup (Founder)'
-                    : isPremium && user?.premiumExpiryDate
-                    ? new Date(user.premiumExpiryDate).toLocaleDateString('id-ID', {
-                        day: 'numeric',
-                        month: 'short',
-                        year: 'numeric',
-                      })
-                    : 'Belum Berlangganan'}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <a
-                href="https://t.me/ZhuuVerzon"
-                target="_blank"
-                rel="noreferrer"
-                className="flex-1 min-h-[44px] rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-sky-500/20 transition-all"
+              <button
+                type="button"
+                onClick={() => setActiveProfileTab('settings')}
+                aria-label="Buka Pengaturan"
+                className="min-h-[38px] px-3 rounded-xl bg-black/60 hover:bg-black/80 border border-white/20 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 transition-colors shadow-md whitespace-nowrap shrink-0"
               >
-                <Send className="w-4 h-4" />
-                <span>Request Upgrade via Bot Telegram</span>
-              </a>
-              <TelegramCsButton />
+                <Settings className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Pengaturan</span>
+              </button>
             </div>
           </div>
-        </div>
 
-        {/* Upgrade to Premium + Verified Badge Card */}
-        <div className="px-4 mt-4">
-          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <div className="flex items-center gap-3">
-                <span className="w-10 h-10 rounded-full bg-gradient-to-br from-[#E84A18] to-amber-500 text-white flex items-center justify-center shadow-lg shadow-[#E84A18]/30 shrink-0">
-                  {isPremium ? (
-                    <Crown className="w-5 h-5" />
-                  ) : (
-                    <Diamond className="w-5 h-5 fill-current" />
-                  )}
-                </span>
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <h2 className="text-base font-extrabold text-slate-900 dark:text-white">
-                      {isPremium ? 'Premium & Lencana VIP Aktif!' : 'Upgrade ke Premium VIP!'}
-                    </h2>
+          {/* Identity & Primary Actions */}
+          <div className="relative z-10 px-4 sm:px-7 pb-5">
+            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 -mt-12 sm:-mt-14">
+              <div className="flex flex-col sm:flex-row sm:items-end gap-4 min-w-0">
+                <div className="shrink-0 self-start">
+                  <AvatarDecoration
+                    src={user?.photoUrl}
+                    alt={user?.name || 'ZoneStream'}
+                    decorationId={user?.activeBorder}
+                    bgColor={user?.profileBgColor}
+                    size="xl"
+                  >
+                    {user && (
+                      <Link
+                        to="/profile/edit"
+                        aria-label="Ubah Foto Profil"
+                        className="absolute bottom-0.5 right-0.5 z-30 w-8 h-8 rounded-full bg-[#E84A18] hover:bg-[#F35B2B] text-white flex items-center justify-center border-2 border-[#F5F7FB] dark:border-[#090A0E] shadow-md transition-transform active:scale-95"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Link>
+                    )}
+                  </AvatarDecoration>
+                </div>
+
+                <div className="min-w-0 sm:pb-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight truncate">
+                      {user?.name || 'Memuat...'}
+                    </h1>
+                    <CountryFlagBadge countryCode={user?.countryCode} size="sm" />
                     {hasVipBadge && (
                       <VerifiedBadge
-                        size="sm"
+                        size="lg"
                         isFounder={isFounderUser}
                         badgeLabel={user?.activeBadge}
                       />
                     )}
                     {hasVipBadge && user?.statusEmoji && (
-                      <StatusEmojiBadge statusEmoji={user.statusEmoji} size="xs" />
+                      <StatusEmojiBadge statusEmoji={user.statusEmoji} size="md" />
                     )}
                   </div>
-                  <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
-                    {isPremium
-                      ? user?.premiumExpiryDate
-                        ? `Aktif hingga ${new Date(user.premiumExpiryDate).toLocaleDateString('id-ID', {
-                            day: 'numeric',
-                            month: 'short',
-                            year: 'numeric',
-                          })} · 2x EXP & Bebas Iklan aktif.`
-                        : 'Seluruh iklan nonaktif, Tema Discord, 2x EXP, Lencana & Emoji Status aktif.'
-                      : 'Dapatkan lencana VIP, Tema Discord, 2x EXP setiap nonton, & bebas iklan 10 detik.'}
-                  </p>
+
+                  {user && (
+                    <>
+                      <div className="mt-1 flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-slate-600 dark:text-gray-300">
+                        {user.username && (
+                          <span className="font-semibold text-slate-800 dark:text-gray-100">
+                            @{user.username}
+                          </span>
+                        )}
+                        <span aria-hidden="true" className="text-slate-400">·</span>
+                        <span className="font-mono tabular-nums">UID {user.uid}</span>
+                        <span aria-hidden="true" className="text-slate-400">·</span>
+                        <span className="font-mono tabular-nums font-bold text-[#E84A18]">
+                          Lv. {levelDisplay}
+                        </span>
+                        <span aria-hidden="true" className="text-slate-400">·</span>
+                        <span className="inline-flex items-center gap-1 font-semibold">
+                          {hasVipBadge && <BadgeIcon className="w-3.5 h-3.5 text-amber-500" />}
+                          <span>
+                            {user.activeBadge ||
+                              (isFounderUser ? 'Founder' : isPremium ? 'Verified VIP' : 'Member')}
+                          </span>
+                        </span>
+                        {userClan && (
+                          <>
+                            <span aria-hidden="true" className="text-slate-400">·</span>
+                            <Link
+                              to="/leaderboard?tab=clans"
+                              className="font-bold text-amber-600 dark:text-amber-400 hover:underline"
+                            >
+                              [{userClan.tag}] {userClan.name}
+                            </Link>
+                          </>
+                        )}
+                      </div>
+
+                      {user.bio && (
+                        <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-300 mt-1.5 max-w-2xl line-clamp-2">
+                          {user.bio}
+                        </p>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
-            </div>
 
-            <p className="text-xs font-semibold text-slate-600 dark:text-gray-300 mb-3">
-              Fitur Premium &amp; Lencana VIP
-            </p>
-
-            <div className="grid grid-cols-2 gap-2.5 mb-5">
-              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
-                <span className="w-7 h-7 rounded-lg bg-sky-500/15 text-sky-500 dark:text-sky-400 flex items-center justify-center shrink-0">
-                  <BadgeCheck className="w-4 h-4" />
-                </span>
-                <span className="text-xs font-semibold text-slate-800 dark:text-gray-100 leading-snug">
-                  Lencana &amp; Emoji Nama
-                </span>
-              </div>
-
-              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
-                <span className="w-7 h-7 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                  <ShieldBan className="w-4 h-4" />
-                </span>
-                <span className="text-xs font-medium text-slate-800 dark:text-gray-200 leading-snug">
-                  Bebas Iklan &amp; Timer 10s
-                </span>
-              </div>
-
-              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
-                <span className="w-7 h-7 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
-                  <Sparkles className="w-4 h-4" />
-                </span>
-                <span className="text-xs font-medium text-slate-800 dark:text-gray-200 leading-snug">
-                  Emoji &amp; Stiker VIP
-                </span>
-              </div>
-
-              <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
-                <span className="w-7 h-7 rounded-lg bg-rose-500/15 text-rose-500 dark:text-rose-400 flex items-center justify-center shrink-0">
-                  <Smile className="w-4 h-4" />
-                </span>
-                <span className="text-xs font-medium text-slate-800 dark:text-gray-200 leading-snug">
-                  Tema Discord &amp; Latar
-                </span>
-              </div>
-            </div>
-
-            {isPremium || user?.role === 'founder' ? (
-              <div className="space-y-2.5">
-                <Link
-                  to="/profile/edit"
-                  className="w-full min-h-[48px] rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#202430] dark:hover:bg-[#292E3D] text-slate-900 dark:text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors border border-slate-200 dark:border-white/10"
-                >
-                  <CheckCircle2 className="w-4 h-4 text-sky-500 dark:text-sky-400" />
-                  <span>Edit Foto, Latar, Badge Verified &amp; Email</span>
-                </Link>
-
-                {user?.role === 'founder' && (
-                  <button
-                    type="button"
-                    onClick={toggleFounderAdPreview}
-                    className={`w-full min-h-[42px] rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-colors ${
-                      isPremium
-                        ? 'bg-slate-50 hover:bg-slate-100 dark:bg-[#171922] dark:hover:bg-[#1E212D] text-slate-600 dark:text-gray-300 border-slate-200 dark:border-white/5'
-                        : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                    }`}
+              {/* Clean Action Bar */}
+              {user && (
+                <div className="flex flex-wrap items-center gap-2 shrink-0 sm:pb-1">
+                  <Link
+                    to="/chat"
+                    className="min-h-[38px] px-3.5 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
                   >
-                    {isPremium ? (
-                      <>
-                        <Eye className="w-3.5 h-3.5 text-[#E84A18]" />
-                        <span>Simulasi Tampilan User Gratis (Aktifkan Iklan 10s &amp; Banner)</span>
-                      </>
-                    ) : (
-                      <>
-                        <Crown className="w-3.5 h-3.5" />
-                        <span>Kembalikan Mode Founder VIP (Bebas Iklan)</span>
-                      </>
-                    )}
-                  </button>
-                )}
-              </div>
-            ) : (
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    <span>Chat</span>
+                  </Link>
+                  <Link
+                    to={`/u/${user.uid}`}
+                    className="min-h-[38px] px-3.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-[#191C26] dark:hover:bg-[#222634] border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-800 dark:text-white inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Eye className="w-3.5 h-3.5 text-[#E84A18]" />
+                    <span>Profil Publik</span>
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Major-Website Horizontal Navigation Tabs */}
+          <div className="px-4 sm:px-7 border-t border-slate-200/80 dark:border-white/[0.07] bg-white/60 dark:bg-black/20">
+            <nav
+              aria-label="Navigasi Profil"
+              className="flex items-center gap-1 sm:gap-2 overflow-x-auto no-scrollbar -mb-px"
+            >
               <button
                 type="button"
-                onClick={() => setShowUpgradeModal(true)}
-                className="w-full min-h-[48px] rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-[#E84A18]/25 transition-all active:scale-[0.98]"
+                onClick={() => setActiveProfileTab('overview')}
+                className={`min-h-[46px] px-3 sm:px-4 border-b-2 text-xs sm:text-sm font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                  activeProfileTab === 'overview'
+                    ? 'border-[#E84A18] text-[#E84A18]'
+                    : 'border-transparent text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
               >
-                <Star className="w-4 h-4 fill-current" />
-                <span>Beli Premium &amp; Dapatkan Lencana VIP!</span>
+                <LayoutGrid className="w-4 h-4" />
+                <span>Ringkasan</span>
               </button>
-            )}
+
+              <button
+                type="button"
+                onClick={() => setActiveProfileTab('wallet')}
+                className={`min-h-[46px] px-3 sm:px-4 border-b-2 text-xs sm:text-sm font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                  activeProfileTab === 'wallet'
+                    ? 'border-[#E84A18] text-[#E84A18]'
+                    : 'border-transparent text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Wallet className="w-4 h-4" />
+                <span>Dompet &amp; VIP</span>
+                {userCoins > 0 && (
+                  <span className="text-[11px] font-mono tabular-nums text-amber-600 dark:text-amber-400">
+                    ({userCoins.toLocaleString('id-ID')})
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveProfileTab('streak')}
+                className={`min-h-[46px] px-3 sm:px-4 border-b-2 text-xs sm:text-sm font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                  activeProfileTab === 'streak'
+                    ? 'border-[#E84A18] text-[#E84A18]'
+                    : 'border-transparent text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Flame className="w-4 h-4" />
+                <span>Misi &amp; Frame</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveProfileTab('settings')}
+                className={`min-h-[46px] px-3 sm:px-4 border-b-2 text-xs sm:text-sm font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                  activeProfileTab === 'settings'
+                    ? 'border-[#E84A18] text-[#E84A18]'
+                    : 'border-transparent text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+                <span>Pengaturan</span>
+              </button>
+
+              {isFounderUser && (
+                <button
+                  type="button"
+                  onClick={() => setActiveProfileTab('founder')}
+                  className={`min-h-[46px] px-3 sm:px-4 border-b-2 text-xs sm:text-sm font-bold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                    activeProfileTab === 'founder'
+                      ? 'border-[#E84A18] text-[#E84A18]'
+                      : 'border-transparent text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Panel Founder</span>
+                </button>
+              )}
+            </nav>
           </div>
         </div>
 
-        {/* Visual VIP Benefits, Milestone Timeline & Charisma Bonuses Log */}
-        <VipBenefitsLog
-          user={user}
-          isPremium={isPremium}
-          cardClass={activeTheme.cardClass}
-          onOpenUpgrade={() => setShowUpgradeModal(true)}
-        />
-
-        {/* Founder Exclusive Real-Time User Monitor & Ban Controls */}
-        {isFounderUser && <FounderUserMonitorPanel cardClass={activeTheme.cardClass} />}
-
-        {/* Leaderboard & Klan Settings Card */}
-        <div className="px-4 mt-4">
-          <Link
-            to="/leaderboard"
-            className={`flex items-center justify-between p-4 sm:p-5 rounded-2xl border shadow-sm dark:shadow-none transition-all hover:border-[#E84A18] ${activeTheme.cardClass}`}
-          >
-            <div className="flex items-center gap-3">
-              <span className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-center shrink-0">
-                <Trophy className="w-5 h-5" />
-              </span>
-              <div>
-                <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
-                  Leaderboard &amp; Klan Wibu
-                </h3>
-                <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                  Lihat peringkat Top Charisma, penonton terbanyak, dan buat atau gabung klan
-                </p>
-              </div>
-            </div>
-            <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
-          </Link>
-        </div>
-
-        {/* Pengaturan Bahasa Aplikasi & Subtitle (4 Bahasa) */}
-        <div className="px-4 mt-4">
-          <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
-            <div className="flex items-center justify-between gap-2 mb-3">
-              <div className="flex items-center gap-2">
-                <span className="w-7 h-7 rounded-lg bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center">
-                  <Globe className="w-4 h-4" />
-                </span>
-                <div>
-                  <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
-                    Pengaturan Bahasa &amp; Subtitle (4 Bahasa)
-                  </h3>
-                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
-                    Pilih bahasa antarmuka dan subtitle otomatis saat menonton video
+        {/* Tab Workspace Content */}
+        <div className="mt-5 px-4 sm:px-0 space-y-5">
+          {/* TAB 1: RINGKASAN (OVERVIEW) */}
+          {activeProfileTab === 'overview' && (
+            <>
+              {/* 4-Column Summary KPIs */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <Link
+                  to="/library?tab=history"
+                  className={`rounded-2xl border p-4 hover:border-[#E84A18]/50 transition-colors ${activeTheme.cardClass}`}
+                >
+                  <div className="flex items-center justify-between text-slate-500 dark:text-[#9CA3AF]">
+                    <span className="text-xs font-semibold">Ditonton</span>
+                    <History className="w-4 h-4 text-[#E84A18]" />
+                  </div>
+                  <p className="mt-1.5 text-xl font-extrabold text-slate-900 dark:text-white font-mono tabular-nums">
+                    {historyCount}
                   </p>
+                </Link>
+
+                <Link
+                  to="/library"
+                  className={`rounded-2xl border p-4 hover:border-[#E84A18]/50 transition-colors ${activeTheme.cardClass}`}
+                >
+                  <div className="flex items-center justify-between text-slate-500 dark:text-[#9CA3AF]">
+                    <span className="text-xs font-semibold">Watchlist</span>
+                    <Bookmark className="w-4 h-4 text-[#3B82F6]" />
+                  </div>
+                  <p className="mt-1.5 text-xl font-extrabold text-slate-900 dark:text-white font-mono tabular-nums">
+                    {bookmarkCount}
+                  </p>
+                </Link>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveProfileTab('streak')}
+                  className={`rounded-2xl border p-4 text-left hover:border-[#E84A18]/50 transition-colors ${activeTheme.cardClass}`}
+                >
+                  <div className="flex items-center justify-between text-slate-500 dark:text-[#9CA3AF]">
+                    <span className="text-xs font-semibold">Watch Streak</span>
+                    <Flame className="w-4 h-4 text-amber-500" />
+                  </div>
+                  <p className="mt-1.5 text-xl font-extrabold text-slate-900 dark:text-white font-mono tabular-nums">
+                    {watchStreak} Hari
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveProfileTab('wallet')}
+                  className={`rounded-2xl border p-4 text-left hover:border-[#E84A18]/50 transition-colors ${activeTheme.cardClass}`}
+                >
+                  <div className="flex items-center justify-between text-slate-500 dark:text-[#9CA3AF]">
+                    <span className="text-xs font-semibold">Keanggotaan</span>
+                    <Crown className="w-4 h-4 text-amber-500" />
+                  </div>
+                  <p className="mt-1.5 text-xl font-extrabold text-slate-900 dark:text-white truncate">
+                    {isFounderUser ? 'Founder' : isPremium ? 'VIP Aktif' : 'Member'}
+                  </p>
+                </button>
+              </div>
+
+              {/* Daily Check-in 24-Hour Bonus Coins & Streak Tracker */}
+              {user && (
+                <DailyCheckInCard
+                  user={user}
+                  cardClass={activeTheme.cardClass}
+                  onOpenHistoryModal={() => setShowCoinHistoryModal(true)}
+                />
+              )}
+
+              {/* Balanced 2-Column Overview Split */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                <div className="lg:col-span-7">
+                  {user && (
+                    <LevelUpCard
+                      level={level}
+                      exp={exp}
+                      isFounder={isFounderUser}
+                      isPremium={isPremium}
+                      coins={user.coins ?? 0}
+                      totalWatchMinutes={user.totalWatchMinutes}
+                      totalCommentsCount={user.totalCommentsCount}
+                      totalEpisodesWatched={user.totalEpisodesWatched || historyCount}
+                      onOpenXpGuide={() => setShowXpModal(true)}
+                      onOpenCoinGift={() => {
+                        setGiftCoinMode('gift');
+                        setShowGiftCoinModal(true);
+                      }}
+                    />
+                  )}
+                </div>
+
+                {/* Right Column: Clean Account & Community Shortcuts */}
+                <div className={`lg:col-span-5 rounded-2xl border divide-y divide-slate-100 dark:divide-white/[0.06] ${activeTheme.cardClass}`}>
+                  {/* Wallet & VIP Quick Access */}
+                  <div className="p-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-extrabold text-slate-900 dark:text-white">
+                          Dompet Koin &amp; Bagi Prem
+                        </p>
+                        <p className="text-xs text-slate-500 dark:text-[#9CA3AF] mt-0.5 font-mono tabular-nums">
+                          {userCoins.toLocaleString('id-ID')} Koin tersedia
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveProfileTab('wallet')}
+                        className="text-xs font-bold text-[#E84A18] hover:underline whitespace-nowrap shrink-0"
+                      >
+                        Kelola VIP
+                      </button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGiftCoinMode('gift');
+                          setShowGiftCoinModal(true);
+                        }}
+                        className="min-h-[38px] px-3 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                      >
+                        <Gift className="w-3.5 h-3.5" />
+                        <span>Bagi Prem</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowCoinHistoryModal(true)}
+                        className="min-h-[38px] px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-white/[0.06] dark:hover:bg-white/[0.1] text-slate-800 dark:text-gray-200 text-xs font-bold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                      >
+                        <History className="w-3.5 h-3.5 text-amber-500" />
+                        <span>Riwayat Koin</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Klan & Leaderboard Row */}
+                  <Link
+                    to="/leaderboard"
+                    className="p-4 flex items-center justify-between gap-3 hover:bg-slate-50/80 dark:hover:bg-white/[0.02] transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-center shrink-0">
+                        <Trophy className="w-4 h-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                          {userClan ? `[${userClan.tag}] ${userClan.name}` : 'Leaderboard & Klan Wibu'}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF] truncate">
+                          Peringkat Top Charisma &amp; komunitas klan
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                  </Link>
+
+                  {/* Settings Quick Row */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveProfileTab('settings')}
+                    className="w-full p-4 flex items-center justify-between gap-3 text-left hover:bg-slate-50/80 dark:hover:bg-white/[0.02] transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-gray-300 flex items-center justify-center shrink-0">
+                        <Settings className="w-4 h-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                          Pengaturan &amp; Preferensi
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF] truncate">
+                          Tema {isDark ? 'Gelap' : 'Terang'} · Bahasa {currentLanguageOption.nativeLabel} · Suara
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* TAB 2: DOMPET KOIN & LANGGANAN VIP */}
+          {activeProfileTab === 'wallet' && (
+            <>
+              {user && (
+                <CoinWalletCard
+                  user={user}
+                  cardClass={activeTheme.cardClass}
+                  onOpenGiftModal={(mode) => {
+                    setGiftCoinMode(mode);
+                    setShowGiftCoinModal(true);
+                  }}
+                  onOpenHistoryModal={() => setShowCoinHistoryModal(true)}
+                />
+              )}
+
+              {/* Unified Subscription & VIP Membership Card */}
+              <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-white/[0.06]">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#E84A18] to-amber-500 text-white flex items-center justify-center shadow-md shrink-0">
+                      {isPremium || isFounderUser ? (
+                        <Crown className="w-5 h-5" />
+                      ) : (
+                        <Diamond className="w-5 h-5 fill-current" />
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <h2 className="text-base font-extrabold text-slate-900 dark:text-white">
+                        {isFounderUser
+                          ? 'Founder Lifetime VIP'
+                          : isPremium
+                          ? 'Keanggotaan Premium VIP Aktif'
+                          : 'Upgrade ke ZoneStream Premium VIP'}
+                      </h2>
+                      <p className="text-xs text-slate-500 dark:text-[#9CA3AF] mt-0.5">
+                        Lv. {levelDisplay} ({user?.exp || 0} EXP) ·{' '}
+                        {user?.role === 'founder'
+                          ? 'Aktif Seumur Hidup'
+                          : isPremium && user?.premiumExpiryDate
+                          ? `Berlaku hingga ${new Date(user.premiumExpiryDate).toLocaleDateString(
+                              'id-ID',
+                              {
+                                day: 'numeric',
+                                month: 'short',
+                                year: 'numeric',
+                              }
+                            )}`
+                          : 'Bebas iklan 10s, 2× EXP, Lencana Verified & Tema Discord'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!isPremium && !isFounderUser && (
+                    <button
+                      type="button"
+                      onClick={() => setShowUpgradeModal(true)}
+                      className="min-h-[42px] px-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <Star className="w-4 h-4 fill-current" />
+                      <span>Beli Premium VIP</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 my-4">
+                  <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
+                    <BadgeCheck className="w-4 h-4 text-sky-500 shrink-0" />
+                    <span className="text-xs font-semibold text-slate-800 dark:text-gray-100">
+                      Lencana &amp; Emoji
+                    </span>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
+                    <ShieldBan className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span className="text-xs font-semibold text-slate-800 dark:text-gray-100">
+                      Bebas Iklan 10s
+                    </span>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
+                    <Sparkles className="w-4 h-4 text-amber-500 shrink-0" />
+                    <span className="text-xs font-semibold text-slate-800 dark:text-gray-100">
+                      2× EXP Nonton
+                    </span>
+                  </div>
+                  <div className="rounded-xl bg-slate-50 dark:bg-[#1A1D26] border border-slate-200 dark:border-white/5 p-3 flex items-center gap-2.5">
+                    <Smile className="w-4 h-4 text-rose-500 shrink-0" />
+                    <span className="text-xs font-semibold text-slate-800 dark:text-gray-100">
+                      Tema &amp; Stiker VIP
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {(isPremium || isFounderUser) && (
+                    <Link
+                      to="/profile/edit"
+                      className="min-h-[42px] px-4 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-950 font-bold text-xs inline-flex items-center gap-2 hover:opacity-90 transition-opacity whitespace-nowrap"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Kustomisasi Profil &amp; Lencana VIP</span>
+                    </Link>
+                  )}
+
+                  <a
+                    href="https://t.me/ZhuuVerzon"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="min-h-[42px] px-4 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs inline-flex items-center gap-2 transition-colors whitespace-nowrap"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Upgrade via Bot Telegram</span>
+                  </a>
+
+                  <TelegramCsButton />
+
+                  {isFounderUser && (
+                    <button
+                      type="button"
+                      onClick={toggleFounderAdPreview}
+                      className={`min-h-[42px] px-3.5 rounded-xl text-xs font-semibold inline-flex items-center gap-2 border transition-colors whitespace-nowrap ${
+                        isPremium
+                          ? 'bg-slate-50 hover:bg-slate-100 dark:bg-[#171922] dark:hover:bg-[#1E212D] text-slate-700 dark:text-gray-300 border-slate-200 dark:border-white/10'
+                          : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                      }`}
+                    >
+                      {isPremium ? <Eye className="w-3.5 h-3.5 text-[#E84A18]" /> : <Crown className="w-3.5 h-3.5" />}
+                      <span>
+                        {isPremium ? 'Simulasi User Gratis' : 'Kembalikan Mode Founder'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <VipBenefitsLog
+                user={user}
+                isPremium={isPremium}
+                cardClass={activeTheme.cardClass}
+                onOpenUpgrade={() => setShowUpgradeModal(true)}
+              />
+            </>
+          )}
+
+          {/* TAB 3: MISI & FRAME HARIAN */}
+          {activeProfileTab === 'streak' && (
+            <div className="space-y-4">
+              {user && (
+                <DailyCheckInCard
+                  user={user}
+                  cardClass={activeTheme.cardClass}
+                  onOpenHistoryModal={() => setShowCoinHistoryModal(true)}
+                />
+              )}
+
+              <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+              {/* Header Row */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-3.5 border-b border-slate-100 dark:border-white/[0.06]">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-rose-600 text-white flex items-center justify-center shadow-md shadow-orange-500/25 shrink-0">
+                    <Flame className="w-5 h-5 fill-current" />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white">
+                      Daily Watch Streak &amp; Misi Harian
+                    </h3>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                      <span className="font-mono tabular-nums font-bold text-orange-500 dark:text-amber-400">
+                        {watchStreak} Hari Beruntun
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="font-mono tabular-nums">
+                        Rekor Terbaik: {longestStreak} Hari
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="font-mono tabular-nums">
+                        Hari Ini: {dailyEpisodesToday} Ep
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {watchedToday ? (
+                  <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-1.5 shrink-0">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Streak Terjaga Hari Ini</span>
+                  </span>
+                ) : (
+                  <Link
+                    to="/catalog"
+                    className="min-h-[38px] px-3.5 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors shrink-0 whitespace-nowrap"
+                  >
+                    <span>Tonton 1 Ep Sekarang</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </Link>
+                )}
+              </div>
+
+              {/* 7-Day Rolling Consistency Calendar */}
+              <div className="py-4 border-b border-slate-100 dark:border-white/[0.06]">
+                <div className="flex items-center justify-between mb-2.5 text-xs text-slate-500 dark:text-[#9CA3AF]">
+                  <span>Kalender Konsistensi 7 Hari Terakhir</span>
+                  <span className="font-mono tabular-nums font-semibold">
+                    {last7Days.filter((d) => watchedDateSet.has(d.dateStr)).length}/7 Hari Aktif
+                  </span>
+                </div>
+                <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
+                  {last7Days.map((day) => {
+                    const isDone = watchedDateSet.has(day.dateStr);
+                    return (
+                      <div
+                        key={day.dateStr}
+                        className={`rounded-xl py-2.5 px-1 flex flex-col items-center justify-center gap-1 border text-center transition-colors ${
+                          isDone
+                            ? 'bg-gradient-to-b from-orange-500/15 to-rose-500/10 border-orange-500/40 text-orange-600 dark:text-amber-300'
+                            : day.isToday
+                            ? 'bg-slate-100 dark:bg-white/[0.04] border-dashed border-[#E84A18]/60 text-slate-700 dark:text-gray-200'
+                            : 'bg-slate-50 dark:bg-white/[0.02] border-slate-200/80 dark:border-white/[0.05] text-slate-400 dark:text-gray-500'
+                        }`}
+                      >
+                        <span className="text-[10px] font-semibold leading-none">{day.shortDay}</span>
+                        <div
+                          className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                            isDone
+                              ? 'bg-gradient-to-br from-orange-500 to-rose-500 text-white shadow-sm'
+                              : day.isToday
+                              ? 'border border-[#E84A18]/60 text-[#E84A18]'
+                              : 'bg-slate-200/70 dark:bg-white/[0.05]'
+                          }`}
+                        >
+                          {isDone ? (
+                            <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                          ) : (
+                            <span className="text-[10px] font-mono tabular-nums font-bold">{day.dayNum}</span>
+                          )}
+                        </div>
+                        <span className="text-[9px] font-mono tabular-nums leading-none opacity-80">
+                          {day.isToday ? 'Hari Ini' : day.dayNum}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Frame Rewards Gallery */}
+              <div className="pt-4">
+                <div className="mb-3">
+                  <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                    Hadiah Frame Profil Animasi Eksklusif
+                  </h4>
+                  <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                    Tonton anime setiap hari untuk membuka &amp; memasang bingkai avatar animasi.
+                  </p>
+                </div>
+
+                {streakFrameNotice && (
+                  <div
+                    className={`mb-3 px-3.5 py-2 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 border ${
+                      streakFrameNotice.type === 'ok'
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-300'
+                        : 'bg-rose-500/10 border-rose-500/30 text-rose-500'
+                    }`}
+                  >
+                    <span>{streakFrameNotice.text}</span>
+                    <button
+                      type="button"
+                      onClick={() => setStreakFrameNotice(null)}
+                      className="opacity-70 hover:opacity-100"
+                      aria-label="Tutup notifikasi"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {STREAK_FRAME_REWARDS.map((frame) => {
+                    const unlocked = Boolean(
+                      isFounderUser ||
+                        unlockedFramesSet.has(frame.id) ||
+                        bestStreakForRewards >= frame.minStreak
+                    );
+                    const equipped = normalizeDecorationId(user?.activeBorder) === frame.id;
+                    const progressNum = isFounderUser
+                      ? frame.minStreak
+                      : Math.min(bestStreakForRewards, frame.minStreak);
+                    const pct = Math.round((progressNum / frame.minStreak) * 100);
+                    const busy = equippingFrameId === frame.id;
+
+                    return (
+                      <div
+                        key={frame.id}
+                        className={`rounded-xl border p-3 flex items-center gap-3 transition-colors ${
+                          equipped
+                            ? 'bg-[#E84A18]/[0.08] border-[#E84A18]/60'
+                            : unlocked
+                            ? 'bg-slate-50 dark:bg-[#171A23] border-slate-200 dark:border-white/10'
+                            : 'bg-slate-50/60 dark:bg-[#12141B] border-slate-200/70 dark:border-white/[0.05]'
+                        }`}
+                      >
+                        <div className="p-1 shrink-0">
+                          <AvatarDecoration
+                            src={user?.photoUrl}
+                            alt={frame.name}
+                            decorationId={frame.id}
+                            size="md"
+                          />
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                              {frame.name}
+                            </p>
+                            <span className="text-[10px] font-mono tabular-nums font-bold text-orange-500 dark:text-amber-400 shrink-0">
+                              {frame.tierLabel}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate mt-0.5">
+                            {frame.subtitle}
+                          </p>
+
+                          <div className="mt-2 flex items-center gap-2">
+                            <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
+                              <div
+                                className="h-full rounded-full transition-all duration-300"
+                                style={{
+                                  width: `${pct}%`,
+                                  backgroundColor: frame.accentColor,
+                                }}
+                              />
+                            </div>
+                            <span className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-gray-400 shrink-0">
+                              {progressNum}/{frame.minStreak}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="shrink-0">
+                          {equipped ? (
+                            <span className="px-2.5 py-1.5 rounded-lg bg-[#E84A18]/20 text-[#E84A18] dark:text-[#FF8A65] text-[11px] font-extrabold inline-flex items-center gap-1">
+                              <Check className="w-3 h-3" />
+                              <span>Aktif</span>
+                            </span>
+                          ) : unlocked ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void handleEquipStreakFrame(frame.id, frame.name)}
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-950 hover:opacity-90 text-[11px] font-extrabold transition-opacity disabled:opacity-50"
+                            >
+                              {busy ? '...' : 'Pasang'}
+                            </button>
+                          ) : (
+                            <span
+                              className="px-2.5 py-1.5 rounded-lg bg-slate-200/80 dark:bg-white/[0.06] text-slate-500 dark:text-gray-400 text-[10px] font-bold inline-flex items-center gap-1"
+                              title={`Capai ${frame.minStreak} hari beruntun untuk membuka`}
+                            >
+                              <Lock className="w-3 h-3" />
+                              <span>{frame.minStreak - progressNum}h lagi</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {APP_LANGUAGES.map((opt) => {
-                const active = lang === opt.code;
-                return (
+            </div>
+          )}
+
+          {/* TAB 4: PENGATURAN (MAJOR PLATFORM SETTINGS CENTER) */}
+          {activeProfileTab === 'settings' && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+              {/* Settings Sidebar Menu */}
+              <aside
+                className={`lg:col-span-4 rounded-2xl border p-2 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}
+              >
+                <p className="px-3 pt-2 pb-2 text-xs font-extrabold text-slate-500 dark:text-gray-400">
+                  Kategori Pengaturan
+                </p>
+                <div className="grid grid-cols-3 lg:grid-cols-1 gap-1">
                   <button
-                    key={opt.code}
                     type="button"
-                    onClick={() => changeLanguage(opt.code)}
-                    className={`p-2.5 rounded-xl border text-left transition-all flex items-center gap-2 ${
-                      active
-                        ? 'border-[#E84A18] bg-[#E84A18]/15 text-slate-900 dark:text-white shadow-sm'
-                        : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#1A1D26] dark:hover:bg-[#222634] text-slate-700 dark:text-gray-300'
+                    onClick={() => setSettingsSection('appearance')}
+                    className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center justify-center lg:justify-start gap-2.5 transition-colors whitespace-nowrap ${
+                      settingsSection === 'appearance'
+                        ? 'bg-[#E84A18] text-white shadow-sm'
+                        : 'text-slate-700 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
                     }`}
                   >
-                    <CountryFlagBadge countryCode={opt.countryCode} size="sm" />
-                    <div className="min-w-0">
-                      <p className="text-xs font-extrabold truncate">{opt.nativeLabel}</p>
-                      <p className="text-[10px] text-[#E84A18] font-bold truncate">{opt.subLabel}</p>
-                    </div>
+                    <Palette className="w-4 h-4 shrink-0" />
+                    <span className="truncate">Tampilan &amp; Bahasa</span>
                   </button>
-                );
-              })}
+
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSection('sound')}
+                    className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center justify-center lg:justify-start gap-2.5 transition-colors whitespace-nowrap ${
+                      settingsSection === 'sound'
+                        ? 'bg-[#E84A18] text-white shadow-sm'
+                        : 'text-slate-700 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <Volume2 className="w-4 h-4 shrink-0" />
+                    <span className="truncate">Suara &amp; Efek</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSettingsSection('account')}
+                    className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center justify-center lg:justify-start gap-2.5 transition-colors whitespace-nowrap ${
+                      settingsSection === 'account'
+                        ? 'bg-[#E84A18] text-white shadow-sm'
+                        : 'text-slate-700 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <ShieldCheck className="w-4 h-4 shrink-0" />
+                    <span className="truncate">Akun &amp; Sesi</span>
+                  </button>
+                </div>
+              </aside>
+
+              {/* Settings Content Pane */}
+              <div className="lg:col-span-8 space-y-4">
+                {settingsSection === 'appearance' && (
+                  <>
+                    {/* Theme Mode */}
+                    <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                      <div className="flex items-center justify-between gap-3 mb-3">
+                        <div>
+                          <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                            Tema Antarmuka
+                          </h3>
+                          <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
+                            Pilih tampilan Terang atau Gelap yang nyaman untuk mata Anda
+                          </p>
+                        </div>
+                        <ThemeToggle compact />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setTheme('light')}
+                          className={`p-3.5 rounded-xl border text-left flex items-center gap-3 transition-colors ${
+                            !isDark
+                              ? 'border-[#E84A18] bg-[#E84A18]/10 text-slate-900 dark:text-white'
+                              : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#1A1D26] text-slate-600 dark:text-gray-300'
+                          }`}
+                        >
+                          <Sun className="w-4 h-4 text-amber-500 shrink-0" />
+                          <div>
+                            <p className="text-xs font-extrabold">Mode Terang</p>
+                            <p className="text-[11px] opacity-75">Bersih &amp; cerah</p>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setTheme('dark')}
+                          className={`p-3.5 rounded-xl border text-left flex items-center gap-3 transition-colors ${
+                            isDark
+                              ? 'border-[#E84A18] bg-[#E84A18]/15 text-slate-900 dark:text-white'
+                              : 'border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#1A1D26] text-slate-600 dark:text-gray-300'
+                          }`}
+                        >
+                          <Moon className="w-4 h-4 text-[#E84A18] shrink-0" />
+                          <div>
+                            <p className="text-xs font-extrabold">Mode Gelap</p>
+                            <p className="text-[11px] opacity-75">Nyaman di malam hari</p>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Language & Subtitles */}
+                    <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                      <div className="flex items-center gap-2.5 mb-3">
+                        <span className="w-8 h-8 rounded-xl bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center shrink-0">
+                          <Globe className="w-4 h-4" />
+                        </span>
+                        <div>
+                          <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                            Bahasa Aplikasi &amp; Subtitle (4 Bahasa)
+                          </h3>
+                          <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
+                            Pilih bahasa antarmuka dan subtitle otomatis saat menonton anime
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                        {APP_LANGUAGES.map((opt) => {
+                          const active = lang === opt.code;
+                          return (
+                            <button
+                              key={opt.code}
+                              type="button"
+                              onClick={() => changeLanguage(opt.code)}
+                              className={`p-2.5 rounded-xl border text-left transition-all flex items-center gap-2 ${
+                                active
+                                  ? 'border-[#E84A18] bg-[#E84A18]/15 text-slate-900 dark:text-white shadow-sm'
+                                  : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#1A1D26] dark:hover:bg-[#222634] text-slate-700 dark:text-gray-300'
+                              }`}
+                            >
+                              <CountryFlagBadge countryCode={opt.countryCode} size="sm" />
+                              <div className="min-w-0">
+                                <p className="text-xs font-extrabold truncate">{opt.nativeLabel}</p>
+                                <p className="text-[10px] text-[#E84A18] font-bold truncate">{opt.subLabel}</p>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Customize Profile Link */}
+                    {user && (
+                      <Link
+                        to="/profile/edit"
+                        className={`rounded-2xl border p-4 flex items-center justify-between gap-3 hover:border-[#E84A18] transition-colors ${activeTheme.cardClass}`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="w-9 h-9 rounded-xl bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center shrink-0">
+                            <Pencil className="w-4 h-4" />
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-sm font-extrabold text-slate-900 dark:text-white">
+                              Edit Profil, Banner &amp; Tema Kartu
+                            </p>
+                            <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
+                              Ubah foto profil, sampul banner, bingkai avatar, bio, dan negara
+                            </p>
+                          </div>
+                        </div>
+                        <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
+                      </Link>
+                    )}
+                  </>
+                )}
+
+                {settingsSection === 'sound' && (
+                  <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                    <SoundSettingsPanel embedded />
+                  </div>
+                )}
+
+                {settingsSection === 'account' && user && (
+                  <>
+                    {/* Account Details */}
+                    <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                      <h3 className="text-sm font-extrabold text-slate-900 dark:text-white mb-3">
+                        Informasi Akun
+                      </h3>
+                      <div className="divide-y divide-slate-100 dark:divide-white/[0.06] text-xs">
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500 dark:text-gray-400">Nama Tampilan</span>
+                          <span className="font-bold text-slate-900 dark:text-white">{user.name}</span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500 dark:text-gray-400">Username</span>
+                          <span className="font-semibold text-slate-900 dark:text-white">
+                            @{user.username}
+                          </span>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500 dark:text-gray-400">User ID (UID)</span>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyNumber(user.uid)}
+                            className="font-mono tabular-nums font-bold text-slate-900 dark:text-white inline-flex items-center gap-1.5 hover:text-[#E84A18]"
+                          >
+                            <span>{user.uid}</span>
+                            {copiedText ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-500" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5 text-slate-400" />
+                            )}
+                          </button>
+                        </div>
+                        <div className="py-2.5 flex items-center justify-between gap-3">
+                          <span className="text-slate-500 dark:text-gray-400">Email</span>
+                          <span className="font-medium text-slate-800 dark:text-gray-200 truncate">
+                            {user.email}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Audit, Help & Session */}
+                    <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none space-y-3 ${activeTheme.cardClass}`}>
+                      <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                        Riwayat, Bantuan &amp; Sesi
+                      </h3>
+
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setShowCoinHistoryModal(true)}
+                          className="min-h-[40px] px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-white/[0.07] dark:hover:bg-white/[0.12] text-slate-800 dark:text-white text-xs font-bold inline-flex items-center gap-2 transition-colors"
+                        >
+                          <Coins className="w-4 h-4 text-amber-500" />
+                          <span>Buka Coin Transaction History</span>
+                        </button>
+
+                        <TelegramCsButton />
+                      </div>
+
+                      <div className="pt-3 border-t border-slate-100 dark:border-white/[0.06] flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-bold text-slate-900 dark:text-white">
+                            Keluar dari Sesi Perangkat Ini
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                            Riwayat tontonan &amp; progres tetap aman tersimpan di akun Anda
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={logout}
+                          className="min-h-[40px] px-4 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/25 text-xs font-bold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                        >
+                          <LogOut className="w-4 h-4" />
+                          <span>Keluar Akun</span>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
+          )}
 
-        {/* Pengaturan Efek Suara (Chat, Notifikasi & Level Up) */}
-        <div className="px-4 mt-4">
-          <SoundSettingsPanel cardClass={activeTheme.cardClass} />
+          {/* TAB 5: PANEL FOUNDER (FOUNDER ONLY) */}
+          {activeProfileTab === 'founder' && isFounderUser && (
+            <FounderUserMonitorPanel cardClass={activeTheme.cardClass} />
+          )}
         </div>
-
-        {/* Logout button */}
-        {user && (
-          <div className="px-4 mt-4 flex justify-end">
-            <button
-              type="button"
-              onClick={logout}
-              className="min-h-[42px] px-4 rounded-xl bg-white hover:bg-rose-50 dark:bg-[#13151C] dark:hover:bg-rose-500/15 text-slate-600 hover:text-rose-600 dark:text-gray-400 dark:hover:text-rose-400 border border-slate-200 dark:border-white/5 text-xs font-semibold inline-flex items-center gap-2 transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-              <span>Keluar Akun</span>
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Cara Dapatkan XP Modal */}
@@ -2021,6 +2403,12 @@ export function ProfilePage() {
                   +75 <span className="text-amber-400">(VIP +150)</span>
                 </span>
               </li>
+              <li className="flex items-center justify-between p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                <span className="font-semibold">Hadiah Koin Setiap Naik Level</span>
+                <span className="font-bold text-amber-600 dark:text-amber-400 font-mono-tabular">
+                  +350~2.000 Koin
+                </span>
+              </li>
               <li className="flex items-center justify-between p-3 rounded-xl bg-slate-100 dark:bg-[#1B1E26]">
                 <span>Nonton Episode Baru</span>
                 <span className="font-bold text-[#3B82F6] font-mono-tabular">
@@ -2030,6 +2418,29 @@ export function ProfilePage() {
             </ul>
           </div>
         </div>
+      )}
+
+      {/* Coin Gift / Bagi Prem Modal */}
+      <GiftPremiumModal
+        open={showGiftCoinModal}
+        onClose={() => setShowGiftCoinModal(false)}
+        initialMode={giftCoinMode}
+        onSuccess={() => {
+          void refreshUser();
+        }}
+      />
+
+      {/* Coin Transaction History Modal */}
+      {user && (
+        <CoinTransactionHistoryModal
+          open={showCoinHistoryModal}
+          onClose={() => setShowCoinHistoryModal(false)}
+          user={user}
+          onOpenGiftModal={(mode) => {
+            setGiftCoinMode(mode);
+            setShowGiftCoinModal(true);
+          }}
+        />
       )}
 
       {/* Upgrade Premium Checkout Modal (1-Web In-App QRIS & Virtual Account) */}

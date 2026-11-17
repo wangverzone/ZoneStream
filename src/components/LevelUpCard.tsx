@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Clock, MessageSquare, Sparkles, Tv, X, Zap } from 'lucide-react';
+import { ArrowRight, Clock, Coins, MessageSquare, Sparkles, Tv, X, Zap } from 'lucide-react';
 
 interface LevelUpCardProps {
   level: number;
   exp: number;
   isFounder?: boolean;
   isPremium?: boolean;
+  coins?: number;
   totalWatchMinutes?: number;
   totalCommentsCount?: number;
   totalEpisodesWatched?: number;
   onOpenXpGuide?: () => void;
+  onOpenCoinGift?: () => void;
   className?: string;
 }
 
@@ -36,10 +38,12 @@ export function LevelUpCard({
   exp,
   isFounder = false,
   isPremium = false,
+  coins,
   totalWatchMinutes = 0,
   totalCommentsCount = 0,
   totalEpisodesWatched = 0,
   onOpenXpGuide,
+  onOpenCoinGift,
   className = '',
 }: LevelUpCardProps) {
   const [showInternalGuide, setShowInternalGuide] = useState(false);
@@ -189,23 +193,37 @@ export function LevelUpCard({
           </div>
         </div>
 
-        {/* Bottom Row: Cara dapatkan XP -> */}
-        <div className="mt-3 flex items-center justify-between gap-2">
+        {/* Bottom Row: Cara dapatkan XP + Coins */}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <button
             type="button"
             onClick={handleOpenGuide}
             className="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:text-emerald-500 dark:hover:text-emerald-300 inline-flex items-center gap-1 transition-colors"
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Cara dapatkan XP</span>
+            <span>Cara dapatkan XP &amp; Koin</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
 
-          {!isFounder && (
-            <span className="text-[11px] font-mono-tabular font-semibold text-slate-500 dark:text-gray-400">
-              {safeExp} / {expNeeded} XP
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {typeof coins === 'number' && (
+              <button
+                type="button"
+                onClick={onOpenCoinGift}
+                disabled={!onOpenCoinGift}
+                className="text-[11px] font-mono tabular-nums font-extrabold text-amber-600 dark:text-amber-300 inline-flex items-center gap-1 hover:underline disabled:no-underline"
+                title="Koin hasil naik level untuk Bagi Prem"
+              >
+                <Coins className="w-3.5 h-3.5" />
+                <span>{Math.max(0, Math.floor(coins)).toLocaleString('id-ID')} Koin</span>
+              </button>
+            )}
+            {!isFounder && (
+              <span className="text-[11px] font-mono-tabular font-semibold text-slate-500 dark:text-gray-400">
+                {safeExp} / {expNeeded} XP
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
@@ -257,6 +275,15 @@ export function LevelUpCard({
                 </span>
                 <span className="font-bold text-[#3B82F6] font-mono-tabular">
                   +30 <span className="text-amber-500">(VIP +60)</span>
+                </span>
+              </li>
+              <li className="flex items-center justify-between p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                <span className="inline-flex items-center gap-1.5 font-semibold">
+                  <Coins className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Hadiah Koin Setiap Naik Level</span>
+                </span>
+                <span className="font-bold text-amber-600 dark:text-amber-400 font-mono-tabular">
+                  +350~2.000 Koin
                 </span>
               </li>
               <li className="flex items-center justify-between p-3 rounded-xl bg-slate-100 dark:bg-[#1B1E26]">

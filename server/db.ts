@@ -168,6 +168,43 @@ export function sanitizeUser(user: IUser): PublicUser {
   );
   pub.totalCommentsCount = Math.max(0, Number(pub.totalCommentsCount || 0));
 
+  if (isFounderUser) {
+    pub.coins = Math.max(50000, Math.floor(Number(pub.coins ?? 50000)));
+    pub.totalCoinsEarned = Math.max(pub.coins, Math.floor(Number(pub.totalCoinsEarned ?? pub.coins)));
+  } else {
+    pub.coins = Math.max(0, Math.floor(Number(pub.coins ?? 0)));
+    pub.totalCoinsEarned = Math.max(pub.coins, Math.floor(Number(pub.totalCoinsEarned ?? pub.coins)));
+  }
+  pub.totalCoinsSpent = Math.max(0, Math.floor(Number(pub.totalCoinsSpent ?? 0)));
+  pub.totalGiftsSent = Math.max(0, Math.floor(Number(pub.totalGiftsSent ?? 0)));
+  pub.totalGiftsReceived = Math.max(0, Math.floor(Number(pub.totalGiftsReceived ?? 0)));
+
+  // Normalize Daily Check-in Streak (valid if claimed within the last 48h, 24h cooldown + 24h grace window)
+  const rawLastCheckIn = typeof pub.lastCheckInAt === 'string' ? pub.lastCheckInAt.trim() : '';
+  const lastCheckInMs = rawLastCheckIn ? new Date(rawLastCheckIn).getTime() : 0;
+  const checkInElapsed = lastCheckInMs && !Number.isNaN(lastCheckInMs) ? Date.now() - lastCheckInMs : Infinity;
+  const rawCheckInStreak = Math.max(0, Math.floor(Number(pub.checkInStreak ?? 0)));
+  pub.lastCheckInAt = rawLastCheckIn && !Number.isNaN(lastCheckInMs) ? rawLastCheckIn : '';
+  pub.checkInStreak = checkInElapsed <= 48 * 3600 * 1000 ? Math.max(1, rawCheckInStreak) : 0;
+  pub.longestCheckInStreak = Math.max(
+    0,
+    Math.floor(Number(pub.longestCheckInStreak ?? 0)),
+    rawCheckInStreak,
+    pub.checkInStreak
+  );
+  pub.totalCheckIns = Math.max(0, Math.floor(Number(pub.totalCheckIns ?? 0)));
+  pub.checkInDates = Array.isArray(pub.checkInDates)
+    ? Array.from(
+        new Set(
+          pub.checkInDates.filter(
+            (d): d is string => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)
+          )
+        )
+      )
+        .sort()
+        .slice(-30)
+    : [];
+
   const lastActiveMs = pub.lastActiveAt ? new Date(pub.lastActiveAt).getTime() : 0;
   const computedOnline = lastActiveMs > 0 && Date.now() - lastActiveMs < 3 * 60 * 1000;
   const dbSyncedAt = new Date().toISOString();
@@ -188,6 +225,7 @@ export function sanitizeUser(user: IUser): PublicUser {
   }
   return {
     ...pub,
+    profileBgColor: typeof pub.profileBgColor === 'string' ? pub.profileBgColor : '',
     isOnline: computedOnline,
     dbSyncedAt,
   };
@@ -245,6 +283,16 @@ function buildFounderPayload(): IUser {
     bannerUrl: '',
     level: 999999,
     exp: 0,
+    coins: 50000,
+    totalCoinsEarned: 50000,
+    totalCoinsSpent: 0,
+    totalGiftsSent: 0,
+    totalGiftsReceived: 0,
+    lastCheckInAt: '',
+    checkInStreak: 0,
+    longestCheckInStreak: 0,
+    totalCheckIns: 0,
+    checkInDates: [],
     charisma: 9999,
     likedBy: [],
     isPremium: true,
@@ -254,6 +302,7 @@ function buildFounderPayload(): IUser {
     activeBadge: 'Verified Founder',
     activeBorder: 'lightning-aura',
     profileTheme: 'sovereign-gold',
+    profileBgColor: '',
     statusEmoji: 'infinity-dao',
     countryCode: 'ID',
     lastWatchDate: '',
@@ -408,8 +457,29 @@ export async function ensureFounderAccount() {
       founderUser.isVerified = true;
       founderUser.level = 999999;
       founderUser.charisma = Math.max(9999, Number(founderUser.charisma ?? 9999));
+      founderUser.coins = Math.max(50000, Number(founderUser.coins ?? 50000));
+      founderUser.totalCoinsEarned = Math.max(founderUser.coins, Number(founderUser.totalCoinsEarned ?? founderUser.coins));
       founderUser.activeBadge = 'Verified Founder';
       await founderUser.save();
+    }
+
+    // One-time safe coin backfill for existing members who already leveled up before Coins launched
+    const legacyLeveledUsers = await UserModel.find({
+      role: { $ne: 'founder' },
+      level: { $gte: 2 },
+      coins: { $exists: false },
+    }).limit(200);
+    for (const lu of legacyLeveledUsers) {
+      const safeLv = Math.min(100, Math.max(2, Number(lu.level) || 2));
+      let total = 0;
+      for (let lv = 2; lv <= safeLv; lv++) {
+        const base = Math.min(2000, 250 + lv * 50);
+        const bonus = lv % 5 === 0 ? 250 : 0;
+        total += base + bonus;
+      }
+      lu.coins = total;
+      lu.totalCoinsEarned = total;
+      await lu.save().catch(() => {});
     }
 
     const existing = await UserModel.findOne({
@@ -517,6 +587,16 @@ export async function createMemberUser(payload: {
     bannerUrl: '',
     level: 1,
     exp: 25,
+    coins: 0,
+    totalCoinsEarned: 0,
+    totalCoinsSpent: 0,
+    totalGiftsSent: 0,
+    totalGiftsReceived: 0,
+    lastCheckInAt: '',
+    checkInStreak: 0,
+    longestCheckInStreak: 0,
+    totalCheckIns: 0,
+    checkInDates: [],
     charisma: 0,
     likedBy: [],
     isPremium: false,
@@ -526,6 +606,7 @@ export async function createMemberUser(payload: {
     activeBadge: 'Member',
     activeBorder: 'classic',
     profileTheme: 'default',
+    profileBgColor: '',
     statusEmoji: '',
     lastWatchDate: '',
     watchStreak: 0,
@@ -564,6 +645,7 @@ export async function updateUserByUid(
     doc.markModified('bookmarks');
     doc.markModified('streakDates');
     doc.markModified('unlockedStreakFrames');
+    doc.markModified('checkInDates');
     await doc.save();
     return doc.toObject();
   }
@@ -632,6 +714,16 @@ export async function findOrCreateGoogleUser(params: {
     bannerUrl: '',
     level: 1,
     exp: 25,
+    coins: 0,
+    totalCoinsEarned: 0,
+    totalCoinsSpent: 0,
+    totalGiftsSent: 0,
+    totalGiftsReceived: 0,
+    lastCheckInAt: '',
+    checkInStreak: 0,
+    longestCheckInStreak: 0,
+    totalCheckIns: 0,
+    checkInDates: [],
     charisma: 0,
     likedBy: [],
     isPremium: false,
@@ -641,6 +733,7 @@ export async function findOrCreateGoogleUser(params: {
     activeBadge: 'Member',
     activeBorder: 'classic',
     profileTheme: 'default',
+    profileBgColor: '',
     statusEmoji: '',
     lastWatchDate: '',
     watchStreak: 0,
@@ -898,6 +991,7 @@ export function toCommunityUserSummary(user: IUser) {
     activeBadge: pub.activeBadge || (pub.role === 'founder' ? 'Verified Founder' : 'Member'),
     activeBorder: pub.activeBorder || 'classic',
     profileTheme: pub.profileTheme || 'default',
+    profileBgColor: pub.profileBgColor || '',
     statusEmoji: pub.statusEmoji || '',
     countryCode: (pub.countryCode || 'ID').toUpperCase(),
     watchStreak: pub.watchStreak || 0,

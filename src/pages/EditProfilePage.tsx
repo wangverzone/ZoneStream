@@ -48,6 +48,18 @@ const PRESET_BANNERS = [
   { label: 'Xianxia Cultivator', src: heroFallbackImg },
 ];
 
+const AVATAR_BG_PRESETS = [
+  { id: '', label: 'Default', hex: '' },
+  { id: '#E84A18', label: 'Sunset Ember', hex: '#E84A18' },
+  { id: '#4F46E5', label: 'Royal Indigo', hex: '#4F46E5' },
+  { id: '#059669', label: 'Emerald Jade', hex: '#059669' },
+  { id: '#E11D48', label: 'Crimson Rose', hex: '#E11D48' },
+  { id: '#D97706', label: 'Amber Gold', hex: '#D97706' },
+  { id: '#0891B2', label: 'Cyan Cyber', hex: '#0891B2' },
+  { id: '#7C3AED', label: 'Abyssal Violet', hex: '#7C3AED' },
+  { id: '#0F172A', label: 'Deep Obsidian', hex: '#0F172A' },
+];
+
 function fileToCompressedDataUrl(file: File, maxSize: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -95,7 +107,9 @@ export function EditProfilePage() {
   const [activeBorder, setActiveBorder] = useState(user?.activeBorder || 'none');
   const [activeBadge, setActiveBadge] = useState(user?.activeBadge || 'Member');
   const [profileTheme, setProfileTheme] = useState(user?.profileTheme || 'default');
+  const [profileBgColor, setProfileBgColor] = useState(user?.profileBgColor || '');
   const [statusEmoji, setStatusEmoji] = useState(user?.statusEmoji || '');
+  const [borderFilter, setBorderFilter] = useState<'all' | 'vip' | 'streak'>('all');
 
   const [editingField, setEditingField] = useState<
     | 'name'
@@ -154,6 +168,7 @@ export function EditProfilePage() {
         resolveDisplayBadgeLabel(user.activeBadge, founderUser, Boolean(user.isPremium || isPremium))
       );
       setProfileTheme(user.profileTheme || 'default');
+      setProfileBgColor(user.profileBgColor || '');
       setStatusEmoji(user.statusEmoji || '');
     }
   }, [user, navigate, isPremium]);
@@ -176,6 +191,7 @@ export function EditProfilePage() {
       activeBorder: string;
       activeBadge: string;
       profileTheme: string;
+      profileBgColor: string;
       statusEmoji: string;
     }>,
     label = 'Tersimpan otomatis!'
@@ -185,6 +201,7 @@ export function EditProfilePage() {
       name: string;
       bio: string;
       activeBorder: string;
+      profileBgColor?: string;
       photoUrl?: string;
       bannerUrl?: string;
       activeBadge?: string;
@@ -194,6 +211,7 @@ export function EditProfilePage() {
       name: (overrides.name ?? name).trim() || user.name,
       bio: (overrides.bio ?? bio).trim(),
       activeBorder: overrides.activeBorder ?? activeBorder,
+      profileBgColor: overrides.profileBgColor ?? profileBgColor,
     };
     if (canCustomizePremium) {
       const candidateBadge = overrides.activeBadge ?? activeBadge;
@@ -350,15 +368,14 @@ export function EditProfilePage() {
     }
   };
 
-  const borderStyle =
-    AVATAR_BORDER_STYLES[activeBorder]?.ringClass || AVATAR_BORDER_STYLES.classic.ringClass;
   const activeThemeDef = PROFILE_THEMES[profileTheme] || PROFILE_THEMES.default;
   const activeStatusObj = VIP_EMOJIS.find((v) => v.id === statusEmoji);
   const isFounder = user?.role === 'founder';
+  const bestStreak = Math.max(user?.longestStreak || 0, user?.watchStreak || 0);
 
   return (
     <Layout hideBottomNav>
-      <div className="max-w-2xl mx-auto pb-12">
+      <div className="max-w-3xl mx-auto pb-12">
         <input
           ref={avatarInputRef}
           type="file"
@@ -374,8 +391,17 @@ export function EditProfilePage() {
           className="hidden"
         />
 
-        {/* Banner Header + Live Discord Theme Preview */}
-        <div className={`relative pb-4 ${activeThemeDef.shellClass}`}>
+        {/* Banner Header + Live Customization Preview */}
+        <div
+          className={`relative pb-5 sm:rounded-b-3xl overflow-hidden border-b sm:border border-slate-200 dark:border-white/[0.08] ${activeThemeDef.shellClass}`}
+          style={
+            profileBgColor
+              ? {
+                  backgroundImage: `radial-gradient(ellipse at top, ${profileBgColor}38 0%, transparent 72%)`,
+                }
+              : undefined
+          }
+        >
           <div className="relative h-52 sm:h-64 w-full overflow-hidden bg-slate-900 dark:bg-[#14161D]">
             <img
               src={bannerUrl || defaultBannerImg}
@@ -384,10 +410,17 @@ export function EditProfilePage() {
               className="w-full h-full object-cover"
             />
             <div className={`absolute inset-0 bg-gradient-to-t ${activeThemeDef.bannerGradientOverlay}`} />
+            {profileBgColor && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 opacity-30 mix-blend-soft-light pointer-events-none"
+                style={{ backgroundColor: profileBgColor }}
+              />
+            )}
 
             <button
               type="button"
-              onClick={ async () => {
+              onClick={async () => {
                 await triggerAutoSave({});
                 navigate('/profile');
               }}
@@ -428,6 +461,7 @@ export function EditProfilePage() {
                 src={photoUrl}
                 alt={name}
                 decorationId={activeBorder}
+                bgColor={profileBgColor}
                 size="xl"
               >
                 <button
@@ -473,8 +507,292 @@ export function EditProfilePage() {
           </div>
         </div>
 
+        {/* Dedicated Profile Customization Section */}
+        <section
+          aria-labelledby="profile-customization-heading"
+          className="px-4 mt-6"
+        >
+          <div className="rounded-2xl bg-white dark:bg-[#13151C] border border-slate-200 dark:border-white/[0.06] p-4 sm:p-5 shadow-sm dark:shadow-none space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3.5 border-b border-slate-100 dark:border-white/[0.06]">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="w-9 h-9 rounded-xl bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center shrink-0">
+                  <Palette className="w-4 h-4" />
+                </span>
+                <div className="min-w-0">
+                  <h2
+                    id="profile-customization-heading"
+                    className="text-sm sm:text-base font-extrabold text-slate-900 dark:text-white"
+                  >
+                    Profile Customization
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
+                    Pilih warna latar belakang avatar &amp; profil, atau pasang border animasi premium
+                  </p>
+                </div>
+              </div>
+              {profileBgColor && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProfileBgColor('');
+                    void triggerAutoSave({ profileBgColor: '' }, 'Warna latar direset ke default!');
+                  }}
+                  className="text-xs font-bold text-slate-500 hover:text-[#E84A18] transition-colors whitespace-nowrap shrink-0"
+                >
+                  Reset Warna
+                </button>
+              )}
+            </div>
+
+            {/* 1. Custom Background Color Picker */}
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2.5">
+                <p className="text-xs font-extrabold text-slate-800 dark:text-gray-200">
+                  Warna Latar Belakang Avatar &amp; Aura Profil
+                </p>
+                <span className="text-[11px] font-mono tabular-nums text-slate-500 dark:text-gray-400">
+                  {profileBgColor || 'Default'}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                {AVATAR_BG_PRESETS.map((swatch) => {
+                  const isSelected =
+                    (profileBgColor || '').toUpperCase() === swatch.hex.toUpperCase();
+                  return (
+                    <button
+                      key={swatch.label}
+                      type="button"
+                      title={swatch.label}
+                      aria-label={`Pilih warna latar ${swatch.label}`}
+                      onClick={() => {
+                        setProfileBgColor(swatch.hex);
+                        void triggerAutoSave(
+                          { profileBgColor: swatch.hex },
+                          swatch.hex
+                            ? `Warna latar ${swatch.label} dipasang!`
+                            : 'Warna latar default dipasang!'
+                        );
+                      }}
+                      className={`h-10 px-3 rounded-xl border text-xs font-bold inline-flex items-center gap-2 transition-all whitespace-nowrap shrink-0 ${
+                        isSelected
+                          ? 'border-[#E84A18] bg-[#E84A18]/10 text-slate-900 dark:text-white ring-1 ring-[#E84A18]/50'
+                          : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#191C26] dark:hover:bg-[#222634] text-slate-700 dark:text-gray-300'
+                      }`}
+                    >
+                      <span
+                        className="w-4 h-4 rounded-full border border-black/15 dark:border-white/20 shrink-0"
+                        style={
+                          swatch.hex
+                            ? { backgroundColor: swatch.hex }
+                            : {
+                                backgroundImage:
+                                  'linear-gradient(135deg, #cbd5e1 25%, #1e293b 75%)',
+                              }
+                        }
+                      />
+                      <span>{swatch.label}</span>
+                      {isSelected && <Check className="w-3.5 h-3.5 text-[#E84A18]" />}
+                    </button>
+                  );
+                })}
+
+                {/* Custom Hex Color Input */}
+                <label className="h-10 px-3 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#191C26] dark:hover:bg-[#222634] text-xs font-bold text-slate-700 dark:text-gray-200 inline-flex items-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0">
+                  <input
+                    type="color"
+                    aria-label="Pilih warna kustom"
+                    value={profileBgColor || '#E84A18'}
+                    onChange={(e) => {
+                      const nextHex = e.target.value.toUpperCase();
+                      setProfileBgColor(nextHex);
+                    }}
+                    onBlur={(e) => {
+                      const nextHex = e.target.value.toUpperCase();
+                      void triggerAutoSave(
+                        { profileBgColor: nextHex },
+                        `Warna kustom ${nextHex} tersimpan!`
+                      );
+                    }}
+                    className="w-5 h-5 rounded border-0 bg-transparent p-0 cursor-pointer"
+                  />
+                  <span>Warna Kustom</span>
+                </label>
+              </div>
+            </div>
+
+            {/* 2. Premium Animated Borders Grid */}
+            <div className="pt-4 border-t border-slate-100 dark:border-white/[0.06]">
+              <div className="flex flex-wrap items-center justify-between gap-2.5 mb-3">
+                <div>
+                  <p className="text-xs font-extrabold text-slate-800 dark:text-gray-200">
+                    Border Animasi Avatar
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                    Pasang bingkai animasi 3D di sekeliling foto profilmu
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0B0D12] border border-slate-200 dark:border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => setBorderFilter('all')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors ${
+                      borderFilter === 'all'
+                        ? 'bg-white dark:bg-[#1C1F2B] text-slate-900 dark:text-white shadow-sm'
+                        : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Semua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBorderFilter('vip')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors ${
+                      borderFilter === 'vip'
+                        ? 'bg-white dark:bg-[#1C1F2B] text-[#E84A18] shadow-sm'
+                        : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Animasi VIP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBorderFilter('streak')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors ${
+                      borderFilter === 'streak'
+                        ? 'bg-white dark:bg-[#1C1F2B] text-amber-500 shadow-sm'
+                        : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Reward Streak
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                {(borderFilter === 'all' || borderFilter === 'streak') &&
+                  STREAK_FRAME_REWARDS.map((sf) => {
+                    const unlocked = Boolean(
+                      user?.role === 'founder' ||
+                        (user?.unlockedStreakFrames || []).includes(sf.id) ||
+                        bestStreak >= sf.minStreak
+                    );
+                    const selected = normalizeDecorationId(activeBorder) === sf.id;
+                    return (
+                      <button
+                        key={sf.id}
+                        type="button"
+                        disabled={!unlocked}
+                        onClick={() => {
+                          setActiveBorder(sf.id);
+                          void triggerAutoSave(
+                            { activeBorder: sf.id },
+                            `Frame ${sf.name} berhasil dipasang!`
+                          );
+                        }}
+                        className={`relative rounded-xl p-3 border flex flex-col items-center text-center gap-2 transition-colors ${
+                          selected
+                            ? 'border-[#E84A18] bg-[#E84A18]/10 ring-1 ring-[#E84A18]/40'
+                            : !unlocked
+                            ? 'border-slate-200 dark:border-white/5 bg-slate-50/70 dark:bg-[#171920] opacity-60 cursor-not-allowed'
+                            : 'border-amber-500/30 bg-amber-500/[0.05] hover:bg-amber-500/[0.1]'
+                        }`}
+                      >
+                        <div className="py-1">
+                          <AvatarDecoration
+                            src={photoUrl}
+                            alt={sf.name}
+                            decorationId={sf.id}
+                            bgColor={profileBgColor}
+                            size="md"
+                          />
+                        </div>
+                        <div className="min-w-0 w-full">
+                          <p className="text-[11px] font-extrabold text-slate-900 dark:text-white truncate">
+                            {sf.name}
+                          </p>
+                          <p className="text-[10px] text-amber-600 dark:text-amber-300 font-semibold truncate">
+                            {unlocked ? `Streak ${sf.tierLabel}` : `Butuh ${sf.tierLabel}`}
+                          </p>
+                        </div>
+                        {selected && (
+                          <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-[#E84A18] text-white flex items-center justify-center">
+                            <Check className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+                        {!unlocked && (
+                          <Lock className="w-3 h-3 text-slate-400 absolute top-2 right-2" />
+                        )}
+                      </button>
+                    );
+                  })}
+
+                {(borderFilter === 'all' || borderFilter === 'vip') &&
+                  DISCORD_AVATAR_DECORATIONS.map((preset) => {
+                    const locked = Boolean(preset.vip && !canCustomizePremium);
+                    const selected = normalizeDecorationId(activeBorder) === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          if (locked) {
+                            setEditingField('premium-lock');
+                            return;
+                          }
+                          setActiveBorder(preset.id);
+                          void triggerAutoSave(
+                            { activeBorder: preset.id },
+                            `Border ${preset.name} dipasang!`
+                          );
+                        }}
+                        className={`relative rounded-xl p-3 border flex flex-col items-center text-center gap-2 transition-colors ${
+                          selected
+                            ? 'border-[#E84A18] bg-[#E84A18]/10 ring-1 ring-[#E84A18]/40'
+                            : locked
+                            ? 'border-slate-200 dark:border-white/5 bg-slate-50/70 dark:bg-[#171920] opacity-75 hover:opacity-100'
+                            : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#181B24] dark:hover:bg-[#212533]'
+                        }`}
+                      >
+                        <div className="py-1">
+                          <AvatarDecoration
+                            src={photoUrl}
+                            alt={preset.name}
+                            decorationId={preset.id}
+                            bgColor={profileBgColor}
+                            size="md"
+                          />
+                        </div>
+                        <div className="min-w-0 w-full">
+                          <p className="text-[11px] font-extrabold text-slate-900 dark:text-white truncate">
+                            {preset.name}
+                          </p>
+                          <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate">
+                            {preset.vip ? 'Animasi VIP' : 'Gratis'}
+                          </p>
+                        </div>
+                        {selected && !locked && (
+                          <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-[#E84A18] text-white flex items-center justify-center">
+                            <Check className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+                        {locked && (
+                          <span className="absolute top-2 right-2 text-[9px] font-extrabold text-amber-500 inline-flex items-center gap-0.5">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>VIP</span>
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* Settings List Card */}
-        <div className="px-4 mt-6">
+        <div className="px-4 mt-5">
           {!canCustomizePremium && (
             <div className="mb-4 rounded-2xl bg-amber-50 dark:bg-gradient-to-r dark:from-[#1D1614] dark:to-[#161821] border border-amber-300 dark:border-amber-500/25 p-3.5 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">

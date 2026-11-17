@@ -122,6 +122,7 @@ export function CommentSection({
     expGained: number;
     levelUp: boolean;
     newLevel: number;
+    coinsGained?: number;
     totalCommentsCount: number;
   } | null>(null);
 
@@ -540,7 +541,11 @@ export function CommentSection({
                     <span>
                       +{commentExpNotice.expGained} EXP dari Komentar!{' '}
                       {commentExpNotice.levelUp
-                        ? `Selamat, naik ke Lv. ${commentExpNotice.newLevel}!`
+                        ? `Selamat, naik ke Lv. ${commentExpNotice.newLevel}!${
+                            commentExpNotice.coinsGained && commentExpNotice.coinsGained > 0
+                              ? ` (+${commentExpNotice.coinsGained.toLocaleString('id-ID')} Koin)`
+                              : ''
+                          }`
                         : `Total ${commentExpNotice.totalCommentsCount} komentar meningkatkan progress level profilmu.`}
                     </span>
                   </div>

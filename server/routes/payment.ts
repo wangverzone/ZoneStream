@@ -11,6 +11,7 @@ import {
 } from '../db.ts';
 import { TransactionModel, type ITransaction } from '../models/Transaction.ts';
 import { createNotification } from '../notifications.ts';
+import { applyExpAndLevelRewards, recordCoinLedgerEntry } from '../coins.ts';
 
 const router = Router();
 
@@ -300,6 +301,10 @@ export async function activatePremiumFromTransaction(
       return findUserByUid(tx.uid);
     }
 
+    let paymentLevelCoinsGained = 0;
+    let paymentLevelAfter = 1;
+    let paymentCoinsAfter = 0;
+
     const updatedUser = await updateUserByUid(tx.uid, (current) => {
       const currentExpiryMs = current.premiumExpiryDate
         ? new Date(current.premiumExpiryDate).getTime()
@@ -309,12 +314,10 @@ export async function activatePremiumFromTransaction(
         baseMs + tx.durationDays * 24 * 60 * 60 * 1000
       ).toISOString();
 
-      let nextExp = (current.exp || 0) + (tx.bonusExp || 0);
-      let nextLevel = current.level || 1;
-      while (nextExp >= getExpNeeded(nextLevel)) {
-        nextExp -= getExpNeeded(nextLevel);
-        nextLevel += 1;
-      }
+      const expRes = applyExpAndLevelRewards(current, tx.bonusExp || 0);
+      paymentLevelCoinsGained = expRes.coinsGained;
+      paymentLevelAfter = expRes.nextLevel;
+      paymentCoinsAfter = expRes.nextCoins;
 
       return {
         ...current,
@@ -327,10 +330,22 @@ export async function activatePremiumFromTransaction(
             ? 'Verified VIP'
             : current.activeBadge,
         activeBorder: current.activeBorder === 'classic' ? 'gold' : current.activeBorder,
-        level: nextLevel,
-        exp: nextExp,
+        level: expRes.nextLevel,
+        exp: expRes.nextExp,
+        coins: expRes.nextCoins,
+        totalCoinsEarned: expRes.nextTotalCoinsEarned,
       };
     });
+
+    if (paymentLevelCoinsGained > 0) {
+      void recordCoinLedgerEntry({
+        uid: tx.uid,
+        type: 'level_up',
+        amount: paymentLevelCoinsGained,
+        balanceAfter: paymentCoinsAfter,
+        note: `Naik ke Level ${paymentLevelAfter} dari bonus EXP ${tx.planName}`,
+      });
+    }
 
     await createNotification({
       uid: tx.uid,

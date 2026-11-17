@@ -6,6 +6,7 @@ import {
   Clock,
   Crown,
   Flame,
+  Gift,
   Heart,
   MessageCircle,
   Play,
@@ -23,6 +24,7 @@ import { CountryFlagBadge } from '../components/CountryFlag';
 import { AvatarDecoration } from '../components/AvatarDecoration';
 import { LevelUpCard } from '../components/LevelUpCard';
 import { OnlineStatusPill } from '../components/ProfileStatusBadges';
+import { GiftPremiumModal } from '../components/GiftPremiumModal';
 import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
 import type { PublicProfileDetail, RelationshipStatus } from '../types';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
@@ -57,6 +59,7 @@ export function PublicProfilePage() {
   const [notFound, setNotFound] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [likeBusy, setLikeBusy] = useState(false);
+  const [showGiftPremModal, setShowGiftPremModal] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   const loadProfile = async (silent = false) => {
@@ -247,6 +250,13 @@ export function PublicProfilePage() {
         {/* Discord-themed 3D Profile Header Card */}
         <div
           className={`relative sm:rounded-3xl overflow-hidden border-b sm:border border-slate-200 dark:border-white/[0.12] shadow-[0_22px_55px_rgba(0,0,0,0.5)] ${themeDef.shellClass}`}
+          style={
+            profile.profileBgColor
+              ? {
+                  backgroundImage: `radial-gradient(ellipse at top, ${profile.profileBgColor}34 0%, transparent 72%)`,
+                }
+              : undefined
+          }
         >
           {/* Banner */}
           <div className="relative h-52 sm:h-72 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
@@ -258,6 +268,13 @@ export function PublicProfilePage() {
               fetchPriority="high"
               className="w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] brightness-[1.02]"
             />
+            {profile.profileBgColor && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-0 opacity-30 mix-blend-soft-light pointer-events-none"
+                style={{ backgroundColor: profile.profileBgColor }}
+              />
+            )}
             <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#090A0E] via-[#090A0E]/65 to-transparent pointer-events-none" />
             <div className="absolute inset-0 ring-1 ring-inset ring-white/10 pointer-events-none" />
 
@@ -292,6 +309,7 @@ export function PublicProfilePage() {
                     src={profile.photoUrl}
                     alt={profile.name}
                     decorationId={profile.activeBorder}
+                    bgColor={profile.profileBgColor}
                     size="xl"
                   >
                     {profile.isOnline && (
@@ -453,6 +471,20 @@ export function PublicProfilePage() {
                       <MessageCircle className="w-4 h-4" />
                       <span>Kirim Pesan</span>
                     </button>
+
+                    {!isTargetFounder && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          viewer ? setShowGiftPremModal(true) : navigate('/profile')
+                        }
+                        className="min-h-[42px] px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 shadow-lg shadow-amber-500/25 transition-colors"
+                        title="Bagikan VIP Premium ke pengguna ini memakai Koin hasil naik level"
+                      >
+                        <Gift className="w-4 h-4" />
+                        <span>Bagi Prem</span>
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -562,6 +594,30 @@ export function PublicProfilePage() {
           </div>
         </div>
       </div>
+
+      <GiftPremiumModal
+        open={showGiftPremModal}
+        onClose={() => setShowGiftPremModal(false)}
+        initialMode="gift"
+        initialRecipient={
+          profile
+            ? {
+                uid: profile.uid,
+                username: profile.username,
+                name: profile.name,
+                photoUrl: profile.photoUrl,
+                isPremium: profile.isPremium,
+                role: profile.role,
+              }
+            : null
+        }
+        onSuccess={(info) => {
+          showToast(
+            `Berhasil membagikan ${info.durationDays} Hari VIP Premium ke ${profile.name}!`
+          );
+          void loadProfile(true);
+        }}
+      />
     </Layout>
   );
 }

@@ -15,6 +15,7 @@ import {
   findUserByIdentifier,
   findUserByUid,
   getJakartaDateString,
+  isDbMongoConnected,
   listAllUsersForFounder,
   sanitizeUser,
   saveOtpCode,
@@ -36,6 +37,11 @@ import {
 } from '../notifications.ts';
 import { recordClanActivity } from '../clanActivity.ts';
 import { getLatestEpisodesSnapshot } from './stream.ts';
+import {
+  applyExpAndLevelRewards,
+  recordCoinLedgerEntry,
+  tryClaimWatchDurationWindow,
+} from '../coins.ts';
 
 const router = Router();
 const FIREBASE_WEB_API_KEY = 'AIzaSyBPXKFLf1xPdo9H9Bw8w8KAPFGY0dYH-04';
@@ -478,6 +484,12 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     let user = await findUserByUid(req.authUser!.uid);
     if (!user) {
+      if (!isDbMongoConnected()) {
+        return res.status(503).json({
+          error: 'Koneksi database sedang sinkronisasi ulang. Sesi tetap dipertahankan.',
+          transient: true,
+        });
+      }
       return res.status(404).json({ error: 'Akun tidak ditemukan' });
     }
     const detectedCountry = detectRequestCountry(req);
@@ -548,6 +560,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
       activeBorder,
       activeBadge,
       profileTheme,
+      profileBgColor,
       statusEmoji,
       countryCode,
     } = req.body || {};
@@ -560,6 +573,14 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
     const hasPremiumAccess = Boolean(existing.isPremium || existing.role === 'founder');
     const cleanBorder = typeof activeBorder === 'string' ? activeBorder.trim().slice(0, 64) : undefined;
     const cleanTheme = typeof profileTheme === 'string' ? profileTheme.trim().slice(0, 64) : undefined;
+    const cleanBgColor =
+      typeof profileBgColor === 'string'
+        ? profileBgColor.trim() === ''
+          ? ''
+          : /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(profileBgColor.trim())
+          ? profileBgColor.trim().toUpperCase()
+          : undefined
+        : undefined;
 
     const streakTier = cleanBorder
       ? STREAK_FRAME_TIERS.find((t) => t.id === cleanBorder)
@@ -677,6 +698,9 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
         nextTheme = hasPremiumAccess ? cleanTheme : 'default';
       }
 
+      const nextBgColor =
+        typeof cleanBgColor === 'string' ? cleanBgColor : current.profileBgColor || '';
+
       let nextStatusEmoji = current.statusEmoji || '';
       if (typeof statusEmoji === 'string') {
         nextStatusEmoji = hasPremiumAccess ? statusEmoji.trim().slice(0, 40) : '';
@@ -696,6 +720,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
         activeBorder: nextBorder,
         activeBadge: nextBadge,
         profileTheme: nextTheme,
+        profileBgColor: nextBgColor,
         statusEmoji: nextStatusEmoji,
         countryCode: cleanCountry,
       };
@@ -767,7 +792,10 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     let expGained = 0;
     let dailyBonusGained = 0;
+    let dailyTaskCoins = 0;
     let levelUp = false;
+    let coinsGained = 0;
+    let finalCoins = 0;
     let finalStreak = 1;
     let finalLongestStreak = 1;
     let finalLevel = 1;
@@ -800,6 +828,7 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
         nextStreak = current.lastWatchDate === yesterdayStr ? nextStreak + 1 : 1;
         nextDailyCount = 1;
         dailyBonusGained = (nextStreak >= 2 ? 75 : 50) * multiplier;
+        dailyTaskCoins = current.role === 'founder' ? 0 : nextStreak >= 3 ? 50 : 25;
       } else {
         nextStreak = Math.max(1, nextStreak);
         nextDailyCount = current.lastWatchDate === todayStr ? nextDailyCount + 1 : 1;
@@ -824,23 +853,14 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
       }
 
       expGained = baseEpisodeExp + dailyBonusGained;
-      let nextExp = current.exp + expGained;
-      let nextLevel = current.level;
-      if (current.role === 'founder') {
-        nextLevel = 999999;
-        nextExp = 0;
-        levelUp = false;
-      } else {
-        while (nextExp >= getExpNeededForLevel(nextLevel)) {
-          nextExp -= getExpNeededForLevel(nextLevel);
-          nextLevel += 1;
-          levelUp = true;
-        }
-      }
+      const expRes = applyExpAndLevelRewards(current, expGained);
+      levelUp = expRes.levelUp;
+      coinsGained = expRes.coinsGained;
+      finalCoins = expRes.nextCoins + dailyTaskCoins;
 
       finalStreak = nextStreak;
       finalLongestStreak = nextLongestStreak;
-      finalLevel = nextLevel;
+      finalLevel = expRes.nextLevel;
 
       const filtered = current.watchHistory.filter((h: WatchHistoryItem) => h.id !== id);
       const entry: WatchHistoryItem = {
@@ -862,8 +882,10 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
 
       return {
         ...current,
-        level: nextLevel,
-        exp: nextExp,
+        level: expRes.nextLevel,
+        exp: expRes.nextExp,
+        coins: expRes.nextCoins + dailyTaskCoins,
+        totalCoinsEarned: expRes.nextTotalCoinsEarned + dailyTaskCoins,
         activeBorder: nextActiveBorder,
         lastWatchDate: todayStr,
         watchStreak: nextStreak,
@@ -943,6 +965,26 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
       });
     }
 
+    if (dailyTaskCoins > 0) {
+      void recordCoinLedgerEntry({
+        uid,
+        type: 'milestone_bonus',
+        amount: dailyTaskCoins,
+        balanceAfter: Math.max(0, finalCoins - coinsGained),
+        note: `Misi Nonton Harian (${finalStreak} hari streak) · ${cleanTitle}`,
+      });
+    }
+
+    if (coinsGained > 0) {
+      void recordCoinLedgerEntry({
+        uid,
+        type: 'level_up',
+        amount: coinsGained,
+        balanceAfter: finalCoins,
+        note: `Naik ke Level ${finalLevel} dari menonton ${cleanTitle}`,
+      });
+    }
+
     return res.json({
       ok: true,
       expGained,
@@ -951,6 +993,8 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
       longestStreak: finalLongestStreak,
       levelUp,
       newLevel: finalLevel,
+      coinsGained: coinsGained + dailyTaskCoins,
+      newCoins: finalCoins,
       isDoubleExp,
       newlyUnlockedFrame,
       user: sanitizeUser(updated),
@@ -965,13 +1009,31 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
 router.post('/watch-duration', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const uid = req.authUser!.uid;
+    // Strict anti-farming guard: max 1 claim per 45s and capped to 1 min per call
+    if (!tryClaimWatchDurationWindow(uid)) {
+      const existing = await findUserByUid(uid);
+      return res.json({
+        ok: true,
+        throttled: true,
+        expGained: 0,
+        minutesAdded: 0,
+        coinsGained: 0,
+        levelUp: false,
+        newLevel: existing?.level || 1,
+        newCoins: existing?.coins || 0,
+        user: existing ? sanitizeUser(existing) : undefined,
+      });
+    }
+
     const rawMinutes = Number(req.body?.minutes ?? 1);
-    const minutes = Math.min(10, Math.max(1, Math.round(rawMinutes || 1)));
+    const minutes = Math.min(2, Math.max(1, Math.round(rawMinutes || 1)));
     const cleanTitle = String(req.body?.title || 'Anime').trim().slice(0, 60);
 
     let expGained = 0;
     let levelUp = false;
     let finalLevel = 1;
+    let coinsGained = 0;
+    let finalCoins = 0;
     let isDoubleExp = false;
     let finalWatchMinutes = 0;
 
@@ -986,22 +1048,12 @@ router.post('/watch-duration', requireAuth, async (req: AuthenticatedRequest, re
       isDoubleExp = multiplier === 2;
 
       expGained = minutes * 15 * multiplier;
-      let nextExp = (current.exp || 0) + expGained;
-      let nextLevel = current.level || 1;
+      const expRes = applyExpAndLevelRewards(current, expGained);
+      levelUp = expRes.levelUp;
+      coinsGained = expRes.coinsGained;
+      finalCoins = expRes.nextCoins;
+      finalLevel = expRes.nextLevel;
 
-      if (current.role === 'founder') {
-        nextLevel = 999999;
-        nextExp = 0;
-        levelUp = false;
-      } else {
-        while (nextExp >= getExpNeededForLevel(nextLevel)) {
-          nextExp -= getExpNeededForLevel(nextLevel);
-          nextLevel += 1;
-          levelUp = true;
-        }
-      }
-
-      finalLevel = nextLevel;
       const baseMinutes = Math.max(
         current.totalWatchMinutes || 0,
         (current.totalEpisodesWatched || current.watchHistory?.length || 0) * 18
@@ -1010,8 +1062,10 @@ router.post('/watch-duration', requireAuth, async (req: AuthenticatedRequest, re
 
       return {
         ...current,
-        level: nextLevel,
-        exp: nextExp,
+        level: expRes.nextLevel,
+        exp: expRes.nextExp,
+        coins: expRes.nextCoins,
+        totalCoinsEarned: expRes.nextTotalCoinsEarned,
         totalWatchMinutes: finalWatchMinutes,
       };
     });
@@ -1034,6 +1088,16 @@ router.post('/watch-duration', requireAuth, async (req: AuthenticatedRequest, re
       });
     }
 
+    if (coinsGained > 0) {
+      void recordCoinLedgerEntry({
+        uid,
+        type: 'level_up',
+        amount: coinsGained,
+        balanceAfter: finalCoins,
+        note: `Naik ke Level ${finalLevel} dari durasi menonton ${cleanTitle}`,
+      });
+    }
+
     return res.json({
       ok: true,
       expGained,
@@ -1041,6 +1105,8 @@ router.post('/watch-duration', requireAuth, async (req: AuthenticatedRequest, re
       totalWatchMinutes: finalWatchMinutes,
       levelUp,
       newLevel: finalLevel,
+      coinsGained,
+      newCoins: finalCoins,
       isDoubleExp,
       user: sanitizeUser(updated),
     });

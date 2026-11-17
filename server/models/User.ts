@@ -41,6 +41,7 @@ export interface IUser {
   activeBadge: string;
   activeBorder: string;
   profileTheme: string;
+  profileBgColor?: string;
   statusEmoji: string;
   countryCode?: string;
   lastWatchDate?: string;
@@ -52,6 +53,16 @@ export interface IUser {
   totalEpisodesWatched?: number;
   totalWatchMinutes?: number;
   totalCommentsCount?: number;
+  coins?: number;
+  totalCoinsEarned?: number;
+  totalCoinsSpent?: number;
+  totalGiftsSent?: number;
+  totalGiftsReceived?: number;
+  lastCheckInAt?: string;
+  checkInStreak?: number;
+  longestCheckInStreak?: number;
+  totalCheckIns?: number;
+  checkInDates?: string[];
   watchHistory: WatchHistoryItem[];
   bookmarks: BookmarkItem[];
   episodeBookmarks: EpisodeBookmarkItem[];
@@ -146,6 +157,7 @@ const UserSchema = new Schema<IUserDocument>(
     activeBadge: { type: String, default: 'Member' },
     activeBorder: { type: String, default: 'classic' },
     profileTheme: { type: String, default: 'default' },
+    profileBgColor: { type: String, default: '' },
     statusEmoji: { type: String, default: '' },
     countryCode: { type: String, default: 'ID' },
     lastWatchDate: { type: String, default: '' },
@@ -157,6 +169,16 @@ const UserSchema = new Schema<IUserDocument>(
     totalEpisodesWatched: { type: Number, default: 0, min: 0 },
     totalWatchMinutes: { type: Number, default: 0, min: 0 },
     totalCommentsCount: { type: Number, default: 0, min: 0 },
+    coins: { type: Number, default: 0, min: 0 },
+    totalCoinsEarned: { type: Number, default: 0, min: 0 },
+    totalCoinsSpent: { type: Number, default: 0, min: 0 },
+    totalGiftsSent: { type: Number, default: 0, min: 0 },
+    totalGiftsReceived: { type: Number, default: 0, min: 0 },
+    lastCheckInAt: { type: String, default: '' },
+    checkInStreak: { type: Number, default: 0, min: 0 },
+    longestCheckInStreak: { type: Number, default: 0, min: 0 },
+    totalCheckIns: { type: Number, default: 0, min: 0 },
+    checkInDates: { type: [String], default: [] },
     watchHistory: { type: [WatchHistorySchema], default: [] },
     bookmarks: { type: [BookmarkSchema], default: [] },
     episodeBookmarks: { type: [EpisodeBookmarkSchema], default: [] },

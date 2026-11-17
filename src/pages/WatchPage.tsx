@@ -215,6 +215,8 @@ export function WatchPage() {
             longestStreak: prev?.longestStreak,
             levelUp: Boolean(prev?.levelUp || durRes.levelUp),
             newLevel: durRes.newLevel || prev?.newLevel || 1,
+            coinsGained: (prev?.coinsGained || 0) + (durRes.coinsGained || 0),
+            newCoins: durRes.newCoins ?? prev?.newCoins,
             isDoubleExp: Boolean(prev?.isDoubleExp || durRes.isDoubleExp),
             newlyUnlockedFrame: prev?.newlyUnlockedFrame || null,
           }));
@@ -375,7 +377,11 @@ export function WatchPage() {
                   ? ` (Termasuk Bonus Nonton Harian +${reward.dailyBonusGained} EXP)`
                   : ''}
                 {reward.levelUp
-                  ? ` · NAIK LEVEL ke Lv.${reward.newLevel >= 999999 ? '∞' : reward.newLevel}!`
+                  ? ` · NAIK LEVEL ke Lv.${reward.newLevel >= 999999 ? '∞' : reward.newLevel}!${
+                      reward.coinsGained && reward.coinsGained > 0
+                        ? ` (+${reward.coinsGained.toLocaleString('id-ID')} Koin)`
+                        : ''
+                    }`
                   : ''}
               </span>
               {reward.isDoubleExp && (

@@ -49,6 +49,7 @@ export interface UserProfile {
   activeBadge: string;
   activeBorder: string;
   profileTheme?: string;
+  profileBgColor?: string;
   statusEmoji?: string;
   countryCode?: string;
   lastWatchDate?: string;
@@ -60,6 +61,16 @@ export interface UserProfile {
   totalEpisodesWatched?: number;
   totalWatchMinutes?: number;
   totalCommentsCount?: number;
+  coins?: number;
+  totalCoinsEarned?: number;
+  totalCoinsSpent?: number;
+  totalGiftsSent?: number;
+  totalGiftsReceived?: number;
+  lastCheckInAt?: string;
+  checkInStreak?: number;
+  longestCheckInStreak?: number;
+  totalCheckIns?: number;
+  checkInDates?: string[];
   charisma?: number;
   isBanned?: boolean;
   banReason?: string;
@@ -103,8 +114,42 @@ export interface WatchHistoryReward {
   longestStreak?: number;
   levelUp: boolean;
   newLevel: number;
+  coinsGained?: number;
+  newCoins?: number;
   isDoubleExp?: boolean;
   newlyUnlockedFrame?: { id: string; name: string; minStreak: number } | null;
+}
+
+export interface CoinPremiumPackage {
+  id: string;
+  name: string;
+  coinCost: number;
+  durationDays: number;
+  bonusExp: number;
+  badgeTag?: string;
+  description: string;
+}
+
+export interface CoinLedgerEntry {
+  txId: string;
+  uid: string;
+  type:
+    | 'daily_checkin'
+    | 'level_up'
+    | 'milestone_bonus'
+    | 'gift_sent'
+    | 'gift_received'
+    | 'self_redeem'
+    | 'refund';
+  amount: number;
+  balanceAfter: number;
+  peerUid?: string;
+  peerName?: string;
+  peerUsername?: string;
+  packageId?: string;
+  durationDays?: number;
+  note: string;
+  createdAt: string;
 }
 
 export interface PremiumPackage {
@@ -274,6 +319,7 @@ export interface PublicCommunityUser {
   activeBadge: string;
   activeBorder: string;
   profileTheme: string;
+  profileBgColor?: string;
   statusEmoji: string;
   countryCode?: string;
   watchStreak: number;
