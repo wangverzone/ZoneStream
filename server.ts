@@ -1,16 +1,20 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { createApp } from './server/app.ts';
 import { connectDB } from './server/db.ts';
+import { attachChatWebSocketServer } from './server/wsChat.ts';
 
 dotenv.config();
 
 async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const app = createApp();
+  const httpServer = http.createServer(app);
+  attachChatWebSocketServer(httpServer);
 
   await connectDB();
 
@@ -32,8 +36,8 @@ async function startServer() {
     }
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[ZoneStream] Server listening on http://0.0.0.0:${PORT}`);
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`[ZoneStream] Server + Chat WebSocket listening on http://0.0.0.0:${PORT}`);
   });
 }
 

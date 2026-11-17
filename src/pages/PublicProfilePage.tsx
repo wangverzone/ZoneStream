@@ -23,12 +23,12 @@ import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import { AvatarDecoration, getLevelRankTier } from '../components/AvatarDecoration';
 import { LevelUpCard } from '../components/LevelUpCard';
-import { OnlineStatusPill } from '../components/ProfileStatusBadges';
 import { GiftPremiumModal } from '../components/GiftPremiumModal';
+import { PremiumTierIndicator } from '../components/PremiumTierIndicator';
 import { BannerMedia } from '../components/BannerMedia';
 import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
+import { resolveApiUrl } from '../utils/apiBase';
 import type { PublicProfileDetail, RelationshipStatus } from '../types';
-import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
 
 function getToken(): string {
@@ -238,276 +238,337 @@ export function PublicProfilePage() {
     PROFILE_THEMES[hasVip ? profile.profileTheme || 'default' : 'default'] ||
     PROFILE_THEMES.default;
   const rel = profile.relationship || (viewer?.uid === profile.uid ? 'self' : 'none');
+  const isViewerFounder = viewer?.role === 'founder';
+  const canViewVipExpiry = Boolean(
+    rel === 'self' || isViewerFounder || profile.canViewVipExpiry
+  );
+
+  const safeBadge = resolveDisplayBadgeLabel(profile.activeBadge, isTargetFounder, hasVip);
+  const BadgeIcon = TELEGRAM_BADGE_MAP.get(safeBadge)?.icon || Sparkles;
+  const rankTier = getLevelRankTier(profile.level, isTargetFounder);
 
   return (
     <Layout>
-      <div className="max-w-4xl mx-auto px-0 sm:px-6 lg:px-8 pt-0 sm:pt-5 pb-12">
+      <div className="max-w-5xl mx-auto px-0 sm:px-6 lg:px-8 pt-0 sm:pt-5 pb-12">
         {toast && (
           <div className="fixed top-20 right-4 z-50 px-4 py-2.5 rounded-xl bg-[#11131B] text-white border border-[#E84A18]/40 text-xs font-bold shadow-2xl">
             {toast}
           </div>
         )}
 
-        {/* Discord-themed 3D Profile Header Card */}
+        {/* Unified Public Profile Header Card */}
         <div
-          className={`relative sm:rounded-3xl overflow-hidden border-b sm:border border-slate-200 dark:border-white/[0.12] shadow-[0_22px_55px_rgba(0,0,0,0.5)] ${themeDef.shellClass}`}
+          className="relative sm:rounded-3xl overflow-hidden bg-white dark:bg-[#13151C] border-b sm:border border-slate-200 dark:border-white/[0.1] shadow-sm dark:shadow-[0_22px_55px_rgba(0,0,0,0.45)]"
           style={
             profile.profileBgColor
               ? {
-                  backgroundImage: `radial-gradient(ellipse at top, ${profile.profileBgColor}34 0%, transparent 72%)`,
+                  backgroundImage: `radial-gradient(ellipse at top, ${profile.profileBgColor}28 0%, transparent 70%)`,
                 }
               : undefined
           }
         >
+          {themeDef.shellClass && (
+            <div
+              aria-hidden="true"
+              className={`pointer-events-none absolute inset-0 ${themeDef.shellClass}`}
+            />
+          )}
+
           {/* Banner */}
-          <div className="relative h-52 sm:h-72 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
+          <div className="relative h-48 sm:h-64 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
             <BannerMedia
               src={profile.bannerUrl}
               fallbackSrc={defaultBannerImg}
               alt={`Latar ${profile.name}`}
               fetchPriority="high"
-              className="w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] brightness-[1.02]"
+              className="w-full h-full object-cover object-center contrast-[1.04] saturate-[1.06]"
             />
             {profile.profileBgColor && (
               <div
                 aria-hidden="true"
-                className="absolute inset-0 opacity-30 mix-blend-soft-light pointer-events-none"
+                className="absolute inset-0 opacity-25 mix-blend-soft-light pointer-events-none"
                 style={{ backgroundColor: profile.profileBgColor }}
               />
             )}
-            <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#090A0E] via-[#090A0E]/65 to-transparent pointer-events-none" />
+            <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-black/75 via-black/30 to-transparent pointer-events-none" />
             <div className="absolute inset-0 ring-1 ring-inset ring-white/10 pointer-events-none" />
 
             <button
               type="button"
               onClick={() => navigate(-1)}
-              className="absolute top-4 left-4 z-20 min-h-[40px] px-3.5 rounded-xl bg-black/65 hover:bg-black/85 backdrop-blur-md text-white text-xs font-bold flex items-center gap-1.5 border border-white/20 shadow-lg transition-colors"
+              className="absolute top-3.5 left-3.5 sm:top-4 sm:left-4 z-20 min-h-[38px] px-3.5 rounded-xl bg-black/60 hover:bg-black/80 backdrop-blur-md text-white text-xs font-bold inline-flex items-center gap-1.5 border border-white/20 shadow-md transition-colors whitespace-nowrap shrink-0"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Kembali</span>
             </button>
 
-            <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+            <div className="absolute top-3.5 right-3.5 sm:top-4 sm:right-4 z-20">
               <span
-                className={`px-3 py-1 rounded-full text-[11px] font-bold backdrop-blur-md border shadow-md ${
+                className={`min-h-[32px] px-3 rounded-full text-[11px] font-bold backdrop-blur-md border shadow-md inline-flex items-center gap-1.5 whitespace-nowrap ${
                   profile.isOnline
-                    ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-200'
+                    ? 'bg-emerald-500/25 border-emerald-400/50 text-emerald-100'
                     : 'bg-black/60 border-white/20 text-gray-200'
                 }`}
               >
-                {formatLastSeen(profile.lastActiveAt, profile.isOnline)}
+                <span
+                  aria-hidden="true"
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    profile.isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-gray-400'
+                  }`}
+                />
+                <span>{formatLastSeen(profile.lastActiveAt, profile.isOnline)}</span>
               </span>
             </div>
           </div>
 
-          {/* Identity & Actions */}
-          <div className="relative px-4 sm:px-8 pb-6 -mt-14 sm:-mt-16">
-            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-              <div className="flex flex-col sm:flex-row sm:items-end gap-4">
-                <div className="relative self-start">
-                  <AvatarDecoration
-                    src={profile.photoUrl}
-                    alt={profile.name}
-                    decorationId={profile.activeBorder}
-                    level={profile.level}
-                    isFounder={isTargetFounder}
-                    bgColor={profile.profileBgColor}
-                    size="xl"
-                  >
-                    {profile.isOnline && (
-                      <span
-                        title="Sedang Online"
-                        className="absolute bottom-2 right-2 z-30 w-4 h-4 rounded-full bg-emerald-500 ring-4 ring-white dark:ring-[#13151C]"
-                      />
-                    )}
-                  </AvatarDecoration>
-                </div>
-
-                <div className="pb-1">
-                  <div className="flex items-center flex-wrap gap-2">
-                    <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)]">
-                      {profile.name}
-                    </h1>
-                    <CountryFlagBadge countryCode={profile.countryCode} size="sm" />
-                    {hasVip && (
-                      <VerifiedBadge
-                        size="lg"
-                        isFounder={isTargetFounder}
-                        badgeLabel={profile.activeBadge}
-                      />
-                    )}
-                    {hasVip && profile.statusEmoji && (
-                      <StatusEmojiBadge statusEmoji={profile.statusEmoji} size="md" />
-                    )}
-                  </div>
-
-                  <div className="mt-1 flex items-center flex-wrap gap-2 text-xs text-slate-500 dark:text-gray-300">
-                    <span className="font-semibold text-slate-700 dark:text-gray-200">
-                      @{profile.username}
-                    </span>
-                    <span>·</span>
-                    <span className="font-mono-tabular">UID: {profile.uid}</span>
-                    <span>·</span>
-                    <span className="font-bold text-[#E84A18]">
-                      {isTargetFounder ? 'Lv. ∞' : `Lv. ${profile.level}`}
-                    </span>
-                    {(() => {
-                      const rankTier = getLevelRankTier(profile.level, isTargetFounder);
-                      return (
-                        <>
-                          <span>·</span>
-                          <span className={`font-bold ${rankTier.textClass}`}>
-                            {rankTier.tierName}
-                          </span>
-                        </>
-                      );
-                    })()}
-                    {hasVip && (() => {
-                      const safeBadge = resolveDisplayBadgeLabel(profile.activeBadge, isTargetFounder, hasVip);
-                      return (
-                        <span
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                            TELEGRAM_BADGE_MAP.get(safeBadge)?.pillClass ||
-                            'bg-amber-500/20 text-amber-400'
-                          }`}
-                        >
-                          {safeBadge}
-                        </span>
-                      );
-                    })()}
-                    <OnlineStatusPill
-                      dbIsOnline={Boolean(profile.isOnline)}
-                      isOwnProfile={rel === 'self'}
-                      onSyncNow={() => loadProfile(true)}
+          {/* Identity, Bio & Action Toolbar */}
+          <div className="relative z-10 px-4 sm:px-7 pb-6">
+            <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-12 sm:-mt-14">
+              <div className="relative shrink-0 self-start">
+                <AvatarDecoration
+                  src={profile.photoUrl}
+                  alt={profile.name}
+                  decorationId={profile.activeBorder}
+                  level={profile.level}
+                  isFounder={isTargetFounder}
+                  bgColor={profile.profileBgColor}
+                  size="xl"
+                >
+                  {profile.isOnline && (
+                    <span
+                      title="Sedang Online"
+                      className="absolute bottom-2 right-2 z-30 w-4 h-4 rounded-full bg-emerald-500 ring-4 ring-white dark:ring-[#13151C]"
                     />
-                  </div>
-                </div>
+                  )}
+                </AvatarDecoration>
               </div>
 
-              {/* Action Buttons & Real-Time Like Button */}
-              <div className="flex items-center flex-wrap gap-2.5">
-                {rel !== 'self' && (
-                  <button
-                    type="button"
-                    disabled={likeBusy}
-                    onClick={handleLikeProfile}
-                    className={`min-h-[42px] px-4 rounded-xl text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-lg transition-transform hover:scale-105 ${
-                      profile.hasLiked
-                        ? 'bg-rose-700 hover:bg-rose-600 shadow-rose-600/30 ring-2 ring-pink-300/40'
-                        : 'bg-pink-600 hover:bg-pink-500 shadow-pink-600/30'
-                    }`}
-                    title="Sukai profil untuk menaikkan Charisma user ini"
-                  >
-                    <Heart className={`w-4 h-4 fill-current ${profile.hasLiked ? 'text-white' : 'text-pink-200 animate-pulse'}`} />
-                    <span>
-                      {profile.hasLiked ? 'Disukai' : 'Sukai Profil'} ({profile.charisma ?? 0})
-                    </span>
-                  </button>
-                )}
+              <div className="min-w-0 flex-1 sm:pb-1">
+                <div className="flex items-center flex-wrap gap-1.5">
+                  <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight truncate">
+                    {profile.name}
+                  </h1>
+                  <CountryFlagBadge countryCode={profile.countryCode} size="sm" />
+                  {hasVip && (
+                    <VerifiedBadge
+                      size="lg"
+                      isFounder={isTargetFounder}
+                      badgeLabel={profile.activeBadge}
+                    />
+                  )}
+                  {hasVip && profile.statusEmoji && (
+                    <StatusEmojiBadge statusEmoji={profile.statusEmoji} size="md" />
+                  )}
+                </div>
 
-                {rel === 'self' ? (
-                  <Link
-                    to="/profile/edit"
-                    className="min-h-[42px] px-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-lg shadow-[#E84A18]/25"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    <span>Edit Profil Saya</span>
-                  </Link>
-                ) : (
-                  <>
-                    {rel === 'none' && (
-                      <button
-                        type="button"
-                        disabled={actionBusy}
-                        onClick={() => handleFriendAction('request')}
-                        className="min-h-[42px] px-4 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-white/10 dark:hover:bg-white/20 text-white text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                {/* Unboxed Zero-Pill Metadata Line */}
+                <div className="mt-1 flex items-center flex-wrap gap-x-2 gap-y-0.5 text-xs text-slate-600 dark:text-gray-300">
+                  <span className="font-semibold text-slate-800 dark:text-gray-100">
+                    @{profile.username}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-400">·</span>
+                  <span className="font-mono tabular-nums">UID {profile.uid}</span>
+                  <span aria-hidden="true" className="text-slate-400">·</span>
+                  <span className="font-mono tabular-nums font-bold text-[#E84A18]">
+                    {isTargetFounder ? 'Lv. ∞' : `Lv. ${profile.level}`}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-400">·</span>
+                  <span className={`font-bold ${rankTier.textClass}`}>
+                    {rankTier.tierName}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-400">·</span>
+                  <span className="inline-flex items-center gap-1 font-semibold">
+                    {hasVip && <BadgeIcon className="w-3.5 h-3.5 text-amber-500" />}
+                    <span>{hasVip ? safeBadge : 'Member'}</span>
+                  </span>
+                  {profile.clan && (
+                    <>
+                      <span aria-hidden="true" className="text-slate-400">·</span>
+                      <Link
+                        to="/leaderboard?tab=clans"
+                        className="font-bold text-amber-600 dark:text-amber-400 hover:underline"
                       >
-                        <UserPlus className="w-4 h-4" />
-                        <span>Tambah Teman</span>
-                      </button>
-                    )}
+                        [{profile.clan}]{profile.clanName ? ` ${profile.clanName}` : ''}
+                      </Link>
+                    </>
+                  )}
+                </div>
 
-                    {rel === 'pending_sent' && (
-                      <button
-                        type="button"
-                        disabled={actionBusy}
-                        onClick={() => handleFriendAction('remove')}
-                        className="min-h-[42px] px-4 rounded-xl bg-amber-500/15 hover:bg-rose-500/15 text-amber-600 dark:text-amber-300 hover:text-rose-500 border border-amber-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
-                      >
-                        <Clock className="w-4 h-4" />
-                        <span>Menunggu · Batalkan</span>
-                      </button>
-                    )}
-
-                    {rel === 'pending_received' && (
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={actionBusy}
-                          onClick={() => handleFriendAction('accept')}
-                          className="min-h-[42px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
-                        >
-                          <Check className="w-4 h-4" />
-                          <span>Terima Teman</span>
-                        </button>
-                        <button
-                          type="button"
-                          disabled={actionBusy}
-                          onClick={() => handleFriendAction('remove')}
-                          className="min-h-[42px] px-3 rounded-xl bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-gray-200 text-xs font-bold inline-flex items-center"
-                          aria-label="Tolak permintaan teman"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    )}
-
-                    {rel === 'friend' && (
-                      <button
-                        type="button"
-                        disabled={actionBusy}
-                        onClick={() => handleFriendAction('remove')}
-                        className="min-h-[42px] px-4 rounded-xl bg-emerald-500/15 hover:bg-rose-500/15 text-emerald-600 dark:text-emerald-300 hover:text-rose-500 border border-emerald-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
-                      >
-                        <UserCheck className="w-4 h-4" />
-                        <span>Berteman</span>
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        viewer ? navigate(`/chat/${profile.uid}`) : navigate('/profile')
-                      }
-                      className="min-h-[42px] px-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-lg shadow-[#E84A18]/25 transition-colors"
-                    >
-                      <MessageCircle className="w-4 h-4" />
-                      <span>Kirim Pesan</span>
-                    </button>
-
-                    {!isTargetFounder && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          viewer ? setShowGiftPremModal(true) : navigate('/profile')
-                        }
-                        className="min-h-[42px] px-4 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 shadow-lg shadow-amber-500/25 transition-colors"
-                        title="Bagikan VIP Premium ke pengguna ini memakai Koin hasil naik level"
-                      >
-                        <Gift className="w-4 h-4" />
-                        <span>Bagi Prem</span>
-                      </button>
-                    )}
-                  </>
-                )}
+                <div className="mt-2.5 flex items-center flex-wrap gap-2">
+                  <PremiumTierIndicator
+                    isPremium={hasVip}
+                    isFounder={isTargetFounder}
+                    premiumPlan={profile.premiumPlan}
+                    premiumExpiryDate={canViewVipExpiry ? profile.premiumExpiryDate : null}
+                    hideRemainingDays={!canViewVipExpiry}
+                  />
+                </div>
               </div>
             </div>
 
             {profile.bio && (
-              <p className="mt-4 text-xs sm:text-sm text-slate-700 dark:text-gray-200 leading-relaxed max-w-2xl">
+              <p className="mt-4 text-xs sm:text-sm text-slate-600 dark:text-gray-300 leading-relaxed max-w-2xl">
                 {profile.bio}
               </p>
             )}
+
+            {/* Full-Width Horizontal Action Toolbar */}
+            <div className="mt-4 pt-4 border-t border-slate-200/80 dark:border-white/[0.08] flex flex-wrap items-center gap-2.5">
+              {rel !== 'self' && (
+                <button
+                  type="button"
+                  disabled={likeBusy}
+                  onClick={handleLikeProfile}
+                  className={`min-h-[40px] px-4 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all cursor-pointer active:scale-[0.98] ${
+                    profile.hasLiked
+                      ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-sm shadow-rose-600/25 ring-1 ring-rose-400/50'
+                      : 'bg-pink-600 hover:bg-pink-500 text-white shadow-sm shadow-pink-600/25'
+                  }`}
+                  title="Sukai profil untuk menaikkan Charisma user ini"
+                >
+                  <Heart className={`w-3.5 h-3.5 fill-current ${profile.hasLiked ? 'text-white' : 'text-pink-100'}`} />
+                  <span>
+                    {profile.hasLiked ? 'Disukai' : 'Sukai Profil'} ({profile.charisma ?? 0})
+                  </span>
+                </button>
+              )}
+
+              {rel === 'self' ? (
+                <Link
+                  to="/profile/edit"
+                  className="min-h-[40px] px-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm shadow-[#E84A18]/25 whitespace-nowrap shrink-0"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Edit Profil Saya</span>
+                </Link>
+              ) : (
+                <>
+                  {rel === 'none' && (
+                    <button
+                      type="button"
+                      disabled={actionBusy}
+                      onClick={() => handleFriendAction('request')}
+                      className="min-h-[40px] px-4 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-white/[0.08] dark:hover:bg-white/[0.14] border border-slate-200 dark:border-white/[0.12] text-slate-900 dark:text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      <span>Tambah Teman</span>
+                    </button>
+                  )}
+
+                  {rel === 'pending_sent' && (
+                    <button
+                      type="button"
+                      disabled={actionBusy}
+                      onClick={() => handleFriendAction('remove')}
+                      className="min-h-[40px] px-4 rounded-xl bg-amber-500/15 hover:bg-rose-500/15 text-amber-700 dark:text-amber-300 hover:text-rose-500 border border-amber-500/30 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Menunggu · Batalkan</span>
+                    </button>
+                  )}
+
+                  {rel === 'pending_received' && (
+                    <div className="inline-flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={() => handleFriendAction('accept')}
+                        className="min-h-[40px] px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Terima Teman</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={actionBusy}
+                        onClick={() => handleFriendAction('remove')}
+                        className="min-h-[40px] w-10 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-rose-500/15 text-slate-700 dark:text-gray-200 hover:text-rose-500 border border-slate-200 dark:border-white/10 text-xs font-bold inline-flex items-center justify-center shrink-0 cursor-pointer"
+                        aria-label="Tolak permintaan teman"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {rel === 'friend' && (
+                    <button
+                      type="button"
+                      disabled={actionBusy}
+                      onClick={() => handleFriendAction('remove')}
+                      className="min-h-[40px] px-4 rounded-xl bg-emerald-500/15 hover:bg-rose-500/15 text-emerald-700 dark:text-emerald-300 hover:text-rose-500 border border-emerald-500/30 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+                    >
+                      <UserCheck className="w-3.5 h-3.5" />
+                      <span>Berteman</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      viewer ? navigate(`/chat/${profile.uid}`) : navigate('/profile')
+                    }
+                    className="min-h-[40px] px-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm shadow-[#E84A18]/25 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+                  >
+                    <MessageCircle className="w-3.5 h-3.5" />
+                    <span>Kirim Pesan</span>
+                  </button>
+
+                  {!isTargetFounder && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        viewer ? setShowGiftPremModal(true) : navigate('/profile')
+                      }
+                      className="min-h-[40px] px-4 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-700 dark:text-amber-300 border border-amber-500/35 text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+                      title="Bagikan VIP Premium ke pengguna ini memakai Koin hasil naik level"
+                    >
+                      <Gift className="w-3.5 h-3.5" />
+                      <span>Bagi Prem</span>
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Quick Community Stats Strip */}
+            <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className={`rounded-2xl p-3.5 border ${themeDef.cardClass}`}>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
+                  <Crown className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Peringkat</span>
+                </p>
+                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono tabular-nums">
+                  {isTargetFounder ? 'Lv. ∞' : `Lv. ${profile.level}`}
+                </p>
+              </div>
+              <div className={`rounded-2xl p-3.5 border ${themeDef.cardClass}`}>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-sky-500" />
+                  <span>Teman</span>
+                </p>
+                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono tabular-nums">
+                  {profile.friendsCount}
+                </p>
+              </div>
+              <div className={`rounded-2xl p-3.5 border ${themeDef.cardClass}`}>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
+                  <Heart className="w-3.5 h-3.5 text-pink-500 fill-current" />
+                  <span>Charisma</span>
+                </p>
+                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono tabular-nums">
+                  {profile.charisma ?? 0}
+                </p>
+              </div>
+              <div className={`rounded-2xl p-3.5 border ${themeDef.cardClass}`}>
+                <p className="text-[11px] font-medium text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
+                  <Flame className="w-3.5 h-3.5 text-orange-500" />
+                  <span>Status</span>
+                </p>
+                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white truncate">
+                  {isTargetFounder ? 'Founder' : hasVip ? 'VIP Member' : 'Member'}
+                </p>
+              </div>
+            </div>
 
             {/* Real-Time Level Up Progress Card */}
             <div className="mt-4">
@@ -521,51 +582,11 @@ export function PublicProfilePage() {
                 totalEpisodesWatched={profile.totalEpisodesWatched}
               />
             </div>
-
-            {/* Quick Community Stats Strip */}
-            <div className="mt-5 grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className={`rounded-2xl p-3.5 ${themeDef.cardClass}`}>
-                <p className="text-[11px] text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
-                  <Crown className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Peringkat</span>
-                </p>
-                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-                  {isTargetFounder ? 'Lv. ∞' : `Lv. ${profile.level}`}
-                </p>
-              </div>
-              <div className={`rounded-2xl p-3.5 ${themeDef.cardClass}`}>
-                <p className="text-[11px] text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5 text-sky-500" />
-                  <span>Teman</span>
-                </p>
-                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-                  {profile.friendsCount}
-                </p>
-              </div>
-              <div className={`rounded-2xl p-3.5 ${themeDef.cardClass}`}>
-                <p className="text-[11px] text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
-                  <Heart className="w-3.5 h-3.5 text-pink-500 fill-current" />
-                  <span>Charisma</span>
-                </p>
-                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white font-mono-tabular">
-                  {profile.charisma ?? 0}
-                </p>
-              </div>
-              <div className={`rounded-2xl p-3.5 ${themeDef.cardClass}`}>
-                <p className="text-[11px] text-slate-500 dark:text-gray-400 flex items-center gap-1.5">
-                  <Flame className="w-3.5 h-3.5 text-orange-500" />
-                  <span>Status</span>
-                </p>
-                <p className="mt-1 text-base font-extrabold text-slate-900 dark:text-white truncate">
-                  {isTargetFounder ? 'Founder' : hasVip ? 'VIP Member' : 'Member'}
-                </p>
-              </div>
-            </div>
           </div>
         </div>
 
         {/* Watch History & Bookmarks */}
-        <div className="mt-6 space-y-6">
+        <div className="mt-6 px-4 sm:px-0 space-y-6">
           <div className="bg-white dark:bg-[#13151C] rounded-3xl p-5 border border-slate-200 dark:border-white/10 shadow-sm">
             <h2 className="text-sm font-extrabold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
               <Play className="w-4 h-4 text-[#E84A18]" />
@@ -573,12 +594,34 @@ export function PublicProfilePage() {
             </h2>
             {profile.recentHistory && profile.recentHistory.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {profile.recentHistory.map((item: any, idx: number) => (
-                  <div key={idx} className="rounded-2xl bg-slate-50 dark:bg-[#1A1D26] p-2.5 border border-slate-200 dark:border-white/5 space-y-1.5">
-                    <img src={item.poster || defaultBannerImg} alt="" className="w-full h-28 rounded-xl object-cover" />
-                    <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{item.title}</p>
-                    <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate">{item.episodeTitle || `Ep ${item.episodeNumber}`}</p>
-                  </div>
+                {profile.recentHistory.map((item, idx) => (
+                  <Link
+                    key={`${item.id}-${idx}`}
+                    to={
+                      item.episodeId
+                        ? `/watch/${item.type}/${item.id}/${item.episodeId}`
+                        : `/detail/${item.type}/${item.id}`
+                    }
+                    className="group rounded-2xl bg-slate-50 dark:bg-[#1A1D26] p-2.5 border border-slate-200/80 dark:border-white/5 hover:border-[#E84A18]/40 transition-colors space-y-1.5"
+                  >
+                    <div className="w-full h-28 rounded-xl overflow-hidden bg-slate-200 dark:bg-[#0D0F16]">
+                      <img
+                        src={item.poster ? resolveApiUrl(item.poster) : defaultBannerImg}
+                        alt={item.title}
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          e.currentTarget.src = defaultBannerImg;
+                        }}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    </div>
+                    <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                      {item.title}
+                    </p>
+                    <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate">
+                      {item.episodeTitle || `Ep ${item.episodeNumber}`}
+                    </p>
+                  </Link>
                 ))}
               </div>
             ) : (
@@ -593,12 +636,30 @@ export function PublicProfilePage() {
             </h2>
             {profile.bookmarks && profile.bookmarks.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {profile.bookmarks.map((b: any, idx: number) => (
-                  <div key={idx} className="rounded-2xl bg-slate-50 dark:bg-[#1A1D26] p-2.5 border border-slate-200 dark:border-white/5 space-y-1.5">
-                    <img src={b.poster || defaultBannerImg} alt="" className="w-full h-28 rounded-xl object-cover" />
-                    <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{b.title}</p>
-                    <p className="text-[10px] text-amber-500 font-bold">★ {b.rating || '8.5'}</p>
-                  </div>
+                {profile.bookmarks.map((b, idx) => (
+                  <Link
+                    key={`${b.id}-${idx}`}
+                    to={`/detail/${b.type}/${b.id}`}
+                    className="group rounded-2xl bg-slate-50 dark:bg-[#1A1D26] p-2.5 border border-slate-200/80 dark:border-white/5 hover:border-amber-500/40 transition-colors space-y-1.5"
+                  >
+                    <div className="w-full h-28 rounded-xl overflow-hidden bg-slate-200 dark:bg-[#0D0F16]">
+                      <img
+                        src={b.poster ? resolveApiUrl(b.poster) : defaultBannerImg}
+                        alt={b.title}
+                        referrerPolicy="no-referrer"
+                        onError={(e) => {
+                          e.currentTarget.src = defaultBannerImg;
+                        }}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                      />
+                    </div>
+                    <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                      {b.title}
+                    </p>
+                    <p className="text-[10px] text-amber-500 font-bold">
+                      ★ {b.rating || '8.5'}
+                    </p>
+                  </Link>
                 ))}
               </div>
             ) : (

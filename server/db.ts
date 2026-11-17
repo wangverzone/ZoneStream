@@ -1036,6 +1036,7 @@ export function toCommunityUserSummary(user: IUser) {
     charisma: pub.role === 'founder' ? Math.max(9999, Number(pub.charisma ?? 9999)) : Number(pub.charisma ?? 0),
     isPremium: Boolean(pub.isPremium || pub.role === 'founder'),
     isVerified: Boolean(pub.isVerified || pub.isPremium || pub.role === 'founder'),
+    premiumPlan: pub.role === 'founder' ? 'Founder Lifetime' : pub.premiumPlan || '',
     activeBadge: pub.activeBadge || (pub.role === 'founder' ? 'Verified Founder' : 'Member'),
     activeBorder: pub.activeBorder || 'classic',
     profileTheme: pub.profileTheme || 'default',

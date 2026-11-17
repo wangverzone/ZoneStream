@@ -19,6 +19,7 @@ import {
   getJakartaDateString,
   isDbMongoConnected,
   listAllUsersForFounder,
+  readFallbackJson,
   sanitizeUser,
   saveOtpCode,
   setAllUsersBanStatus,
@@ -30,6 +31,8 @@ import {
   verifyAndConsumeOtpCode,
 } from '../db.ts';
 import { CommentModel } from '../models/Comment.ts';
+import { TransactionModel, type ITransaction } from '../models/Transaction.ts';
+import { CoinTransactionModel, type ICoinTransaction } from '../models/CoinTransaction.ts';
 import type { BookmarkItem, WatchHistoryItem } from '../models/User.ts';
 import {
   getUserNotifications,
@@ -1315,9 +1318,10 @@ router.post('/episode-bookmark', requireAuth, async (req: AuthenticatedRequest, 
 // =========================================================================
 
 async function ensureFounderActor(req: AuthenticatedRequest): Promise<boolean> {
-  if (!req.authUser || req.authUser.role !== 'founder') return false;
+  if (!req.authUser) return false;
+  if (req.authUser.role !== 'founder' && req.authUser.uid !== '00000') return false;
   const actor = await findUserByUid(req.authUser.uid);
-  return Boolean(actor && actor.role === 'founder');
+  return Boolean(actor && (actor.role === 'founder' || actor.uid === '00000'));
 }
 
 function buildFounderUserItem(u: ReturnType<typeof sanitizeUser>) {
@@ -1344,6 +1348,14 @@ function buildFounderUserItem(u: ReturnType<typeof sanitizeUser>) {
     activeBadge: u.activeBadge || 'Member',
     activeBorder: u.activeBorder || 'classic',
     level: u.role === 'founder' ? 999999 : u.level || 1,
+    exp: u.exp || 0,
+    coins: u.coins || 0,
+    totalCoinsEarned: u.totalCoinsEarned || 0,
+    totalCoinsSpent: u.totalCoinsSpent || 0,
+    totalGiftsSent: u.totalGiftsSent || 0,
+    totalGiftsReceived: u.totalGiftsReceived || 0,
+    premiumPlan: u.role === 'founder' ? 'Founder Lifetime' : u.premiumPlan || '',
+    premiumExpiryDate: u.premiumExpiryDate ? new Date(u.premiumExpiryDate).toISOString() : null,
     countryCode: (u.countryCode || 'ID').toUpperCase(),
     watchStreak: u.watchStreak || 0,
     isBanned: Boolean(u.isBanned && u.role !== 'founder'),
@@ -1444,6 +1456,291 @@ router.post('/founder/ban-all', requireAuth, async (req: AuthenticatedRequest, r
   } catch (err) {
     console.error('[Founder Ban All Error]', err);
     return res.status(500).json({ error: 'Gagal memproses aksi ban massal' });
+  }
+});
+
+// POST /api/user/founder/control — Full Founder control over any user account (VIP, Level, Coin Stats, Verified, Badge)
+router.post('/founder/control', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!(await ensureFounderActor(req))) {
+      return res.status(403).json({ error: 'Akses ditolak. Fitur ini khusus untuk Founder.' });
+    }
+
+    const {
+      targetUid,
+      vipAction,
+      vipDays,
+      vipPlan,
+      level,
+      coins,
+      coinDelta,
+      totalCoinsEarned,
+      totalCoinsSpent,
+      totalGiftsSent,
+      totalGiftsReceived,
+      coinNote,
+      isVerified,
+      activeBadge,
+    } = req.body || {};
+
+    const cleanUid = String(targetUid || '').trim();
+    if (!cleanUid) {
+      return res.status(400).json({ error: 'UID pengguna target wajib diisi.' });
+    }
+
+    const existing = await findUserByUid(cleanUid);
+    if (!existing) {
+      return res.status(404).json({ error: 'Pengguna target tidak ditemukan.' });
+    }
+    if (existing.role === 'founder' && existing.uid !== req.authUser!.uid) {
+      return res.status(400).json({ error: 'Akun Founder lain tidak dapat dimodifikasi.' });
+    }
+
+    const prevCoins = Math.max(0, Math.floor(Number(existing.coins || 0)));
+    let nextCoinsAfter = prevCoins;
+
+    const updated = await updateUserByUid(cleanUid, (current) => {
+      const next = { ...current };
+
+      if (vipAction === 'revoke') {
+        next.isPremium = false;
+        next.premiumPlan = '';
+        next.premiumExpiryDate = '';
+        if (next.activeBadge === 'Verified VIP') {
+          next.activeBadge = 'Member';
+        }
+      } else if (vipAction === 'grant' || vipAction === 'extend') {
+        const daysNum = Math.max(1, Math.min(3650, Math.floor(Number(vipDays) || 30)));
+        const existingExpiryMs = current.premiumExpiryDate
+          ? new Date(current.premiumExpiryDate).getTime()
+          : 0;
+        const baseMs =
+          vipAction === 'extend' && current.isPremium && existingExpiryMs > Date.now()
+            ? existingExpiryMs
+            : Date.now();
+        next.isPremium = true;
+        next.isVerified = true;
+        next.premiumExpiryDate = new Date(baseMs + daysNum * 86_400_000).toISOString();
+        next.premiumPlan =
+          typeof vipPlan === 'string' && vipPlan.trim()
+            ? vipPlan.trim().slice(0, 64)
+            : daysNum >= 365
+            ? 'VIP Immortal (Founder Grant)'
+            : daysNum >= 60
+            ? 'VIP Pro (Founder Grant)'
+            : `VIP ${daysNum} Hari (Founder Grant)`;
+        if (!next.activeBadge || next.activeBadge === 'Member') {
+          next.activeBadge = 'Verified VIP';
+        }
+      }
+
+      if (level !== undefined && level !== null && current.role !== 'founder') {
+        const parsedLevel = Math.floor(Number(level));
+        if (Number.isFinite(parsedLevel) && parsedLevel >= 1 && parsedLevel <= 9999) {
+          next.level = parsedLevel;
+        }
+      }
+
+      const curCoins = Math.max(0, Math.floor(Number(current.coins || 0)));
+      if (coinDelta !== undefined && coinDelta !== null && Number.isFinite(Number(coinDelta))) {
+        const delta = Math.trunc(Number(coinDelta));
+        const targetCoins = Math.max(0, Math.min(50_000_000, curCoins + delta));
+        next.coins = targetCoins;
+        if (delta > 0 && totalCoinsEarned === undefined) {
+          next.totalCoinsEarned = Math.max(0, Math.floor(Number(current.totalCoinsEarned || 0))) + delta;
+        } else if (delta < 0 && totalCoinsSpent === undefined) {
+          next.totalCoinsSpent = Math.max(0, Math.floor(Number(current.totalCoinsSpent || 0))) + Math.abs(delta);
+        }
+      } else if (coins !== undefined && coins !== null) {
+        const parsedCoins = Math.floor(Number(coins));
+        if (Number.isFinite(parsedCoins) && parsedCoins >= 0 && parsedCoins <= 50_000_000) {
+          next.coins = parsedCoins;
+          const diff = parsedCoins - curCoins;
+          if (diff > 0 && totalCoinsEarned === undefined) {
+            next.totalCoinsEarned = Math.max(0, Math.floor(Number(current.totalCoinsEarned || 0))) + diff;
+          }
+        }
+      }
+
+      if (totalCoinsEarned !== undefined && totalCoinsEarned !== null) {
+        const parsed = Math.floor(Number(totalCoinsEarned));
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100_000_000) {
+          next.totalCoinsEarned = parsed;
+        }
+      }
+
+      if (totalCoinsSpent !== undefined && totalCoinsSpent !== null) {
+        const parsed = Math.floor(Number(totalCoinsSpent));
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100_000_000) {
+          next.totalCoinsSpent = parsed;
+        }
+      }
+
+      if (totalGiftsSent !== undefined && totalGiftsSent !== null) {
+        const parsed = Math.floor(Number(totalGiftsSent));
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100_000) {
+          next.totalGiftsSent = parsed;
+        }
+      }
+
+      if (totalGiftsReceived !== undefined && totalGiftsReceived !== null) {
+        const parsed = Math.floor(Number(totalGiftsReceived));
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100_000) {
+          next.totalGiftsReceived = parsed;
+        }
+      }
+
+      if (typeof isVerified === 'boolean' && current.role !== 'founder') {
+        next.isVerified = isVerified;
+      }
+
+      if (typeof activeBadge === 'string' && activeBadge.trim() && current.role !== 'founder') {
+        next.activeBadge = activeBadge.trim().slice(0, 40);
+      }
+
+      nextCoinsAfter = Math.max(0, Math.floor(Number(next.coins || 0)));
+      return next;
+    });
+
+    if (!updated) {
+      return res.status(404).json({ error: 'Gagal memperbarui akun pengguna.' });
+    }
+
+    const effectiveDelta = nextCoinsAfter - prevCoins;
+    if (effectiveDelta !== 0) {
+      await recordCoinLedgerEntry({
+        uid: cleanUid,
+        type: 'founder_adjust',
+        amount: effectiveDelta,
+        balanceAfter: nextCoinsAfter,
+        peerUid: req.authUser!.uid,
+        peerName: 'VerzonFounder',
+        peerUsername: 'verzonfounder',
+        note:
+          typeof coinNote === 'string' && coinNote.trim()
+            ? coinNote.trim().slice(0, 180)
+            : `Penyesuaian saldo koin oleh Founder (${effectiveDelta > 0 ? `+${effectiveDelta}` : effectiveDelta} Koin)`,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      user: buildFounderUserItem(sanitizeUser(updated)),
+    });
+  } catch (err) {
+    console.error('[Founder Control Error]', err);
+    return res.status(500).json({ error: 'Gagal memproses kontrol akun Founder' });
+  }
+});
+
+// GET /api/user/founder/transactions — Global payment & coin ledger transaction history (Founder only)
+router.get('/founder/transactions', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!(await ensureFounderActor(req))) {
+      return res.status(403).json({ error: 'Akses ditolak. Fitur ini khusus untuk Founder.' });
+    }
+
+    await connectDB();
+    const allUsers = await listAllUsersForFounder();
+    const userMap = new Map(
+      allUsers.map((u) => [
+        u.uid,
+        { name: u.name || 'User', username: u.username || '', email: u.email || '' },
+      ])
+    );
+
+    let paymentsRaw: Array<ITransaction & { createdAt?: Date | string }> = [];
+    let coinLedgerRaw: Array<ICoinTransaction & { createdAt?: Date | string }> = [];
+
+    if (isDbMongoConnected()) {
+      const [txDocs, coinDocs] = await Promise.all([
+        TransactionModel.find({}).sort({ createdAt: -1 }).limit(150).lean(),
+        CoinTransactionModel.find({}).sort({ createdAt: -1 }).limit(150).lean(),
+      ]);
+      paymentsRaw = txDocs as any[];
+      coinLedgerRaw = coinDocs as any[];
+    } else {
+      paymentsRaw = readFallbackJson<Array<ITransaction & { createdAt?: string }>>(
+        'transactions-v1.json',
+        []
+      )
+        .slice(0, 150);
+      coinLedgerRaw = readFallbackJson<Array<ICoinTransaction & { createdAt?: string }>>(
+        'coin-ledger-v1.json',
+        []
+      )
+        .slice(0, 150);
+    }
+
+    const payments = paymentsRaw
+      .map((p) => {
+        const owner = userMap.get(String(p.uid || ''));
+        return {
+          orderId: String(p.orderId || ''),
+          uid: String(p.uid || ''),
+          userName: p.userName || owner?.name || 'Member ZoneStream',
+          username: owner?.username || '',
+          userEmail: p.userEmail || owner?.email || '',
+          planId: String(p.planId || ''),
+          planName: String(p.planName || ''),
+          durationDays: Number(p.durationDays) || 0,
+          amount: Number(p.amount) || 0,
+          totalPayment: Number(p.totalPayment) || Number(p.amount) || 0,
+          paymentMethod: String(p.paymentMethod || 'qris'),
+          status: p.status || 'pending',
+          verificationStage: p.verificationStage || 'awaiting_payment',
+          paidAt: p.paidAt ? new Date(p.paidAt).toISOString() : null,
+          createdAt: p.createdAt ? new Date(p.createdAt).toISOString() : new Date().toISOString(),
+        };
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const coinLedger = coinLedgerRaw
+      .map((c) => {
+        const owner = userMap.get(String(c.uid || ''));
+        return {
+          txId: String(c.txId || ''),
+          uid: String(c.uid || ''),
+          userName: owner?.name || 'Member ZoneStream',
+          username: owner?.username || '',
+          type: c.type,
+          amount: Number(c.amount) || 0,
+          balanceAfter: Number(c.balanceAfter) || 0,
+          peerUid: String(c.peerUid || ''),
+          peerName: String(c.peerName || ''),
+          peerUsername: String(c.peerUsername || ''),
+          packageId: String(c.packageId || ''),
+          durationDays: Number(c.durationDays) || 0,
+          note: String(c.note || ''),
+          createdAt: c.createdAt ? new Date(c.createdAt).toISOString() : new Date().toISOString(),
+        };
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const paidOrders = payments.filter((p) => p.status === 'paid');
+    const summary = {
+      totalPayments: payments.length,
+      paidPayments: paidOrders.length,
+      pendingPayments: payments.filter((p) => p.status === 'pending').length,
+      totalRevenueIdr: paidOrders.reduce((acc, p) => acc + (p.totalPayment || p.amount || 0), 0),
+      totalCoinTransactions: coinLedger.length,
+      totalCoinsIssued: coinLedger
+        .filter((c) => c.amount > 0)
+        .reduce((acc, c) => acc + c.amount, 0),
+      totalCoinsSpent: coinLedger
+        .filter((c) => c.amount < 0)
+        .reduce((acc, c) => acc + Math.abs(c.amount), 0),
+    };
+
+    return res.json({
+      ok: true,
+      summary,
+      payments,
+      coinLedger,
+    });
+  } catch (err) {
+    console.error('[Founder Transactions Error]', err);
+    return res.status(500).json({ error: 'Gagal memuat riwayat transaksi global' });
   }
 });
 

@@ -127,6 +127,15 @@ function getTxCategoryMeta(type: CoinLedgerEntry['type']) {
         isGain: true,
         isExpense: false,
       };
+    case 'founder_adjust':
+      return {
+        label: 'Penyesuaian Founder',
+        badgeText: 'Kontrol Founder',
+        Icon: Crown,
+        iconBg: 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+        isGain: true,
+        isExpense: false,
+      };
     default:
       return {
         label: 'Aktivitas Koin',

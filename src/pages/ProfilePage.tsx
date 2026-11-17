@@ -71,6 +71,7 @@ import { DailyCheckInCard } from '../components/DailyCheckInCard';
 import { CoinWalletCard } from '../components/CoinWalletCard';
 import { CoinTransactionHistoryModal } from '../components/CoinTransactionHistoryModal';
 import { GiftPremiumModal } from '../components/GiftPremiumModal';
+import { PremiumTierIndicator } from '../components/PremiumTierIndicator';
 import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
 import { VipBenefitsLog } from '../components/VipBenefitsLog';
 import { BannerMedia } from '../components/BannerMedia';
@@ -336,7 +337,7 @@ export function ProfilePage() {
     };
   }, [user?.uid]);
 
-  const isFounderUser = user?.role === 'founder';
+  const isFounderUser = user?.role === 'founder' || user?.uid === '00000';
   const level = user?.level ?? 1;
   const levelDisplay = isFounderUser ? '∞' : String(level);
   const exp = user?.exp ?? 25;
@@ -1445,8 +1446,25 @@ export function ProfilePage() {
                         )}
                       </div>
 
+                      <div className="mt-2.5 flex items-center flex-wrap gap-2">
+                        <PremiumTierIndicator
+                          isPremium={isPremium}
+                          isFounder={isFounderUser}
+                          premiumPlan={user.premiumPlan}
+                          premiumExpiryDate={user.premiumExpiryDate}
+                          actionHint={!isPremium && !isFounderUser ? 'Upgrade VIP →' : undefined}
+                          onClick={() => {
+                            if (!isPremium && !isFounderUser) {
+                              setShowUpgradeModal(true);
+                            } else {
+                              setActiveProfileTab('wallet');
+                            }
+                          }}
+                        />
+                      </div>
+
                       {user.bio && (
-                        <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-300 mt-1.5 max-w-2xl line-clamp-2">
+                        <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-300 mt-2 max-w-2xl line-clamp-2">
                           {user.bio}
                         </p>
                       )}
@@ -1551,7 +1569,7 @@ export function ProfilePage() {
                   }`}
                 >
                   <ShieldCheck className="w-4 h-4" />
-                  <span>Panel Founder</span>
+                  <span>Founder Panel</span>
                 </button>
               )}
             </nav>
@@ -1794,7 +1812,7 @@ export function ProfilePage() {
                     </div>
                   </div>
 
-                  {!isPremium && !isFounderUser && (
+                  {!isPremium && !isFounderUser ? (
                     <button
                       type="button"
                       onClick={() => setShowUpgradeModal(true)}
@@ -1803,6 +1821,14 @@ export function ProfilePage() {
                       <Star className="w-4 h-4 fill-current" />
                       <span>Beli Premium VIP</span>
                     </button>
+                  ) : (
+                    <PremiumTierIndicator
+                      compact
+                      isPremium={isPremium}
+                      isFounder={isFounderUser}
+                      premiumPlan={user?.premiumPlan}
+                      premiumExpiryDate={user?.premiumExpiryDate}
+                    />
                   )}
                 </div>
 
@@ -2608,9 +2634,9 @@ export function ProfilePage() {
             </div>
           )}
 
-          {/* TAB 5: PANEL FOUNDER (FOUNDER ONLY) */}
+          {/* TAB 5: FOUNDER PANEL (FOUNDER / ADMIN UID ONLY) */}
           {activeProfileTab === 'founder' && isFounderUser && (
-            <FounderUserMonitorPanel cardClass={activeTheme.cardClass} />
+            <FounderUserMonitorPanel cardClass={activeTheme.cardClass} inlineWorkspace />
           )}
         </div>
       </div>

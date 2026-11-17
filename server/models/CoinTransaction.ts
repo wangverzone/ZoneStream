@@ -7,7 +7,8 @@ export type CoinTxType =
   | 'gift_sent'
   | 'gift_received'
   | 'self_redeem'
-  | 'refund';
+  | 'refund'
+  | 'founder_adjust';
 
 export interface ICoinTransaction {
   txId: string;
@@ -41,6 +42,7 @@ const CoinTransactionSchema = new Schema<ICoinTransactionDocument>(
         'gift_received',
         'self_redeem',
         'refund',
+        'founder_adjust',
       ],
       required: true,
       index: true,

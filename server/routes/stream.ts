@@ -22,6 +22,7 @@ import {
   scrapeOtakudesuSearch,
   searchGlobalAniList,
 } from '../providers/directScraper.ts';
+import { resolveCachedHomePayload } from '../cache/homeCache.ts';
 
 const router = Router();
 const BASE = 'https://www.sankavollerei.web.id/anime';
@@ -747,37 +748,44 @@ function detectStreamType(url: string): 'mp4' | 'hls' | 'embed' {
   return 'embed';
 }
 
-// GET /api/stream/home — Auto-updates live every day & every 90s with multi-page global Donghua & Anime
+// GET /api/stream/home — Cached (L1 Memory SWR + L2 Redis + Single-Flight Coalescing) every 90s
 router.get('/home', async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === '1';
-    const [
-      animeRes,
-      donghuaRes,
-      donghuaCat1,
-      donghuaCat2,
-      donghuaCat3,
-      donghuaCompCat1,
-      donghuaCompCat2,
-      animeCat1,
-      animeCat2,
-      animeCat3,
-      animeCompCat1,
-      animeCompCat2,
-    ] = await Promise.allSettled([
-      getAnimeHomeData(forceRefresh),
-      getDonghuaHomeData(forceRefresh),
-      scrapeDonghiveCatalog(1, 'ongoing'),
-      scrapeDonghiveCatalog(2, 'ongoing'),
-      scrapeDonghiveCatalog(3, 'ongoing'),
-      scrapeDonghiveCatalog(1, 'completed'),
-      scrapeDonghiveCatalog(2, 'completed'),
-      scrapeOtakudesuCatalog(1),
-      scrapeOtakudesuCatalog(2),
-      scrapeOtakudesuCatalog(3),
-      scrapeOtakudesuCompleteCatalog(1),
-      scrapeOtakudesuCompleteCatalog(2),
-    ]);
+
+    const { payload, cacheStatus, cacheLayer, ageMs } = await resolveCachedHomePayload({
+      cacheKey: 'zonestream:stream:home:v1',
+      forceRefresh,
+      freshTtlMs: 90 * 1000,
+      staleTtlMs: 10 * 60 * 1000,
+      builder: async () => {
+        const [
+          animeRes,
+          donghuaRes,
+          donghuaCat1,
+          donghuaCat2,
+          donghuaCat3,
+          donghuaCompCat1,
+          donghuaCompCat2,
+          animeCat1,
+          animeCat2,
+          animeCat3,
+          animeCompCat1,
+          animeCompCat2,
+        ] = await Promise.allSettled([
+          getAnimeHomeData(forceRefresh),
+          getDonghuaHomeData(forceRefresh),
+          scrapeDonghiveCatalog(1, 'ongoing'),
+          scrapeDonghiveCatalog(2, 'ongoing'),
+          scrapeDonghiveCatalog(3, 'ongoing'),
+          scrapeDonghiveCatalog(1, 'completed'),
+          scrapeDonghiveCatalog(2, 'completed'),
+          scrapeOtakudesuCatalog(1),
+          scrapeOtakudesuCatalog(2),
+          scrapeOtakudesuCatalog(3),
+          scrapeOtakudesuCompleteCatalog(1),
+          scrapeOtakudesuCompleteCatalog(2),
+        ]);
 
     const animeOngoingRaw =
       animeRes.status === 'fulfilled' ? animeRes.value?.data?.ongoing?.animeList || [] : [];
@@ -1047,24 +1055,31 @@ router.get('/home', async (req, res) => {
       }));
     }
 
-    res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=60');
-    return res.json({
-      ok: true,
-      lastUpdated: new Date().toISOString(),
-      heroSlides:
-        heroSlides.length > 0
-          ? heroSlides
-          : heroCandidates.map((c) => ({
-              ...c,
-              backdrop: c.poster,
-              hasWideBanner: false,
-              description: `Saksikan episode terbaru ${c.title} secara real-time di ZoneStream.`,
-              genres: [c.type === 'donghua' ? 'Donghua' : 'Anime'],
-            })),
-      latestEpisodes: uniqueLatestEpisodes,
-      donghuaList: uniqueDonghuaList,
-      animeList: uniqueAnimeList,
+        return {
+          ok: true,
+          lastUpdated: new Date().toISOString(),
+          heroSlides:
+            heroSlides.length > 0
+              ? heroSlides
+              : heroCandidates.map((c) => ({
+                  ...c,
+                  backdrop: c.poster,
+                  hasWideBanner: false,
+                  description: `Saksikan episode terbaru ${c.title} secara real-time di ZoneStream.`,
+                  genres: [c.type === 'donghua' ? 'Donghua' : 'Anime'],
+                })),
+          latestEpisodes: uniqueLatestEpisodes,
+          donghuaList: uniqueDonghuaList,
+          animeList: uniqueAnimeList,
+        };
+      },
     });
+
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=90, stale-while-revalidate=300');
+    res.setHeader('X-Cache', cacheStatus);
+    res.setHeader('X-Cache-Layer', cacheLayer);
+    res.setHeader('X-Cache-Age', String(Math.round(ageMs / 1000)));
+    return res.json(payload);
   } catch (err) {
     console.error('[Stream Home Error]', err);
     return res.status(502).json({ error: 'Gagal memuat data streaming terbaru' });

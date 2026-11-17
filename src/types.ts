@@ -95,6 +95,14 @@ export interface FounderMonitorUser {
   activeBadge: string;
   activeBorder: string;
   level: number;
+  exp?: number;
+  coins?: number;
+  totalCoinsEarned?: number;
+  totalCoinsSpent?: number;
+  totalGiftsSent?: number;
+  totalGiftsReceived?: number;
+  premiumPlan?: string;
+  premiumExpiryDate?: string | null;
   countryCode: string;
   watchStreak: number;
   isBanned: boolean;
@@ -140,7 +148,8 @@ export interface CoinLedgerEntry {
     | 'gift_sent'
     | 'gift_received'
     | 'self_redeem'
-    | 'refund';
+    | 'refund'
+    | 'founder_adjust';
   amount: number;
   balanceAfter: number;
   peerUid?: string;
@@ -150,6 +159,51 @@ export interface CoinLedgerEntry {
   durationDays?: number;
   note: string;
   createdAt: string;
+}
+
+export interface FounderGlobalPaymentItem {
+  orderId: string;
+  uid: string;
+  userName: string;
+  username?: string;
+  userEmail?: string;
+  planId: string;
+  planName: string;
+  durationDays: number;
+  amount: number;
+  totalPayment: number;
+  paymentMethod: string;
+  status: 'pending' | 'paid' | 'expired' | 'failed';
+  verificationStage?: string;
+  paidAt?: string | null;
+  createdAt: string;
+}
+
+export interface FounderGlobalCoinTxItem {
+  txId: string;
+  uid: string;
+  userName: string;
+  username?: string;
+  type: CoinLedgerEntry['type'];
+  amount: number;
+  balanceAfter: number;
+  peerUid?: string;
+  peerName?: string;
+  peerUsername?: string;
+  packageId?: string;
+  durationDays?: number;
+  note: string;
+  createdAt: string;
+}
+
+export interface FounderGlobalTransactionsSummary {
+  totalPayments: number;
+  paidPayments: number;
+  pendingPayments: number;
+  totalRevenueIdr: number;
+  totalCoinTransactions: number;
+  totalCoinsIssued: number;
+  totalCoinsSpent: number;
 }
 
 export interface PremiumPackage {
@@ -316,6 +370,8 @@ export interface PublicCommunityUser {
   exp: number;
   isPremium: boolean;
   isVerified: boolean;
+  premiumPlan?: string;
+  premiumExpiryDate?: string | null;
   activeBadge: string;
   activeBorder: string;
   profileTheme: string;
@@ -345,6 +401,7 @@ export interface PublicCommunityUser {
 export interface PublicProfileDetail extends PublicCommunityUser {
   friendsCount: number;
   hasLiked?: boolean;
+  canViewVipExpiry?: boolean;
   bookmarks: BookmarkItem[];
   recentHistory: WatchHistoryItem[];
 }
@@ -384,6 +441,8 @@ export interface ChatMessageItem {
   replySenderName?: string;
   replySenderIsVerified?: boolean;
   replyText?: string;
+  reactions?: Record<string, string[]>;
+  editedAt?: string | null;
   readAt?: string | null;
   createdAt: string;
 }
@@ -395,6 +454,7 @@ export interface ChatConversationSummary {
     _id: string;
     senderUid: string;
     text: string;
+    mediaType?: string;
     sticker?: string;
     readAt?: string | null;
     createdAt: string;

@@ -1,46 +1,30 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
   Camera,
-  Check,
   CheckCheck,
-  Crown,
   Globe,
-  Heart,
-  Image as ImageIcon,
-  Loader2,
-  Lock,
-  Maximize2,
+  Info,
   MessageCircle,
-  Mic,
-  Play,
+  Palette,
   Plus,
-  Reply,
   Search,
-  Send,
-  Shield,
-  Smile,
-  Square,
+  Sparkles,
   Trash2,
-  UserCheck,
   UserPlus,
   Users,
-  Video,
   X,
 } from 'lucide-react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { VerifiedBadge } from '../components/VerifiedBadge';
 import { AvatarDecoration } from '../components/AvatarDecoration';
-import { AvatarWithBadges } from '../components/AvatarBadges';
-import {
-  FREE_EMOJIS,
-  StatusEmojiBadge,
-  VIP_EMOJIS,
-  VipStickerCard,
-  renderCommentRichText,
-} from '../components/VipEmojis';
+import { StatusEmojiBadge } from '../components/VipEmojis';
+import { ChatDateDivider, formatChatDateLabel, isSameCalendarDay } from '../components/chat/ChatDateDivider';
+import { ChatMessageBubble } from '../components/chat/ChatMessageBubble';
+import { ChatComposer } from '../components/chat/ChatComposer';
 import { useAuth } from '../context/AuthContext';
 import type {
   ChatConversationSummary,
@@ -48,9 +32,9 @@ import type {
   PublicCommunityUser,
   RelationshipStatus,
 } from '../types';
+import { resolveWsUrl } from '../utils/apiBase';
 import {
   compressImageForChat,
-  formatFileSize,
   MAX_CHAT_IMAGE_BYTES,
   uploadCompressedChatImage,
 } from '../utils/imageCompression';
@@ -65,10 +49,24 @@ function getToken(): string {
   );
 }
 
+function makePairKey(uidA: string, uidB: string): string {
+  return [uidA, uidB].sort().join(':');
+}
+
 function formatMsgTime(iso?: string): string {
   if (!iso) return '';
   const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
   return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatLastSeen(iso?: string): string {
+  if (!iso) return 'Offline';
+  const diffMin = Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (diffMin < 60) return `Aktif ${diffMin} mnt lalu`;
+  const diffHr = Math.floor(diffMin / 60);
+  if (diffHr < 24) return `Aktif ${diffHr} jam lalu`;
+  return `Aktif ${Math.floor(diffHr / 24)} hr lalu`;
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -78,6 +76,16 @@ function readFileAsDataUrl(file: File): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
+}
+
+function mergeMessageList(prev: ChatMessageItem[], incoming: ChatMessageItem): ChatMessageItem[] {
+  const idx = prev.findIndex((m) => m._id === incoming._id);
+  if (idx >= 0) {
+    const copy = [...prev];
+    copy[idx] = { ...copy[idx], ...incoming };
+    return copy;
+  }
+  return [...prev, incoming];
 }
 
 export interface GroupChatSummary {
@@ -91,17 +99,34 @@ export interface GroupChatSummary {
   createdAt?: string;
 }
 
+type WallpaperMode = 'pattern' | 'clean' | 'aurora';
+
+interface ToastState {
+  type: 'success' | 'error' | 'info';
+  message: string;
+}
+
+interface ConfirmDialogState {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  danger?: boolean;
+  onConfirm: () => Promise<void> | void;
+}
+
 export function ChatPage() {
   const { peerUid = '', groupId = '' } = useParams();
   const [searchParams] = useSearchParams();
-  const isGroupRoom = Boolean(groupId || searchParams.get('group'));
+  const activeGroupId = groupId || searchParams.get('group') || '';
+  const isGroupRoom = Boolean(activeGroupId);
   const isGlobalRequested = searchParams.get('global') === '1';
   const isGlobalRoom = !peerUid && !isGroupRoom;
-  const activeChatId = groupId || searchParams.get('group') || peerUid || (isGlobalRequested ? 'global' : '');
+  const activeChatId = activeGroupId || peerUid || (isGlobalRequested ? 'global' : '');
 
   const navigate = useNavigate();
   const { user: me, isPremium } = useAuth();
   const canUseVip = Boolean(isPremium || me?.role === 'founder');
+  const isFounder = me?.role === 'founder';
 
   const [chatTab, setChatTab] = useState<'global' | 'dm' | 'group' | 'friends'>(
     isGroupRoom ? 'group' : isGlobalRequested ? 'global' : 'dm'
@@ -109,6 +134,7 @@ export function ChatPage() {
   const [conversations, setConversations] = useState<ChatConversationSummary[]>([]);
   const [groups, setGroups] = useState<GroupChatSummary[]>([]);
   const [globalMessages, setGlobalMessages] = useState<ChatMessageItem[]>([]);
+
   const requestedChannel = searchParams.get('channel');
   const initialGlobalChannel: 'ch1' | 'ch2' | 'ch3' | 'rekrut' =
     requestedChannel === 'ch2' || requestedChannel === 'ch3' || requestedChannel === 'rekrut'
@@ -121,6 +147,7 @@ export function ChatPage() {
     incomingRequests: PublicCommunityUser[];
     outgoingRequests: PublicCommunityUser[];
   }>({ friends: [], incomingRequests: [], outgoingRequests: [] });
+
   const [sidebarSearch, setSidebarSearch] = useState('');
   const [foundUsers, setFoundUsers] = useState<PublicCommunityUser[]>([]);
 
@@ -144,11 +171,13 @@ export function ChatPage() {
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [zoomMedia, setZoomMedia] = useState<{ url: string; type: 'image' | 'video' } | null>(null);
   const [replyTarget, setReplyTarget] = useState<ChatMessageItem | null>(null);
+  const [editTarget, setEditTarget] = useState<ChatMessageItem | null>(null);
 
   const [showEmojiDrawer, setShowEmojiDrawer] = useState(false);
   const [emojiTab, setEmojiTab] = useState<'free' | 'vip'>('free');
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
   const [inviteUid, setInviteUid] = useState('');
   const [inviting, setInviting] = useState(false);
 
@@ -161,13 +190,97 @@ export function ChatPage() {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const recordingTimerRef = useRef<any>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const vnCancelledRef = useRef(false);
 
   const [sending, setSending] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [typingPeers, setTypingPeers] = useState<Record<string, { name: string; expiresAt: number }>>({});
+
+  // Modern UX States: In-room search, Scroll-to-bottom FAB, Highlight jump, Wallpaper, Toasts, Confirm Dialog
+  const [roomSearchOpen, setRoomSearchOpen] = useState(false);
+  const [roomSearchQuery, setRoomSearchQuery] = useState('');
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const [showScrollFab, setShowScrollFab] = useState(false);
+  const [unreadBelow, setUnreadBelow] = useState(0);
+  const [wallpaperMode, setWallpaperMode] = useState<WallpaperMode>(() => {
+    const saved = localStorage.getItem('zonestream_chat_wallpaper');
+    return saved === 'clean' || saved === 'aurora' ? saved : 'pattern';
+  });
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+
+  const feedRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const groupAvatarInputRef = useRef<HTMLInputElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const typingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTypingEmitRef = useRef<number>(0);
+  const isAtBottomRef = useRef<boolean>(true);
   const seenThreadRef = useRef<{ key: string; ids: Set<string> } | null>(null);
   const seenGlobalRef = useRef<{ channel: string; ids: Set<string> } | null>(null);
+  const prevGlobalMsgCountRef = useRef<number>(0);
+  const prevThreadMsgCountRef = useRef<number>(0);
+
+  const showToast = useCallback((type: ToastState['type'], message: string) => {
+    setToast({ type, message });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3200);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // Compute current active room type & WebSocket roomKey
+  const activeRoomType: 'dm' | 'group' | 'global' = isGroupRoom
+    ? 'group'
+    : isGlobalRoom
+    ? 'global'
+    : 'dm';
+
+  const activeRoomKey = useMemo(() => {
+    if (!me?.uid) return '';
+    if (isGroupRoom && activeGroupId) return `group:${activeGroupId}`;
+    if (peerUid) return `dm:${makePairKey(me.uid, peerUid)}`;
+    return `global:${globalChannel}`;
+  }, [me?.uid, isGroupRoom, activeGroupId, peerUid, globalChannel]);
+
+  const activeRoomKeyRef = useRef(activeRoomKey);
+  activeRoomKeyRef.current = activeRoomKey;
+
+  const activeRoomTypeRef = useRef(activeRoomType);
+  activeRoomTypeRef.current = activeRoomType;
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
+    setUnreadBelow(0);
+    setShowScrollFab(false);
+    isAtBottomRef.current = true;
+  }, []);
+
+  const handleFeedScroll = useCallback(() => {
+    const el = feedRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const nearBottom = distanceFromBottom < 120;
+    isAtBottomRef.current = nearBottom;
+    setShowScrollFab(!nearBottom);
+    if (nearBottom) {
+      setUnreadBelow(0);
+    }
+  }, []);
+
+  const jumpToMessage = useCallback((messageId: string) => {
+    const el = document.getElementById(`msg-${messageId}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightedMsgId(messageId);
+      setTimeout(() => {
+        setHighlightedMsgId((cur) => (cur === messageId ? null : cur));
+      }, 1800);
+    }
+  }, []);
 
   const trackIncomingSound = useCallback(
     (
@@ -230,10 +343,12 @@ export function ChatPage() {
       const json = await res.json();
       if (res.ok) {
         void loadFriends();
-        alert(json.message || 'Permintaan teman dikirim!');
+        showToast('success', json.message || 'Permintaan teman dikirim!');
+      } else {
+        showToast('error', json.error || 'Gagal mengirim permintaan teman.');
       }
     } catch {
-      alert('Gagal mengirim permintaan teman.');
+      showToast('error', 'Gagal mengirim permintaan teman.');
     }
   };
 
@@ -252,31 +367,39 @@ export function ChatPage() {
       if (res.ok) {
         void loadFriends();
         void loadConversations();
-        alert(json.message || 'Pertemanan diterima!');
+        showToast('success', json.message || 'Pertemanan diterima!');
       }
     } catch {
-      alert('Gagal menerima pertemanan.');
+      showToast('error', 'Gagal menerima pertemanan.');
     }
   };
 
-  const handleRemoveFriend = async (targetPeerUid: string) => {
-    if (!confirm('Hapus pertemanan dengan user ini?')) return;
-    try {
-      const token = getToken();
-      const res = await fetch('/api/social/friends/remove', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ targetUid: targetPeerUid }),
-      });
-      if (res.ok) {
-        void loadFriends();
-      }
-    } catch {
-      alert('Gagal menghapus pertemanan.');
-    }
+  const handleRemoveFriend = (targetPeerUid: string, targetName = 'user ini') => {
+    setConfirmDialog({
+      title: 'Hapus Pertemanan',
+      message: `Yakin ingin menghapus ${targetName} dari daftar teman Anda?`,
+      confirmLabel: 'Hapus Teman',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const token = getToken();
+          const res = await fetch('/api/social/friends/remove', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ targetUid: targetPeerUid }),
+          });
+          if (res.ok) {
+            void loadFriends();
+            showToast('info', 'Pertemanan dihapus.');
+          }
+        } catch {
+          showToast('error', 'Gagal menghapus pertemanan.');
+        }
+      },
+    });
   };
 
   const loadConversations = useCallback(async () => {
@@ -328,17 +451,16 @@ export function ChatPage() {
 
   const loadGroupThread = useCallback(
     async (silent = false) => {
-      const gId = groupId || searchParams.get('group');
-      if (!me || !gId) return;
+      if (!me || !activeGroupId) return;
       if (!silent) setLoadingThread(true);
       try {
-        const res = await fetch(`/api/social/groups/${encodeURIComponent(gId)}/messages`, {
+        const res = await fetch(`/api/social/groups/${encodeURIComponent(activeGroupId)}/messages`, {
           headers: { Authorization: `Bearer ${getToken()}` },
         });
         const json = await res.json();
         if (json.ok) {
           const incoming: ChatMessageItem[] = json.messages || [];
-          trackIncomingSound(seenThreadRef, `grp:${gId}`, incoming);
+          trackIncomingSound(seenThreadRef, `grp:${activeGroupId}`, incoming);
           setActiveGroup(json.group || null);
           setMessages(incoming);
         }
@@ -348,7 +470,7 @@ export function ChatPage() {
         if (!silent) setLoadingThread(false);
       }
     },
-    [me?.uid, groupId, searchParams, trackIncomingSound]
+    [me?.uid, activeGroupId, trackIncomingSound]
   );
 
   const loadGlobalThread = useCallback(
@@ -399,34 +521,311 @@ export function ChatPage() {
     [me?.uid, globalChannel]
   );
 
+  // Clean up expired typing indicators every 1s
   useEffect(() => {
-    loadConversations();
-    const t = setInterval(loadConversations, 6000);
+    const t = setInterval(() => {
+      const now = Date.now();
+      setTypingPeers((prev) => {
+        let changed = false;
+        const next: Record<string, { name: string; expiresAt: number }> = {};
+        for (const [uid, info] of Object.entries(prev)) {
+          if (info.expiresAt > now) {
+            next[uid] = info;
+          } else {
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }, 1000);
     return () => clearInterval(t);
-  }, [loadConversations]);
+  }, []);
 
+  // Reset typing / search / edit state on room switch
+  useEffect(() => {
+    setTypingPeers({});
+    setRoomSearchOpen(false);
+    setRoomSearchQuery('');
+    setReplyTarget(null);
+    setEditTarget(null);
+    setUnreadBelow(0);
+    setShowScrollFab(false);
+    isAtBottomRef.current = true;
+    prevThreadMsgCountRef.current = 0;
+    prevGlobalMsgCountRef.current = 0;
+  }, [activeRoomKey]);
+
+  // Real-time WebSocket Connection with exponential-backoff reconnect & state sync
+  useEffect(() => {
+    if (!me?.uid) return;
+    let cancelled = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+    let attempt = 0;
+    let hasConnectedOnce = false;
+
+    const connectWs = () => {
+      if (cancelled) return;
+      const token = getToken();
+      if (!token) return;
+
+      const wsUrl = resolveWsUrl(`/ws/chat?token=${encodeURIComponent(token)}`);
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        return;
+      }
+      wsRef.current = socket;
+
+      socket.onopen = () => {
+        if (cancelled) {
+          socket.close();
+          return;
+        }
+        attempt = 0;
+        setWsConnected(true);
+
+        if (activeRoomKeyRef.current) {
+          socket.send(JSON.stringify({ type: 'subscribe', roomKey: activeRoomKeyRef.current }));
+        }
+
+        // Sync missed messages if this was a reconnect
+        if (hasConnectedOnce) {
+          void loadConversations();
+          if (activeRoomTypeRef.current === 'group') void loadGroupThread(true);
+          else if (activeRoomTypeRef.current === 'dm') void loadDmThread(true);
+          else void loadGlobalThread(true);
+        }
+        hasConnectedOnce = true;
+
+        if (pingTimer) clearInterval(pingTimer);
+        pingTimer = setInterval(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 25000);
+      };
+
+      socket.onmessage = (event) => {
+        let data: any;
+        try {
+          data = JSON.parse(String(event.data));
+        } catch {
+          return;
+        }
+        if (!data || typeof data !== 'object') return;
+
+        if (data.type === 'chat:message' && data.message) {
+          const msg = data.message as ChatMessageItem;
+          const isIncomingFromOther = Boolean(msg.senderUid && msg.senderUid !== me.uid);
+
+          if (data.roomType === 'global') {
+            if (data.roomKey === activeRoomKeyRef.current) {
+              setGlobalMessages((prev) => {
+                const existed = prev.some((m) => m._id === msg._id);
+                if (!existed && isIncomingFromOther) {
+                  playSoundEffect('chat');
+                }
+                return mergeMessageList(prev, msg);
+              });
+            }
+          } else {
+            if (data.roomKey === activeRoomKeyRef.current) {
+              setMessages((prev) => {
+                const existed = prev.some((m) => m._id === msg._id);
+                if (!existed && isIncomingFromOther) {
+                  playSoundEffect('chat');
+                  if (data.roomType === 'dm' && peerUid) {
+                    // Mark read quietly via GET when peer message arrives while open
+                    void loadDmThread(true);
+                  }
+                }
+                return mergeMessageList(prev, msg);
+              });
+            } else if (isIncomingFromOther) {
+              playSoundEffect('chat');
+            }
+            void loadConversations();
+          }
+
+          // Clear typing indicator for sender
+          if (msg.senderUid) {
+            setTypingPeers((prev) => {
+              if (!prev[msg.senderUid]) return prev;
+              const next = { ...prev };
+              delete next[msg.senderUid];
+              return next;
+            });
+          }
+          return;
+        }
+
+        if (data.type === 'chat:reaction' && data.messageId) {
+          if (data.roomKey === activeRoomKeyRef.current) {
+            const updater = (prev: ChatMessageItem[]) =>
+              prev.map((m) =>
+                m._id === data.messageId ? { ...m, reactions: data.reactions || {} } : m
+              );
+            if (data.roomType === 'global') setGlobalMessages(updater);
+            else setMessages(updater);
+          }
+          return;
+        }
+
+        if (data.type === 'chat:edit' && data.messageId) {
+          if (data.roomKey === activeRoomKeyRef.current) {
+            const updater = (prev: ChatMessageItem[]) =>
+              prev.map((m) =>
+                m._id === data.messageId
+                  ? { ...m, text: data.text, editedAt: data.editedAt || new Date().toISOString() }
+                  : m
+              );
+            if (data.roomType === 'global') setGlobalMessages(updater);
+            else setMessages(updater);
+          }
+          return;
+        }
+
+        if (data.type === 'chat:delete' && data.messageId) {
+          if (data.roomKey === activeRoomKeyRef.current) {
+            const remover = (prev: ChatMessageItem[]) =>
+              prev.filter((m) => m._id !== data.messageId);
+            if (data.roomType === 'global') setGlobalMessages(remover);
+            else setMessages(remover);
+          }
+          return;
+        }
+
+        if (data.type === 'chat:read' && data.roomType === 'dm') {
+          if (data.roomKey === activeRoomKeyRef.current) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.senderUid === me.uid && !m.readAt
+                  ? { ...m, readAt: data.readAt || new Date().toISOString() }
+                  : m
+              )
+            );
+          }
+          void loadConversations();
+          return;
+        }
+
+        if (data.type === 'chat:typing' && data.uid && data.uid !== me.uid) {
+          if (data.roomKey === activeRoomKeyRef.current) {
+            setTypingPeers((prev) => {
+              const next = { ...prev };
+              if (data.isTyping) {
+                next[data.uid] = {
+                  name: data.name || 'Seseorang',
+                  expiresAt: Date.now() + 4000,
+                };
+              } else {
+                delete next[data.uid];
+              }
+              return next;
+            });
+          }
+        }
+      };
+
+      socket.onclose = () => {
+        if (pingTimer) clearInterval(pingTimer);
+        if (wsRef.current === socket) wsRef.current = null;
+        setWsConnected(false);
+        if (!cancelled) {
+          const delay = Math.min(15000, 1500 * Math.pow(2, attempt));
+          attempt += 1;
+          reconnectTimer = setTimeout(connectWs, delay);
+        }
+      };
+
+      socket.onerror = () => {
+        try {
+          socket.close();
+        } catch {
+          // Ignore
+        }
+      };
+    };
+
+    connectWs();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (pingTimer) clearInterval(pingTimer);
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {
+          // Ignore
+        }
+        wsRef.current = null;
+      }
+      setWsConnected(false);
+    };
+  }, [me?.uid]);
+
+  // Subscribe socket to active room when room switches
+  useEffect(() => {
+    const socket = wsRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN && activeRoomKey) {
+      socket.send(JSON.stringify({ type: 'subscribe', roomKey: activeRoomKey }));
+    }
+  }, [activeRoomKey, wsConnected]);
+
+  // Adaptive sidebar conversation sync (slower when WS is alive, faster fallback when offline)
+  useEffect(() => {
+    void loadConversations();
+    const intervalMs = wsConnected ? 20000 : 5000;
+    const t = setInterval(loadConversations, intervalMs);
+    return () => clearInterval(t);
+  }, [loadConversations, wsConnected]);
+
+  // Initial load + adaptive fallback polling ONLY when WS disconnected
   useEffect(() => {
     if (isGroupRoom) {
-      loadGroupThread(false);
-      const t = setInterval(() => loadGroupThread(true), 3000);
+      void loadGroupThread(false);
+      const t = setInterval(() => loadGroupThread(true), wsConnected ? 25000 : 3000);
       return () => clearInterval(t);
     } else if (peerUid) {
-      loadDmThread(false);
-      const t = setInterval(() => loadDmThread(true), 2500);
+      void loadDmThread(false);
+      const t = setInterval(() => loadDmThread(true), wsConnected ? 25000 : 2500);
       return () => clearInterval(t);
     } else {
       setPeer(null);
       setActiveGroup(null);
       setMessages([]);
-      loadGlobalThread(false);
-      const t = setInterval(() => loadGlobalThread(true), 2500);
+      void loadGlobalThread(false);
+      const t = setInterval(() => loadGlobalThread(true), wsConnected ? 25000 : 2500);
       return () => clearInterval(t);
     }
-  }, [peerUid, groupId, isGroupRoom, loadDmThread, loadGroupThread, loadGlobalThread]);
+  }, [peerUid, activeGroupId, isGroupRoom, wsConnected, loadDmThread, loadGroupThread, loadGlobalThread]);
 
+  // Smart auto-scroll & unread badge counter when messages arrive
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, globalMessages.length, activeChatId]);
+    const activeList = isGlobalRoom ? globalMessages : messages;
+    const prevRef = isGlobalRoom ? prevGlobalMsgCountRef : prevThreadMsgCountRef;
+    const prevCount = prevRef.current;
+    prevRef.current = activeList.length;
+
+    if (prevCount === 0 && activeList.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      return;
+    }
+
+    if (activeList.length > prevCount) {
+      const added = activeList.length - prevCount;
+      const latest = activeList[activeList.length - 1];
+      if (isAtBottomRef.current || latest?.senderUid === me?.uid) {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        setUnreadBelow(0);
+      } else {
+        setUnreadBelow((u) => u + added);
+      }
+    }
+  }, [messages.length, globalMessages.length, isGlobalRoom, me?.uid]);
 
   // Search users for sidebar DM
   useEffect(() => {
@@ -452,15 +851,101 @@ export function ChatPage() {
     return () => clearTimeout(timer);
   }, [sidebarSearch, me?.uid]);
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const emitTyping = useCallback(
+    (isTyping: boolean) => {
+      const socket = wsRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN || !activeRoomKey || !me) return;
+      socket.send(
+        JSON.stringify({
+          type: 'typing',
+          roomType: activeRoomType,
+          roomKey: activeRoomKey,
+          peerUid: activeRoomType === 'dm' ? peerUid : '',
+          name: me.name,
+          isTyping,
+        })
+      );
+    },
+    [activeRoomKey, activeRoomType, peerUid, me?.name]
+  );
+
+  const handleDraftChange = useCallback(
+    (next: string) => {
+      setDraft(next);
+      if (editTarget) return;
+
+      const now = Date.now();
+      if (next.trim().length > 0) {
+        if (now - lastTypingEmitRef.current > 1800) {
+          lastTypingEmitRef.current = now;
+          emitTyping(true);
+        }
+        if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+        typingStopTimerRef.current = setTimeout(() => {
+          emitTyping(false);
+        }, 2500);
+      } else {
+        if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+        emitTyping(false);
+      }
+    },
+    [editTarget, emitTyping]
+  );
+
+  const handleSend = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!me || sending) return;
+
+    // Handle Edit Submission
+    if (editTarget) {
+      const trimmed = draft.trim();
+      if (!trimmed) return;
+      setSending(true);
+      try {
+        const res = await fetch(
+          `/api/social/chat/${activeRoomType}/${encodeURIComponent(editTarget._id)}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${getToken()}`,
+            },
+            body: JSON.stringify({ text: trimmed }),
+          }
+        );
+        const json = await res.json();
+        if (res.ok) {
+          const applyEdit = (prev: ChatMessageItem[]) =>
+            prev.map((m) =>
+              m._id === editTarget._id
+                ? { ...m, text: json.text || trimmed, editedAt: json.editedAt || new Date().toISOString() }
+                : m
+            );
+          if (isGlobalRoom) setGlobalMessages(applyEdit);
+          else setMessages(applyEdit);
+          setEditTarget(null);
+          setDraft('');
+          showToast('success', 'Pesan berhasil diperbarui.');
+        } else {
+          showToast('error', json.error || 'Gagal mengedit pesan.');
+        }
+      } catch {
+        showToast('error', 'Gagal mengedit pesan.');
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     if (!draft.trim() && !selectedSticker && !mediaPreview) return;
+
+    if (typingStopTimerRef.current) clearTimeout(typingStopTimerRef.current);
+    emitTyping(false);
 
     setSending(true);
     try {
       const endpoint = isGroupRoom
-        ? `/api/social/groups/${encodeURIComponent(groupId || searchParams.get('group') || '')}/messages`
+        ? `/api/social/groups/${encodeURIComponent(activeGroupId)}/messages`
         : isGlobalRoom
         ? '/api/social/global-messages'
         : `/api/social/messages/${encodeURIComponent(peerUid)}`;
@@ -487,15 +972,21 @@ export function ChatPage() {
               ? me.name
               : replyTarget.senderName || peer?.name || 'User'
             : '',
-          replyText: replyTarget?.text || (replyTarget?.sticker ? '[Stiker VIP]' : replyTarget?.mediaType ? `[${replyTarget.mediaType}]` : ''),
+          replyText:
+            replyTarget?.text ||
+            (replyTarget?.sticker
+              ? '[Stiker VIP]'
+              : replyTarget?.mediaType
+              ? `[${replyTarget.mediaType}]`
+              : ''),
         }),
       });
       const json = await res.json();
       if (res.ok && json.message) {
         if (isGlobalRoom) {
-          setGlobalMessages((prev) => [...prev, json.message]);
+          setGlobalMessages((prev) => mergeMessageList(prev, json.message));
         } else {
-          setMessages((prev) => [...prev, json.message]);
+          setMessages((prev) => mergeMessageList(prev, json.message));
         }
         setDraft('');
         setSelectedSticker('');
@@ -503,33 +994,136 @@ export function ChatPage() {
         setReplyTarget(null);
         setShowEmojiDrawer(false);
         void loadConversations();
+        scrollToBottom('smooth');
+      } else {
+        showToast('error', json.error || 'Gagal mengirim pesan.');
       }
+    } catch {
+      showToast('error', 'Gagal mengirim pesan.');
     } finally {
       setSending(false);
     }
   };
 
-  const handleDeleteGlobalMessage = async (messageId: string) => {
-    try {
-      const res = await fetch(`/api/social/global-messages/${encodeURIComponent(messageId)}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${getToken()}` },
-      });
-      if (res.ok) {
-        setGlobalMessages((prev) => prev.filter((m) => m._id !== messageId));
+  const handleToggleReaction = useCallback(
+    async (messageId: string, emoji: string) => {
+      if (!me) return;
+
+      let previousReactions: Record<string, string[]> | undefined;
+      const optimisticToggle = (prev: ChatMessageItem[]) =>
+        prev.map((m) => {
+          if (m._id !== messageId) return m;
+          previousReactions = m.reactions;
+          const next: Record<string, string[]> = {};
+          if (m.reactions && typeof m.reactions === 'object') {
+            for (const [k, list] of Object.entries(m.reactions)) {
+              if (Array.isArray(list) && list.length > 0) {
+                next[k] = [...list];
+              }
+            }
+          }
+          const cur = next[emoji] || [];
+          if (cur.includes(me.uid)) {
+            const filtered = cur.filter((id) => id !== me.uid);
+            if (filtered.length > 0) next[emoji] = filtered;
+            else delete next[emoji];
+          } else {
+            next[emoji] = [...cur, me.uid];
+          }
+          return { ...m, reactions: next };
+        });
+
+      if (isGlobalRoom) setGlobalMessages(optimisticToggle);
+      else setMessages(optimisticToggle);
+
+      try {
+        const res = await fetch(
+          `/api/social/chat/${activeRoomType}/${encodeURIComponent(messageId)}/react`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${getToken()}`,
+            },
+            body: JSON.stringify({ emoji }),
+          }
+        );
+        const json = await res.json();
+        if (res.ok && json.reactions) {
+          const applyReaction = (prev: ChatMessageItem[]) =>
+            prev.map((m) => (m._id === messageId ? { ...m, reactions: json.reactions } : m));
+          if (isGlobalRoom) setGlobalMessages(applyReaction);
+          else setMessages(applyReaction);
+        } else {
+          const rollback = (prev: ChatMessageItem[]) =>
+            prev.map((m) => (m._id === messageId ? { ...m, reactions: previousReactions || {} } : m));
+          if (isGlobalRoom) setGlobalMessages(rollback);
+          else setMessages(rollback);
+          showToast('error', json.error || 'Gagal memperbarui reaksi.');
+        }
+      } catch {
+        const rollback = (prev: ChatMessageItem[]) =>
+          prev.map((m) => (m._id === messageId ? { ...m, reactions: previousReactions || {} } : m));
+        if (isGlobalRoom) setGlobalMessages(rollback);
+        else setMessages(rollback);
       }
-    } catch {
-      // ignore
-    }
-  };
+    },
+    [me?.uid, activeRoomType, isGlobalRoom, showToast]
+  );
 
-  const handleMediaUpload = async (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'video') => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
+  const handleDeleteMessage = useCallback(
+    async (messageId: string) => {
+      const endpoint =
+        activeRoomType === 'global'
+          ? `/api/social/global-messages/${encodeURIComponent(messageId)}`
+          : activeRoomType === 'group'
+          ? `/api/social/groups/messages/${encodeURIComponent(messageId)}`
+          : `/api/social/messages/${encodeURIComponent(messageId)}`;
 
-    setMediaError(null);
-    if (type === 'image') {
+      try {
+        const res = await fetch(endpoint, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${getToken()}` },
+        });
+        if (res.ok) {
+          if (activeRoomType === 'global') {
+            setGlobalMessages((prev) => prev.filter((m) => m._id !== messageId));
+          } else {
+            setMessages((prev) => prev.filter((m) => m._id !== messageId));
+          }
+          showToast('info', 'Pesan dihapus.');
+        } else {
+          const json = await res.json().catch(() => ({}));
+          showToast('error', json.error || 'Gagal menghapus pesan.');
+        }
+      } catch {
+        showToast('error', 'Gagal menghapus pesan.');
+      }
+    },
+    [activeRoomType, showToast]
+  );
+
+  const handleCopyText = useCallback(
+    async (text: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('success', 'Teks disalin ke clipboard.');
+      } catch {
+        showToast('error', 'Tidak dapat menyalin teks.');
+      }
+    },
+    [showToast]
+  );
+
+  const handleStartEdit = useCallback((msg: ChatMessageItem) => {
+    setReplyTarget(null);
+    setEditTarget(msg);
+    setDraft(msg.text || '');
+  }, []);
+
+  const uploadImageFile = useCallback(
+    async (file: File) => {
+      setMediaError(null);
       if (!file.type.startsWith('image/')) {
         setMediaError('File harus berupa gambar (JPG, PNG, WebP, atau GIF).');
         return;
@@ -548,15 +1142,28 @@ export function ChatPage() {
           uploadedToFirebase: uploaded.uploadedToFirebase,
         });
       } catch (err: any) {
-        setMediaError(
-          err?.message || 'Gagal mengompresi/mengunggah gambar (maksimal 1MB).'
-        );
+        setMediaError(err?.message || 'Gagal mengompresi/mengunggah gambar (maksimal 1MB).');
       } finally {
         setUploadingMedia(false);
       }
+    },
+    [me?.uid]
+  );
+
+  const handleMediaUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    type: 'image' | 'video'
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    if (type === 'image') {
+      await uploadImageFile(file);
       return;
     }
 
+    setMediaError(null);
     try {
       const dataUrl = await readFileAsDataUrl(file);
       setMediaPreview({ url: dataUrl, type });
@@ -571,19 +1178,21 @@ export function ChatPage() {
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
+      vnCancelledRef.current = false;
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
 
-      mediaRecorder.onstop = async () => {
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        if (vnCancelledRef.current) return;
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const reader = new FileReader();
         reader.onload = () => {
           setMediaPreview({ url: String(reader.result), type: 'audio' });
         };
         reader.readAsDataURL(audioBlob);
-        stream.getTracks().forEach((track) => track.stop());
       };
 
       mediaRecorder.start();
@@ -593,15 +1202,26 @@ export function ChatPage() {
         setRecordingSeconds((s) => s + 1);
       }, 1000);
     } catch {
-      alert('Gagal mengakses mikrofon untuk VN. Pastikan izin browser diaktifkan.');
+      showToast('error', 'Gagal mengakses mikrofon. Pastikan izin mikrofon diaktifkan.');
     }
   };
 
   const stopVnRecording = () => {
     if (mediaRecorderRef.current && isRecordingVn) {
+      vnCancelledRef.current = false;
       mediaRecorderRef.current.stop();
       setIsRecordingVn(false);
-      clearInterval(recordingTimerRef.current);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    }
+  };
+
+  const cancelVnRecording = () => {
+    if (mediaRecorderRef.current && isRecordingVn) {
+      vnCancelledRef.current = true;
+      mediaRecorderRef.current.stop();
+      setIsRecordingVn(false);
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      showToast('info', 'Rekaman VN dibatalkan.');
     }
   };
 
@@ -630,7 +1250,10 @@ export function ChatPage() {
         setNewGroupDesc('');
         setNewGroupAvatar('');
         void loadConversations();
+        showToast('success', `Grup "${json.group.name}" berhasil dibuat!`);
         navigate(`/chat?group=${json.group.groupId}`);
+      } else {
+        showToast('error', json.error || 'Gagal membuat grup.');
       }
     } finally {
       setCreatingGroup(false);
@@ -639,11 +1262,10 @@ export function ChatPage() {
 
   const handleInviteByUid = async (e: React.FormEvent) => {
     e.preventDefault();
-    const gId = groupId || searchParams.get('group');
-    if (!inviteUid.trim() || !gId || inviting) return;
+    if (!inviteUid.trim() || !activeGroupId || inviting) return;
     setInviting(true);
     try {
-      const res = await fetch(`/api/social/groups/${encodeURIComponent(gId)}/invite`, {
+      const res = await fetch(`/api/social/groups/${encodeURIComponent(activeGroupId)}/invite`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -653,32 +1275,31 @@ export function ChatPage() {
       });
       const json = await res.json();
       if (res.ok) {
-        alert(json.message || 'Berhasil mengundang user ke grup!');
+        showToast('success', json.message || 'Berhasil mengundang user ke grup!');
         setInviteUid('');
         setShowInviteModal(false);
         void loadGroupThread(true);
       } else {
-        alert(json.error || 'Gagal mengundang anggota.');
+        showToast('error', json.error || 'Gagal mengundang anggota.');
       }
     } catch {
-      alert('Gagal mengundang anggota grup.');
+      showToast('error', 'Gagal mengundang anggota grup.');
     } finally {
       setInviting(false);
     }
   };
 
   const handleChangeGroupAvatar = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const gId = groupId || searchParams.get('group');
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file || !gId) return;
+    if (!file || !activeGroupId) return;
     try {
       const compressed = await compressImageForChat(file, {
         maxSizeBytes: MAX_CHAT_IMAGE_BYTES,
         maxDimension: 800,
       });
       const dataUrl = compressed.previewDataUrl;
-      const res = await fetch(`/api/social/groups/${encodeURIComponent(gId)}/avatar`, {
+      const res = await fetch(`/api/social/groups/${encodeURIComponent(activeGroupId)}/avatar`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -690,11 +1311,29 @@ export function ChatPage() {
       if (res.ok && json.avatarUrl) {
         setActiveGroup((prev) => (prev ? { ...prev, avatarUrl: json.avatarUrl } : prev));
         void loadConversations();
+        showToast('success', 'Foto profil grup diperbarui.');
       }
     } catch {
-      // Ignore
+      showToast('error', 'Gagal mengubah foto profil grup.');
     }
   };
+
+  const cycleWallpaper = () => {
+    const next: WallpaperMode =
+      wallpaperMode === 'pattern' ? 'clean' : wallpaperMode === 'clean' ? 'aurora' : 'pattern';
+    setWallpaperMode(next);
+    localStorage.setItem('zonestream_chat_wallpaper', next);
+    const label =
+      next === 'pattern' ? 'Pola Klasik' : next === 'clean' ? 'Minimalis Bersih' : 'Gradasi Malam';
+    showToast('info', `Tema chat: ${label}`);
+  };
+
+  const roomWallpaperClass =
+    wallpaperMode === 'pattern'
+      ? 'wa-wallpaper'
+      : wallpaperMode === 'aurora'
+      ? 'bg-gradient-to-br from-slate-100 via-indigo-50/60 to-emerald-50/50 dark:from-[#0A1017] dark:via-[#111927] dark:to-[#0C191A]'
+      : 'bg-slate-100/80 dark:bg-[#0B141A]';
 
   if (!me) {
     return (
@@ -707,7 +1346,7 @@ export function ChatPage() {
             Chat &amp; Grup ZoneStream
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-gray-400">
-            Masuk akun terlebih dahulu untuk mulai chatting pribadi, buat grup anime &amp; donghua, kirim foto, video, VN, dan stiker VIP.
+            Masuk akun terlebih dahulu untuk mulai chatting real-time, buat grup anime &amp; donghua, kirim foto, video, VN, reaksi emoji, dan stiker VIP.
           </p>
           <Link
             to="/profile"
@@ -719,6 +1358,8 @@ export function ChatPage() {
       </Layout>
     );
   }
+
+  const totalDmUnread = conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
 
   const filteredConvos = sidebarSearch.trim()
     ? conversations.filter((c) => {
@@ -735,6 +1376,100 @@ export function ChatPage() {
     ? groups.filter((g) => g.name.toLowerCase().includes(sidebarSearch.toLowerCase()))
     : groups;
 
+  const typingList = Object.values(typingPeers);
+  const typingSummaryText =
+    typingList.length === 1
+      ? `${typingList[0].name} sedang mengetik...`
+      : typingList.length > 1
+      ? `${typingList.length} orang sedang mengetik...`
+      : '';
+
+  const renderFeedWithGrouping = (list: ChatMessageItem[], mode: 'dm' | 'group' | 'global') => {
+    const cleanSearch = roomSearchOpen ? roomSearchQuery.trim().toLowerCase() : '';
+    const visibleList = cleanSearch
+      ? list.filter(
+          (m) =>
+            m.text?.toLowerCase().includes(cleanSearch) ||
+            m.senderName?.toLowerCase().includes(cleanSearch)
+        )
+      : list;
+
+    if (cleanSearch && visibleList.length === 0) {
+      return (
+        <div className="py-12 text-center text-xs text-slate-400">
+          Tidak ditemukan pesan yang cocok dengan "{roomSearchQuery}".
+        </div>
+      );
+    }
+
+    const GROUP_GAP_MS = 3 * 60 * 1000;
+
+    return visibleList.map((m, idx) => {
+      const prev = idx > 0 ? visibleList[idx - 1] : null;
+      const next = idx < visibleList.length - 1 ? visibleList[idx + 1] : null;
+      const showDateDivider = !prev || !isSameCalendarDay(prev.createdAt, m.createdAt);
+
+      const prevTime = prev?.createdAt ? new Date(prev.createdAt).getTime() : 0;
+      const curTime = m.createdAt ? new Date(m.createdAt).getTime() : 0;
+      const nextTime = next?.createdAt ? new Date(next.createdAt).getTime() : 0;
+
+      const isFirstInGroup =
+        !prev ||
+        showDateDivider ||
+        prev.senderUid !== m.senderUid ||
+        curTime - prevTime > GROUP_GAP_MS;
+
+      const nextSameDay = next ? isSameCalendarDay(m.createdAt, next.createdAt) : false;
+      const isLastInGroup =
+        !next ||
+        !nextSameDay ||
+        next.senderUid !== m.senderUid ||
+        nextTime - curTime > GROUP_GAP_MS;
+
+      return (
+        <React.Fragment key={m._id}>
+          {showDateDivider && (
+            <ChatDateDivider
+              label={formatChatDateLabel(m.createdAt)}
+              darkSurface={mode === 'global'}
+            />
+          )}
+          <ChatMessageBubble
+            message={m}
+            mode={mode}
+            meUid={me.uid}
+            isFounder={isFounder}
+            isFirstInGroup={isFirstInGroup}
+            isLastInGroup={isLastInGroup}
+            isHighlighted={highlightedMsgId === m._id}
+            msgIndex={idx}
+            onReply={(msg) => {
+              setEditTarget(null);
+              setReplyTarget(msg);
+            }}
+            onReact={handleToggleReaction}
+            onEdit={handleStartEdit}
+            onDelete={handleDeleteMessage}
+            onCopy={handleCopyText}
+            onZoomMedia={setZoomMedia}
+            onJumpToMessage={jumpToMessage}
+          />
+        </React.Fragment>
+      );
+    });
+  };
+
+  const renderLastMsgPreview = (c: ChatConversationSummary) => {
+    const lm = c.lastMessage;
+    if (!lm) return <span className="italic">Mulai obrolan baru</span>;
+    if (lm.text) return <span className="truncate">{lm.text}</span>;
+    if (lm.sticker) return <span className="truncate text-amber-500">Stiker VIP</span>;
+    if (lm.mediaType === 'image') return <span className="truncate">Mengirim Foto</span>;
+    if (lm.mediaType === 'video') return <span className="truncate">Mengirim Video</span>;
+    if (lm.mediaType === 'audio') return <span className="truncate">Voice Note</span>;
+    return <span className="truncate">Pesan</span>;
+  };
+
   return (
     <Layout hideBottomNav={Boolean(peerUid || isGroupRoom || isGlobalRequested)}>
       <input
@@ -745,15 +1480,33 @@ export function ChatPage() {
         className="hidden"
       />
 
+      {/* In-App Floating Toast */}
+      {toast && (
+        <div className="fixed top-20 right-4 z-50 max-w-xs animate-zs-page-enter">
+          <div
+            className={`px-4 py-2.5 rounded-2xl shadow-2xl border backdrop-blur-xl text-xs font-bold flex items-center gap-2 ${
+              toast.type === 'success'
+                ? 'bg-emerald-600/95 border-emerald-400/50 text-white'
+                : toast.type === 'error'
+                ? 'bg-rose-600/95 border-rose-400/50 text-white'
+                : 'bg-slate-900/95 border-white/15 text-white'
+            }`}
+          >
+            <Sparkles className="w-4 h-4 shrink-0" />
+            <span>{toast.message}</span>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-7xl mx-auto px-0 sm:px-6 lg:px-8 sm:pt-4 pb-0 sm:pb-6">
         <div className="h-[calc(100vh-4rem)] lg:h-[calc(100vh-6rem)] min-h-[560px] sm:rounded-3xl overflow-hidden border-t sm:border border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111B21] shadow-2xl flex">
-          {/* LEFT PANE: Global Chat Entry + Chat Inbox & Group List */}
+          {/* LEFT PANE: Inbox, Global Card, Groups, Friends */}
           <aside
             className={`${
               peerUid || isGroupRoom || isGlobalRequested ? 'hidden md:flex' : 'flex'
             } w-full md:w-[350px] lg:w-[390px] flex-col border-r border-slate-200 dark:border-white/[0.08] bg-white dark:bg-[#111B21] shrink-0`}
           >
-            {/* Header & Tabs */}
+            {/* Sidebar Top Header */}
             <div className="h-16 px-4 bg-slate-50 dark:bg-[#202C33] border-b border-slate-200 dark:border-white/[0.06] flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
                 <Link to="/profile" className="shrink-0">
@@ -767,29 +1520,39 @@ export function ChatPage() {
                   />
                 </Link>
                 <div className="min-w-0">
-                  <p className="text-sm font-extrabold text-slate-900 dark:text-white truncate">
-                    Chat &amp; Global Publik
-                  </p>
-                  <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate">
-                    Online · {groups.length} Grup
+                  <div className="flex items-center gap-1.5">
+                    <p className="text-sm font-extrabold text-slate-900 dark:text-white truncate">
+                      ZoneChat
+                    </p>
+                    {totalDmUnread > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-[#E84A18] text-white text-[10px] font-extrabold font-mono-tabular">
+                        {totalDmUnread}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate flex items-center gap-1.5">
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full ${
+                        wsConnected ? 'bg-emerald-500' : 'bg-amber-400'
+                      }`}
+                    />
+                    <span>{wsConnected ? 'Live Real-Time' : 'Sinkronisasi'} · {groups.length} Grup</span>
                   </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setShowCreateGroupModal(true)}
-                  className="px-2.5 py-1.5 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold inline-flex items-center gap-1 shadow transition-colors"
-                  title="Buat Grup Baru"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Grup</span>
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateGroupModal(true)}
+                className="px-3 py-1.5 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold inline-flex items-center gap-1 shadow transition-colors"
+                title="Buat Grup Baru"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Grup</span>
+              </button>
             </div>
 
-            {/* Pinned Global Chat Card for All Users & New Logins */}
+            {/* Pinned Global Chat Card */}
             <Link
               to="/chat?global=1"
               onClick={() => setChatTab('global')}
@@ -807,8 +1570,8 @@ export function ChatPage() {
                   <span className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white truncate">
                     Global Chat Komunitas
                   </span>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-500 text-[10px] font-extrabold shrink-0">
-                    Semua User
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-[10px] font-extrabold shrink-0">
+                    {globalOnlineCount} Online
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate mt-0.5">
@@ -816,13 +1579,13 @@ export function ChatPage() {
                     ? `${globalMessages[globalMessages.length - 1].senderName}: ${
                         globalMessages[globalMessages.length - 1].text || '[Media / Stiker]'
                       }`
-                    : 'Ruang obrolan terbuka untuk semua user & user baru login!'}
+                    : 'Ruang obrolan terbuka untuk semua member!'}
                 </p>
               </div>
             </Link>
 
-            {/* 3 Tabs: Chat, Grup, Teman */}
-            <div className="grid grid-cols-3 p-1.5 bg-slate-100 dark:bg-[#111B21] border-b border-slate-200 dark:border-white/[0.06] gap-1">
+            {/* 3 Segmented Tabs: Chat, Grup, Teman */}
+            <div className="grid grid-cols-3 p-1.5 bg-slate-100 dark:bg-[#0D151A] border-b border-slate-200 dark:border-white/[0.06] gap-1">
               <button
                 type="button"
                 onClick={() => setChatTab('dm')}
@@ -832,7 +1595,7 @@ export function ChatPage() {
                     : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
-                Chat ({conversations.length})
+                Obrolan ({conversations.length})
               </button>
               <button
                 type="button"
@@ -870,18 +1633,16 @@ export function ChatPage() {
                   value={sidebarSearch}
                   onChange={(e) => setSidebarSearch(e.target.value)}
                   placeholder={
-                    chatTab === 'dm'
-                      ? 'Cari obrolan atau user baru (nama/UID)...'
-                      : chatTab === 'group'
+                    chatTab === 'group'
                       ? 'Cari nama grup...'
-                      : 'Cari teman atau user baru...'
+                      : 'Cari obrolan atau user (nama/UID)...'
                   }
                   className="w-full h-9 pl-9 pr-3 rounded-xl bg-slate-100 dark:bg-[#202C33] text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#00A884]"
                 />
               </div>
             </div>
 
-            {/* List Content */}
+            {/* Sidebar List Content */}
             <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.05]">
               {chatTab === 'dm' ? (
                 <>
@@ -937,23 +1698,14 @@ export function ChatPage() {
 
                           <div className="flex items-center justify-between gap-2 mt-0.5">
                             <p className="text-xs text-slate-500 dark:text-gray-400 truncate flex items-center gap-1">
-                              {c.lastMessage ? (
-                                <>
-                                  {c.lastMessage.senderUid === me.uid && (
-                                    <CheckCheck
-                                      className={`w-3.5 h-3.5 shrink-0 ${
-                                        c.lastMessage.readAt ? 'text-sky-400' : 'text-slate-400'
-                                      }`}
-                                    />
-                                  )}
-                                  <span className="truncate">
-                                    {c.lastMessage.text ||
-                                      (c.lastMessage.sticker ? 'Mengirim Stiker VIP' : '')}
-                                  </span>
-                                </>
-                              ) : (
-                                <span className="italic">Mulai obrolan baru</span>
+                              {c.lastMessage?.senderUid === me.uid && (
+                                <CheckCheck
+                                  className={`w-3.5 h-3.5 shrink-0 ${
+                                    c.lastMessage.readAt ? 'text-sky-400' : 'text-slate-400'
+                                  }`}
+                                />
                               )}
+                              {renderLastMsgPreview(c)}
                             </p>
                             {c.unreadCount > 0 && (
                               <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-[#25D366] text-[#0B141A] text-[10px] font-extrabold flex items-center justify-center font-mono-tabular shrink-0">
@@ -1028,7 +1780,7 @@ export function ChatPage() {
                     <div className="p-8 text-center space-y-3">
                       <MessageCircle className="w-10 h-10 text-slate-300 dark:text-gray-600 mx-auto" />
                       <p className="text-xs text-slate-500 dark:text-gray-400">
-                        Belum ada obrolan pribadi. Cari user atau chat VerzonFounder (UID: 00000)!
+                        Belum ada obrolan pribadi. Cari user di atas atau chat VerzonFounder (UID: 00000)!
                       </p>
                       <Link
                         to="/chat/00000"
@@ -1042,7 +1794,7 @@ export function ChatPage() {
               ) : chatTab === 'group' ? (
                 <>
                   {filteredGroups.map((g) => {
-                    const active = (groupId || searchParams.get('group')) === g.groupId;
+                    const active = activeGroupId === g.groupId;
                     return (
                       <Link
                         key={g.groupId}
@@ -1065,11 +1817,11 @@ export function ChatPage() {
                               {g.name}
                             </span>
                             <span className="px-2 py-0.5 rounded-full bg-[#00A884]/20 text-[#00A884] text-[10px] font-bold">
-                              Grup
+                              {g.members?.length || 1} Member
                             </span>
                           </div>
                           <p className="text-xs text-slate-500 dark:text-gray-400 truncate mt-0.5">
-                            {g.description || `${g.members?.length || 1} Anggota`}
+                            {g.description || 'Grup komunitas ZoneStream'}
                           </p>
                         </div>
                       </Link>
@@ -1093,7 +1845,6 @@ export function ChatPage() {
                   )}
                 </>
               ) : (
-                /* FRIENDS TAB */
                 <div className="p-3 space-y-4">
                   {friendsData.incomingRequests.length > 0 && (
                     <div className="space-y-2">
@@ -1101,12 +1852,23 @@ export function ChatPage() {
                         Permintaan Pertemanan Masuk ({friendsData.incomingRequests.length})
                       </p>
                       {friendsData.incomingRequests.map((req) => (
-                        <div key={req.uid} className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-[#202C33] border border-slate-200 dark:border-white/5">
+                        <div
+                          key={req.uid}
+                          className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-[#202C33] border border-slate-200 dark:border-white/5"
+                        >
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <img src={req.photoUrl || defaultAvatarImg} alt={req.name} className="w-9 h-9 rounded-full object-cover shrink-0" />
+                            <img
+                              src={req.photoUrl || defaultAvatarImg}
+                              alt={req.name}
+                              className="w-9 h-9 rounded-full object-cover shrink-0"
+                            />
                             <div className="min-w-0">
-                              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{req.name}</p>
-                              <p className="text-[10px] text-slate-400 truncate">@{req.username || req.uid}</p>
+                              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                {req.name}
+                              </p>
+                              <p className="text-[10px] text-slate-400 truncate">
+                                @{req.username || req.uid}
+                              </p>
                             </div>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
@@ -1119,7 +1881,7 @@ export function ChatPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleRemoveFriend(req.uid)}
+                              onClick={() => handleRemoveFriend(req.uid, req.name)}
                               className="px-2.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600 text-rose-400 hover:text-white text-[11px] font-bold transition-colors"
                             >
                               Tolak
@@ -1136,16 +1898,35 @@ export function ChatPage() {
                     </p>
                     {friendsData.friends.length === 0 ? (
                       <p className="text-xs text-slate-400 italic py-4 text-center">
-                        Belum ada teman. Cari user di atas untuk menambah teman!
+                        Belum ada teman. Cari user di tab Obrolan untuk menambah teman!
                       </p>
                     ) : (
                       friendsData.friends.map((f) => (
-                        <div key={f.uid} className="flex items-center justify-between gap-2 p-2.5 rounded-2xl bg-white dark:bg-[#202C33] border border-slate-200 dark:border-white/5">
-                          <Link to={`/chat/${f.uid}`} className="flex items-center gap-2.5 min-w-0 flex-1">
-                            <img src={f.photoUrl || defaultAvatarImg} alt={f.name} className="w-10 h-10 rounded-full object-cover shrink-0" />
+                        <div
+                          key={f.uid}
+                          className="flex items-center justify-between gap-2 p-2.5 rounded-2xl bg-white dark:bg-[#202C33] border border-slate-200 dark:border-white/5"
+                        >
+                          <Link
+                            to={`/chat/${f.uid}`}
+                            className="flex items-center gap-2.5 min-w-0 flex-1"
+                          >
+                            <div className="relative shrink-0">
+                              <img
+                                src={f.photoUrl || defaultAvatarImg}
+                                alt={f.name}
+                                className="w-10 h-10 rounded-full object-cover"
+                              />
+                              {f.isOnline && (
+                                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#202C33]" />
+                              )}
+                            </div>
                             <div className="min-w-0">
-                              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{f.name}</p>
-                              <p className="text-[10px] text-emerald-500 font-semibold">Online • Klik untuk Chat</p>
+                              <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                {f.name}
+                              </p>
+                              <p className="text-[10px] text-emerald-500 font-semibold">
+                                {f.isOnline ? 'Online · Klik untuk Chat' : formatLastSeen(f.lastActiveAt)}
+                              </p>
                             </div>
                           </Link>
                           <div className="flex items-center gap-1.5 shrink-0">
@@ -1158,7 +1939,7 @@ export function ChatPage() {
                             </Link>
                             <button
                               type="button"
-                              onClick={() => handleRemoveFriend(f.uid)}
+                              onClick={() => handleRemoveFriend(f.uid, f.name)}
                               className="p-2 rounded-xl bg-slate-100 hover:bg-rose-500 hover:text-white dark:bg-white/5 text-slate-400 transition-colors"
                               title="Hapus Teman"
                             >
@@ -1174,87 +1955,136 @@ export function ChatPage() {
             </div>
           </aside>
 
-          {/* RIGHT PANE: Chat Room (Global, DM, or Group) */}
+          {/* RIGHT PANE: Active Chat Room */}
           <section
             className={`${
               peerUid || isGroupRoom || isGlobalRequested ? 'flex' : 'hidden md:flex'
             } flex-1 flex-col min-w-0 relative`}
           >
             {isGlobalRoom ? (
-              /* GLOBAL CHAT ROOM — Synced to each user's real profile (PP, Border, Verified, UID, Clan, Level, Charisma ♥) */
-              <div className="flex-1 flex flex-col bg-[#0D0E12] text-white min-h-0">
-                {/* Top Header */}
-                <div className="h-14 px-4 bg-[#12141A] border-b border-white/[0.06] flex items-center justify-between shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => (isGlobalRequested ? navigate('/chat') : navigate('/'))}
-                    className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-300 hover:bg-white/10 transition-colors"
-                    aria-label="Kembali"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-base font-extrabold tracking-wide text-white">
-                    Chat Global
-                  </h2>
-                  <Link
-                    to="/profile"
-                    className="text-[11px] font-bold text-sky-400 hover:underline truncate max-w-[90px]"
-                  >
-                    #{me.uid}
-                  </Link>
+              /* GLOBAL CHAT ROOM */
+              <div className="flex-1 flex flex-col bg-[#0D0E12] text-white min-h-0 relative">
+                {/* Header */}
+                <div className="h-14 px-3 sm:px-4 bg-[#12141A] border-b border-white/[0.06] flex items-center justify-between gap-2 shrink-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      type="button"
+                      onClick={() => (isGlobalRequested ? navigate('/chat') : navigate('/'))}
+                      className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-300 hover:bg-white/10 transition-colors"
+                      aria-label="Kembali"
+                    >
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <div className="min-w-0">
+                      <h2 className="text-sm sm:text-base font-extrabold tracking-wide text-white truncate">
+                        Chat Global
+                      </h2>
+                      {typingSummaryText && (
+                        <p className="text-[11px] text-sky-400 font-semibold animate-pulse truncate">
+                          {typingSummaryText}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoomSearchOpen((v) => !v);
+                        setRoomSearchQuery('');
+                      }}
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
+                        roomSearchOpen ? 'bg-sky-500/20 text-sky-300' : 'text-gray-300 hover:bg-white/10'
+                      }`}
+                      title="Cari Pesan"
+                    >
+                      <Search className="w-4 h-4" />
+                    </button>
+                    <Link
+                      to="/profile"
+                      className="text-[11px] font-bold text-sky-400 hover:underline truncate max-w-[90px] px-2"
+                    >
+                      #{me.uid}
+                    </Link>
+                  </div>
                 </div>
 
-                {/* Scam Warning + Channel Pills + Online Bar */}
-                <div className="px-3 sm:px-4 pt-3 pb-2 space-y-2.5 bg-[#0D0E12] border-b border-white/[0.05] shrink-0">
-                  <div className="rounded-xl bg-[#271F10] border border-amber-500/30 px-3.5 py-2.5 flex items-start gap-2.5">
+                {/* In-Room Search Bar */}
+                {roomSearchOpen && (
+                  <div className="px-4 py-2 bg-[#161922] border-b border-white/10 flex items-center gap-2 shrink-0">
+                    <Search className="w-4 h-4 text-sky-400 shrink-0" />
+                    <input
+                      type="search"
+                      autoFocus
+                      value={roomSearchQuery}
+                      onChange={(e) => setRoomSearchQuery(e.target.value)}
+                      placeholder="Cari pesan atau nama pengirim di channel ini..."
+                      className="flex-1 bg-transparent text-xs text-white placeholder-gray-500 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoomSearchOpen(false);
+                        setRoomSearchQuery('');
+                      }}
+                      className="text-gray-400 hover:text-white"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Scam Warning + Channel Pills */}
+                <div className="px-3 sm:px-4 pt-2.5 pb-2 space-y-2 bg-[#0D0E12] border-b border-white/[0.05] shrink-0">
+                  <div className="rounded-xl bg-[#271F10] border border-amber-500/30 px-3 py-2 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                    <p className="text-[11px] sm:text-xs text-amber-200/90 leading-snug">
-                      Hati hati banyak Scam, jangan mudah percaya orang lain, dan dilarang berjualan
+                    <p className="text-[11px] text-amber-200/90 leading-snug">
+                      Hati-hati penipuan. Jangan bagikan kata sandi/OTP dan dilarang berjualan.
                     </p>
                   </div>
 
-                  {/* Channel Selector Pills */}
-                  <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-                    {(
-                      [
-                        { id: 'ch1', label: 'Ch 1' },
-                        { id: 'ch2', label: 'Ch 2' },
-                        { id: 'ch3', label: 'Ch 3' },
-                        { id: 'rekrut', label: 'Rekrut Clan' },
-                      ] as const
-                    ).map((ch) => {
-                      const active = globalChannel === ch.id;
-                      return (
-                        <button
-                          key={ch.id}
-                          type="button"
-                          onClick={() => setGlobalChannel(ch.id)}
-                          className={`px-3.5 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all border ${
-                            active
-                              ? 'bg-sky-500/15 border-sky-500 text-sky-300 shadow-sm shadow-sky-500/20'
-                              : 'bg-[#171920] border-white/10 text-gray-300 hover:border-white/25'
-                          }`}
-                        >
-                          # {ch.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                      {(
+                        [
+                          { id: 'ch1', label: 'Ch 1' },
+                          { id: 'ch2', label: 'Ch 2' },
+                          { id: 'ch3', label: 'Ch 3' },
+                          { id: 'rekrut', label: 'Rekrut Clan' },
+                        ] as const
+                      ).map((ch) => {
+                        const active = globalChannel === ch.id;
+                        return (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            onClick={() => setGlobalChannel(ch.id)}
+                            className={`px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap transition-all border ${
+                              active
+                                ? 'bg-sky-500/15 border-sky-500 text-sky-300 shadow-sm shadow-sky-500/20'
+                                : 'bg-[#171920] border-white/10 text-gray-300 hover:border-white/25'
+                            }`}
+                          >
+                            # {ch.label}
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                  {/* Online Count Indicator */}
-                  <div className="flex items-center gap-2 text-[11px] text-gray-400 px-0.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block animate-pulse" />
-                    <span>
-                      {globalOnlineCount} online di{' '}
-                      {globalChannel === 'rekrut'
-                        ? 'Rekrut Clan'
-                        : globalChannel.replace('ch', 'Ch ')}
-                    </span>
+                    <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-gray-400 shrink-0">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                      <span>{globalOnlineCount} online</span>
+                    </div>
                   </div>
                 </div>
 
                 {/* Global Messages Feed */}
-                <div className="flex-1 overflow-y-auto px-3 sm:px-4 py-3 space-y-3.5 bg-[#0D0E12]">
+                <div
+                  ref={feedRef}
+                  onScroll={handleFeedScroll}
+                  className="flex-1 overflow-y-auto px-3 sm:px-5 py-3 bg-[#0D0E12]"
+                >
                   {loadingThread && globalMessages.length === 0 ? (
                     <div className="py-12 text-center text-xs text-gray-400">Memuat Chat Global...</div>
                   ) : globalMessages.length === 0 ? (
@@ -1268,448 +2098,71 @@ export function ChatPage() {
                       </p>
                     </div>
                   ) : (
-                    globalMessages.map((m, msgIdx) => {
-                      const isMine = m.senderUid === me.uid;
-                      const isSenderFounder = m.senderRole === 'founder';
-                      const isSenderVip = Boolean(m.senderIsPremium || isSenderFounder);
-                      const senderLevel = isSenderFounder ? 9999 : (m.senderLevel || 1);
-                      const senderCharisma = m.senderCharisma ?? 0;
-
-                      return (
-                        <div key={m._id} className="flex items-end gap-2.5 group">
-                          {/* Real Profile Picture + Active Avatar Decoration + Interactive Clan Leader / Top Rank SVG Badges */}
-                          <Link to={`/u/${m.senderUid}`} className="shrink-0 mb-0.5">
-                            <AvatarWithBadges
-                              uid={m.senderUid}
-                              ownerName={m.senderName || 'User'}
-                              clanLeader={
-                                m.senderClan?.isLeader
-                                  ? {
-                                      isLeader: true,
-                                      clanTag: m.senderClan.tag,
-                                      clanName: m.senderClan.name,
-                                      clanRank: m.senderClan.clanRank,
-                                    }
-                                  : null
-                              }
-                              topRank={
-                                m.senderTopRank && m.senderTopRank <= 10
-                                  ? {
-                                      rank: m.senderTopRank,
-                                      category: m.senderTopCategory,
-                                    }
-                                  : null
-                              }
-                              size="sm"
-                              popoverAlign="left"
-                              popoverPlacement={msgIdx < 2 ? 'bottom' : 'top'}
-                            >
-                              <AvatarDecoration
-                                src={m.senderPhoto || defaultAvatarImg}
-                                alt={m.senderName || 'User'}
-                                decorationId={m.senderBorder}
-                                level={m.senderLevel}
-                                isFounder={m.senderRole === 'founder'}
-                                size="sm"
-                              />
-                            </AvatarWithBadges>
-                          </Link>
-
-                          {/* Bubble + Timestamp Row */}
-                          <div className="flex items-end gap-2 min-w-0 flex-1">
-                            <div
-                              className={`max-w-[85%] sm:max-w-[78%] rounded-2xl px-3.5 py-2.5 border shadow-md ${
-                                isMine
-                                  ? 'bg-[#1E222D] border-sky-500/30'
-                                  : 'bg-[#191B22] border-white/[0.06]'
-                              }`}
-                            >
-                              {/* Reply Quote Box (if replying) */}
-                              {m.replyText && (
-                                <div className="mb-2 pl-2.5 border-l-2 border-gray-400/70 bg-black/25 rounded-r-lg px-2.5 py-1.5">
-                                  <div className="flex items-center gap-1 text-[11px] font-bold text-amber-300 truncate">
-                                    <span>{m.replySenderName || 'User'}</span>
-                                    {m.replySenderUid && (
-                                      <span className="text-gray-400 font-mono text-[10px]">
-                                        #{m.replySenderUid}
-                                      </span>
-                                    )}
-                                    {m.replySenderIsVerified && (
-                                      <VerifiedBadge size="sm" isFounder={false} />
-                                    )}
-                                  </div>
-                                  <p className="text-[11px] text-gray-300 truncate mt-0.5">
-                                    {m.replyText}
-                                  </p>
-                                </div>
-                              )}
-
-                              {/* Sender Name + Verified Badge + #UID */}
-                              <Link
-                                to={`/u/${m.senderUid}`}
-                                className="flex items-center gap-1.5 flex-wrap"
-                              >
-                                <span
-                                  className={`text-xs font-extrabold hover:underline ${
-                                    isSenderFounder
-                                      ? 'text-amber-300'
-                                      : isSenderVip
-                                      ? 'text-violet-300'
-                                      : 'text-emerald-300'
-                                  }`}
-                                >
-                                  {m.senderName || 'User'}
-                                </span>
-                                {isSenderVip && (
-                                  <VerifiedBadge
-                                    size="sm"
-                                    isFounder={isSenderFounder}
-                                    badgeLabel={m.senderBadge}
-                                  />
-                                )}
-                                <span className="text-[11px] text-gray-400 font-mono">
-                                  #{m.senderUid}
-                                </span>
-                              </Link>
-
-                              {/* Profile Badges Row: Real Clan, Real Level, Real Charisma ♥ */}
-                              <div className="mt-1.5 mb-1.5 flex items-center gap-1.5 flex-wrap">
-                                {m.senderClan?.tag && (
-                                  <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-sky-500/25 to-indigo-500/25 border border-sky-400/40 text-sky-200 text-[10px] font-extrabold inline-flex items-center gap-1">
-                                    <Shield className="w-2.5 h-2.5 text-amber-400" />
-                                    <span>{m.senderClan.tag}</span>
-                                  </span>
-                                )}
-
-                                <span
-                                  className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold inline-flex items-center gap-1 ${
-                                    isSenderFounder
-                                      ? 'bg-gradient-to-r from-amber-600/80 to-rose-600/80 text-white border border-amber-400/50'
-                                      : senderLevel >= 50
-                                      ? 'bg-rose-600/85 text-white'
-                                      : 'bg-amber-600/80 text-amber-50'
-                                  }`}
-                                >
-                                  <span>
-                                    {isSenderFounder ? 'God Lvl 9999' : `Lvl ${senderLevel}`}
-                                  </span>
-                                </span>
-
-                                <span className="px-2 py-0.5 rounded-full bg-rose-500/85 text-white text-[10px] font-extrabold inline-flex items-center gap-1">
-                                  <Heart className="w-2.5 h-2.5 fill-current" />
-                                  <span>{senderCharisma}</span>
-                                </span>
-                              </div>
-
-                              {/* Attachments / Stickers */}
-                              {m.mediaType === 'image' && m.mediaUrl && (
-                                <div
-                                  onClick={() => setZoomMedia({ url: m.mediaUrl!, type: 'image' })}
-                                  className="mb-2 rounded-xl overflow-hidden max-w-xs bg-black cursor-pointer relative"
-                                >
-                                  <img
-                                    src={m.mediaUrl}
-                                    alt="Media"
-                                    className="w-full h-auto object-cover max-h-64"
-                                  />
-                                </div>
-                              )}
-
-                              {m.mediaType === 'video' && m.mediaUrl && (
-                                <div
-                                  onClick={() => setZoomMedia({ url: m.mediaUrl!, type: 'video' })}
-                                  className="mb-2 rounded-xl overflow-hidden max-w-xs bg-black cursor-pointer relative"
-                                >
-                                  <video src={m.mediaUrl} className="w-full max-h-64 object-contain" />
-                                </div>
-                              )}
-
-                              {m.mediaType === 'audio' && m.mediaUrl && (
-                                <div className="mb-2 py-1 flex items-center gap-2">
-                                  <audio src={m.mediaUrl} controls className="h-9 w-52 sm:w-64" />
-                                </div>
-                              )}
-
-                              {m.sticker && (
-                                <div className="mb-1">
-                                  <VipStickerCard stickerId={m.sticker} />
-                                </div>
-                              )}
-
-                              {/* Message Text */}
-                              {m.text && (
-                                <p className="text-xs sm:text-sm text-gray-100 leading-relaxed break-words whitespace-pre-wrap">
-                                  {renderCommentRichText(m.text)}
-                                </p>
-                              )}
-
-                              {/* Hover Actions */}
-                              <div className="mt-1 flex items-center justify-end gap-2 opacity-70 group-hover:opacity-100 transition-opacity">
-                                <button
-                                  type="button"
-                                  onClick={() => setReplyTarget(m)}
-                                  className="text-[10px] text-gray-400 hover:text-sky-400 inline-flex items-center gap-0.5"
-                                  title="Balas"
-                                >
-                                  <Reply className="w-3 h-3" />
-                                  <span>Balas</span>
-                                </button>
-                                {(isMine || me.role === 'founder') && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteGlobalMessage(m._id)}
-                                    className="text-[10px] text-gray-400 hover:text-rose-400 inline-flex items-center gap-0.5"
-                                    title="Hapus"
-                                  >
-                                    <Trash2 className="w-3 h-3" />
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-
-                            {/* Timestamp beside bubble like screenshot */}
-                            <span className="text-[10px] text-gray-500 font-mono-tabular shrink-0 pb-1">
-                              {formatMsgTime(m.createdAt)}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })
+                    renderFeedWithGrouping(globalMessages, 'global')
                   )}
+
+                  {typingSummaryText && (
+                    <div className="mt-2 ml-11 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#171A22] border border-white/10 text-[11px] text-sky-300">
+                      <span className="flex gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce [animation-delay:150ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-bounce [animation-delay:300ms]" />
+                      </span>
+                      <span>{typingSummaryText}</span>
+                    </div>
+                  )}
+
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Reply / Media Preview Bars */}
-                {replyTarget && (
-                  <div className="px-4 py-2 bg-[#161820] border-t border-white/[0.08] flex items-center justify-between gap-2 text-xs">
-                    <div className="min-w-0 border-l-2 border-sky-400 pl-2">
-                      <p className="font-bold text-sky-400 truncate">
-                        Membalas {replyTarget.senderName || 'User'} #{replyTarget.senderUid}
-                      </p>
-                      <p className="text-gray-400 truncate">
-                        {replyTarget.text || '[Media / Stiker]'}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setReplyTarget(null)}
-                      className="text-gray-400 hover:text-rose-500"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
+                {/* Scroll-to-bottom FAB */}
+                {(showScrollFab || unreadBelow > 0) && (
+                  <button
+                    type="button"
+                    onClick={() => scrollToBottom('smooth')}
+                    className="absolute bottom-28 right-4 z-20 px-3 py-2 rounded-full bg-[#1D7AFC] hover:bg-[#388BFF] text-white text-xs font-bold shadow-xl flex items-center gap-1.5 transition-transform hover:scale-105"
+                  >
+                    <ArrowDown className="w-4 h-4" />
+                    {unreadBelow > 0 && <span>{unreadBelow} baru</span>}
+                  </button>
                 )}
 
-                {mediaError && (
-                  <div className="px-4 py-2 bg-rose-500/15 border-t border-rose-500/30 flex items-center justify-between gap-2 text-xs text-rose-300 font-semibold">
-                    <span>{mediaError}</span>
-                    <button type="button" onClick={() => setMediaError(null)} className="text-rose-300 hover:text-white">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {uploadingMedia && (
-                  <div className="px-4 py-2 bg-[#161820] border-t border-white/[0.08] flex items-center gap-2.5 text-xs text-sky-300 font-semibold">
-                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                    <span>Mengompresi (&le; 1MB) &amp; mengunggah ke Firebase Storage... {uploadProgress}%</span>
-                  </div>
-                )}
-
-                {mediaPreview && !uploadingMedia && (
-                  <div className="px-4 py-2 bg-[#161820] border-t border-white/[0.08] flex items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {mediaPreview.type === 'image' && (
-                        <img
-                          src={mediaPreview.url}
-                          alt="Preview"
-                          className="w-10 h-10 rounded-lg object-cover border border-white/10"
-                        />
-                      )}
-                      {mediaPreview.type === 'video' && <Video className="w-5 h-5 text-sky-400" />}
-                      {mediaPreview.type === 'audio' && <Mic className="w-5 h-5 text-sky-400" />}
-                      <div className="min-w-0">
-                        <p className="font-bold text-white truncate">
-                          Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
-                        </p>
-                        {mediaPreview.type === 'image' && mediaPreview.compressedSize && (
-                          <p className="text-[10px] text-emerald-400 font-mono-tabular truncate">
-                            {formatFileSize(mediaPreview.compressedSize)}
-                            {mediaPreview.originalSize && mediaPreview.originalSize > mediaPreview.compressedSize
-                              ? ` (dari ${formatFileSize(mediaPreview.originalSize)})`
-                              : ''}
-                            {mediaPreview.uploadedToFirebase ? ' · Firebase Storage' : ' · Terkompresi ≤ 1MB'}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setMediaPreview(null)}
-                      className="text-gray-400 hover:text-rose-500"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {showEmojiDrawer && (
-                  <div className="p-3 bg-[#161820] border-t border-white/[0.08] max-h-56 overflow-y-auto">
-                    <div className="flex items-center gap-2 mb-2.5">
-                      <button
-                        type="button"
-                        onClick={() => setEmojiTab('free')}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold ${
-                          emojiTab === 'free'
-                            ? 'bg-sky-500 text-white'
-                            : 'bg-[#222633] text-gray-300'
-                        }`}
-                      >
-                        Emoji Umum
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEmojiTab('vip')}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold inline-flex items-center gap-1 ${
-                          emojiTab === 'vip'
-                            ? 'bg-gradient-to-r from-amber-500 to-[#E84A18] text-white'
-                            : 'bg-[#222633] text-amber-500'
-                        }`}
-                      >
-                        <Crown className="w-3 h-3" />
-                        <span>Stiker VIP</span>
-                      </button>
-                    </div>
-                    {emojiTab === 'free' ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {FREE_EMOJIS.map((em) => (
-                          <button
-                            key={em}
-                            type="button"
-                            onClick={() => setDraft((p) => `${p}${em}`.slice(0, 255))}
-                            className="w-9 h-9 rounded-lg bg-[#222633] hover:scale-110 text-lg flex items-center justify-center transition-transform"
-                          >
-                            {em}
-                          </button>
-                        ))}
-                      </div>
-                    ) : canUseVip ? (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {VIP_EMOJIS.map((v) => {
-                          const Icon = v.icon;
-                          return (
-                            <button
-                              key={v.id}
-                              type="button"
-                              onClick={() => {
-                                setSelectedSticker(v.id);
-                                setShowEmojiDrawer(false);
-                              }}
-                              className={`p-2 rounded-xl border text-left flex items-center gap-1.5 hover:scale-[1.02] transition-transform ${v.bgClass} ${v.borderClass} ${v.textClass}`}
-                            >
-                              <Icon className="w-4 h-4 shrink-0" />
-                              <span className="text-[11px] font-bold truncate">{v.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs">
-                        <span className="text-gray-200 flex items-center gap-1.5">
-                          <Lock className="w-4 h-4 text-amber-500" />
-                          Stiker eksklusif khusus Member VIP.
-                        </span>
-                        <Link to="/profile" className="px-3 py-1 rounded-lg bg-[#E84A18] text-white font-bold">
-                          Upgrade
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Global Chat Composer matching screenshot (with 0/255 counter & blue send button) */}
-                <form
+                <ChatComposer
+                  mode="global"
+                  placeholder="Silakan masukkan pesan..."
+                  maxLength={255}
+                  draft={draft}
+                  onDraftChange={handleDraftChange}
                   onSubmit={handleSend}
-                  className="px-3 pt-2 pb-2.5 bg-[#0D0E12] border-t border-white/[0.06] shrink-0 space-y-1"
-                >
-                  <div className="flex justify-end pr-1">
-                    <span className="text-[10px] text-gray-500 font-mono-tabular">
-                      {draft.length}/255
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 flex items-center gap-1.5 h-11 px-3 rounded-full bg-[#1C1E26] border border-white/[0.07]">
-                      <button
-                        type="button"
-                        onClick={() => setShowEmojiDrawer((s) => !s)}
-                        className={`w-7 h-7 rounded-full flex items-center justify-center transition-colors shrink-0 ${
-                          showEmojiDrawer ? 'text-sky-400' : 'text-gray-400 hover:text-white'
-                        }`}
-                        aria-label="Emoji dan Stiker"
-                      >
-                        <Smile className="w-4 h-4" />
-                      </button>
-
-                      <label
-                        className="w-7 h-7 rounded-full flex items-center justify-center text-gray-400 hover:text-white cursor-pointer shrink-0"
-                        title="Kirim Foto"
-                      >
-                        <ImageIcon className="w-4 h-4" />
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => handleMediaUpload(e, 'image')}
-                          className="hidden"
-                        />
-                      </label>
-
-                      {isRecordingVn ? (
-                        <div className="flex-1 flex items-center gap-2 text-rose-400 text-xs font-bold px-2">
-                          <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-                          <span>VN ({recordingSeconds}s)...</span>
-                        </div>
-                      ) : (
-                        <input
-                          type="text"
-                          maxLength={255}
-                          value={draft}
-                          onChange={(e) => setDraft(e.target.value)}
-                          placeholder="Silakan masukkan pesan..."
-                          className="flex-1 bg-transparent text-xs sm:text-sm text-white placeholder-gray-500 focus:outline-none min-w-0"
-                        />
-                      )}
-
-                      {isRecordingVn ? (
-                        <button
-                          type="button"
-                          onClick={stopVnRecording}
-                          className="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center shrink-0"
-                          title="Stop VN"
-                        >
-                          <Square className="w-3.5 h-3.5" />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={startVnRecording}
-                          className="w-7 h-7 rounded-full text-gray-400 hover:text-white flex items-center justify-center shrink-0"
-                          title="Rekam Voice Note"
-                        >
-                          <Mic className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-
-                    <button
-                      type="submit"
-                      disabled={sending || uploadingMedia || (!draft.trim() && !mediaPreview && !selectedSticker)}
-                      className="w-12 h-11 rounded-2xl bg-[#1D7AFC] hover:bg-[#388BFF] disabled:opacity-40 text-white flex items-center justify-center transition-colors shrink-0 shadow-lg shadow-sky-500/25"
-                      aria-label="Kirim"
-                    >
-                      <Send className="w-4 h-4" />
-                    </button>
-                  </div>
-                </form>
+                  sending={sending}
+                  canUseVip={canUseVip}
+                  selectedSticker={selectedSticker}
+                  onSelectSticker={setSelectedSticker}
+                  showEmojiDrawer={showEmojiDrawer}
+                  onToggleEmojiDrawer={() => setShowEmojiDrawer((s) => !s)}
+                  emojiTab={emojiTab}
+                  onChangeEmojiTab={setEmojiTab}
+                  replyTarget={replyTarget}
+                  onClearReply={() => setReplyTarget(null)}
+                  editTarget={editTarget}
+                  onCancelEdit={() => {
+                    setEditTarget(null);
+                    setDraft('');
+                  }}
+                  mediaPreview={mediaPreview}
+                  onClearMediaPreview={() => setMediaPreview(null)}
+                  uploadingMedia={uploadingMedia}
+                  uploadProgress={uploadProgress}
+                  mediaError={mediaError}
+                  onClearMediaError={() => setMediaError(null)}
+                  onFileSelect={handleMediaUpload}
+                  onPasteImageFile={uploadImageFile}
+                  isRecordingVn={isRecordingVn}
+                  recordingSeconds={recordingSeconds}
+                  onStartVn={startVnRecording}
+                  onStopVn={stopVnRecording}
+                  onCancelVn={cancelVnRecording}
+                />
 
                 {/* Bottom Switcher Bar (Global | Clan | Teman) */}
                 <div className="grid grid-cols-3 h-11 bg-[#12141A] border-t border-white/[0.06] shrink-0">
@@ -1743,7 +2196,7 @@ export function ChatPage() {
               /* GROUP CHAT ROOM */
               <>
                 <div className="h-16 px-3 sm:px-5 bg-slate-50 dark:bg-[#202C33] border-b border-slate-200 dark:border-white/[0.06] flex items-center justify-between gap-2 shrink-0">
-                  <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex items-center gap-2.5 min-w-0">
                     <button
                       type="button"
                       onClick={() => navigate('/chat')}
@@ -1754,268 +2207,189 @@ export function ChatPage() {
                     </button>
 
                     {activeGroup && (
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative group">
-                          <img
-                            src={activeGroup.avatarUrl || defaultAvatarImg}
-                            alt={activeGroup.name}
-                            referrerPolicy="no-referrer"
-                            className="w-10 h-10 rounded-full object-cover border border-white/20 shadow-sm"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => groupAvatarInputRef.current?.click()}
-                            title="Ganti Foto Profil Grup"
-                            className="absolute inset-0 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
-                          >
-                            <Camera className="w-4 h-4" />
-                          </button>
-                        </div>
+                      <div
+                        onClick={() => setShowGroupInfoModal(true)}
+                        className="flex items-center gap-2.5 min-w-0 cursor-pointer group"
+                      >
+                        <img
+                          src={activeGroup.avatarUrl || defaultAvatarImg}
+                          alt={activeGroup.name}
+                          referrerPolicy="no-referrer"
+                          className="w-10 h-10 rounded-full object-cover border border-white/20 shadow-sm shrink-0"
+                        />
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="text-sm font-extrabold text-slate-900 dark:text-white truncate">
+                            <span className="text-sm font-extrabold text-slate-900 dark:text-white group-hover:text-[#00A884] truncate">
                               {activeGroup.name}
                             </span>
-                            <span className="px-2 py-0.5 rounded bg-[#00A884]/20 text-[#00A884] text-[10px] font-bold">
-                              Grup
+                            <span className="px-2 py-0.5 rounded bg-[#00A884]/20 text-[#00A884] text-[10px] font-bold shrink-0">
+                              {activeGroup.members?.length || 1} Member
                             </span>
                           </div>
                           <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate">
-                            {activeGroup.description || `${activeGroup.members?.length || 1} Anggota`} · Klik foto untuk ganti PP
+                            {typingSummaryText ? (
+                              <span className="text-[#00A884] font-semibold animate-pulse">
+                                {typingSummaryText}
+                              </span>
+                            ) : (
+                              activeGroup.description || 'Ketuk untuk info & pengaturan grup'
+                            )}
                           </p>
                         </div>
                       </div>
                     )}
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       type="button"
-                      onClick={() => setShowInviteModal(true)}
-                      className="px-3 py-1.5 rounded-xl bg-[#00A884] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow"
-                      title="Tambah Anggota ke Grup dengan UID"
+                      onClick={() => {
+                        setRoomSearchOpen((v) => !v);
+                        setRoomSearchQuery('');
+                      }}
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
+                        roomSearchOpen
+                          ? 'bg-[#00A884]/15 text-[#00A884]'
+                          : 'text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10'
+                      }`}
+                      title="Cari Pesan"
                     >
-                      <UserPlus className="w-3.5 h-3.5" />
-                      <span>Tambah Teman (UID)</span>
+                      <Search className="w-4 h-4" />
                     </button>
                     <button
                       type="button"
-                      onClick={() => groupAvatarInputRef.current?.click()}
-                      className="px-3 py-1.5 rounded-xl bg-slate-200 dark:bg-white/10 hover:bg-[#00A884] hover:text-white text-xs font-bold text-slate-700 dark:text-gray-200 hidden sm:inline-flex items-center gap-1.5 transition-colors"
+                      onClick={cycleWallpaper}
+                      className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                      title="Ganti Tema Wallpaper"
                     >
-                      <Camera className="w-3.5 h-3.5" />
-                      <span>Ubah Foto</span>
+                      <Palette className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowInviteModal(true)}
+                      className="px-3 py-1.5 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow transition-colors"
+                      title="Tambah Anggota ke Grup"
+                    >
+                      <UserPlus className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Undang</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowGroupInfoModal(true)}
+                      className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                      title="Info Grup"
+                    >
+                      <Info className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
 
-                {/* Messages Feed */}
-                <div className="flex-1 overflow-y-auto wa-wallpaper px-3 sm:px-6 py-4 space-y-2.5">
-                  {loadingThread ? (
+                {roomSearchOpen && (
+                  <div className="px-4 py-2 bg-white dark:bg-[#1A242B] border-b border-slate-200 dark:border-white/[0.06] flex items-center gap-2 shrink-0">
+                    <Search className="w-4 h-4 text-[#00A884] shrink-0" />
+                    <input
+                      type="search"
+                      autoFocus
+                      value={roomSearchQuery}
+                      onChange={(e) => setRoomSearchQuery(e.target.value)}
+                      placeholder="Cari pesan atau nama anggota di grup..."
+                      className="flex-1 bg-transparent text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoomSearchOpen(false);
+                        setRoomSearchQuery('');
+                      }}
+                      className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {/* Group Messages Feed */}
+                <div
+                  ref={feedRef}
+                  onScroll={handleFeedScroll}
+                  className={`flex-1 overflow-y-auto ${roomWallpaperClass} px-3 sm:px-6 py-4`}
+                >
+                  {loadingThread && messages.length === 0 ? (
                     <div className="py-12 text-center text-xs text-slate-500">Memuat pesan grup...</div>
                   ) : messages.length === 0 ? (
                     <div className="max-w-xs mx-auto my-8 rounded-2xl bg-white/90 dark:bg-[#182229]/90 border border-slate-200 dark:border-white/10 p-4 text-center shadow-sm">
                       <p className="text-xs font-bold text-slate-800 dark:text-white">
-                        Grup {activeGroup?.name} berhasil dibuat!
+                        Grup {activeGroup?.name} siap digunakan!
                       </p>
                       <p className="text-[11px] text-slate-500 dark:text-gray-400 mt-1">
-                        Kirim teks, foto (bisa diperbesar), video, atau VN sekarang.
+                        Kirim pesan, foto, video, VN, atau reaksi emoji bersama anggota grup.
                       </p>
                     </div>
                   ) : (
-                    messages.map((m) => {
-                      const isMine = m.senderUid === me.uid;
-                      return (
-                        <div
-                          key={m._id}
-                          className={`flex items-end gap-2 group ${isMine ? 'justify-end' : 'justify-start'}`}
-                        >
-                          {!isMine && (
-                            <img
-                              src={m.senderPhoto || defaultAvatarImg}
-                              alt={m.senderName}
-                              referrerPolicy="no-referrer"
-                              className="w-8 h-8 rounded-full object-cover shrink-0 mb-1"
-                            />
-                          )}
-
-                          <div
-                            className={`max-w-[80%] sm:max-w-[68%] rounded-2xl px-3.5 py-2 shadow-sm ${
-                              isMine
-                                ? 'bg-[#D9FDD3] dark:bg-[#005C4B] text-slate-900 dark:text-white rounded-br-sm'
-                                : 'bg-white dark:bg-[#202C33] text-slate-900 dark:text-white rounded-bl-sm'
-                            }`}
-                          >
-                            {!isMine && (
-                              <p className="text-[11px] font-bold text-[#E84A18] mb-0.5">
-                                {m.senderName}
-                              </p>
-                            )}
-
-                            {m.mediaType === 'image' && m.mediaUrl && (() => {
-                              const url = m.mediaUrl || '';
-                              return (
-                                <div
-                                  onClick={() => setZoomMedia({ url, type: 'image' })}
-                                  className="mb-2 rounded-xl overflow-hidden max-w-xs bg-black cursor-pointer group/img relative"
-                                >
-                                  <img src={url} alt="Media" className="w-full h-auto object-cover max-h-64 group-hover/img:scale-105 transition-transform" />
-                                  <div className="absolute inset-0 bg-black/30 opacity-0 group-hover/img:opacity-100 flex items-center justify-center text-white transition-opacity">
-                                    <Maximize2 className="w-5 h-5" />
-                                  </div>
-                                </div>
-                              );
-                            })()}
-
-                            {m.mediaType === 'video' && m.mediaUrl && (() => {
-                              const url = m.mediaUrl || '';
-                              return (
-                                <div
-                                  onClick={() => setZoomMedia({ url, type: 'video' })}
-                                  className="mb-2 rounded-xl overflow-hidden max-w-xs bg-black cursor-pointer group/vid relative"
-                                >
-                                  <video src={url} className="w-full max-h-64 object-contain" />
-                                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center text-white">
-                                    <Play className="w-8 h-8 fill-white text-white drop-shadow" />
-                                  </div>
-                                </div>
-                              );
-                            })()}
-
-                            {m.mediaType === 'audio' && m.mediaUrl && (
-                              <div className="mb-2 py-1 flex items-center gap-2">
-                                <audio src={m.mediaUrl} controls className="h-9 w-52 sm:w-64" />
-                              </div>
-                            )}
-
-                            {m.sticker && (
-                              <div className="mb-1">
-                                <VipStickerCard stickerId={m.sticker} />
-                              </div>
-                            )}
-
-                            {m.text && (
-                              <p className="text-xs sm:text-sm leading-relaxed break-words whitespace-pre-wrap">
-                                {renderCommentRichText(m.text)}
-                              </p>
-                            )}
-
-                            <div className="mt-1 flex items-center justify-end gap-1 text-[10px] text-slate-500 dark:text-gray-300/80 font-mono-tabular">
-                              <span>{formatMsgTime(m.createdAt)}</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })
+                    renderFeedWithGrouping(messages, 'group')
                   )}
+
+                  {typingSummaryText && (
+                    <div className="mt-2 ml-9 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 dark:bg-[#202C33]/90 border border-slate-200 dark:border-white/10 text-[11px] text-[#00A884] font-semibold shadow-sm">
+                      <span className="flex gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00A884] animate-bounce" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00A884] animate-bounce [animation-delay:150ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00A884] animate-bounce [animation-delay:300ms]" />
+                      </span>
+                      <span>{typingSummaryText}</span>
+                    </div>
+                  )}
+
                   <div ref={messagesEndRef} />
                 </div>
 
-                {mediaError && (
-                  <div className="px-4 py-2 bg-rose-500/15 border-t border-rose-500/30 flex items-center justify-between gap-2 text-xs text-rose-600 dark:text-rose-300 font-semibold">
-                    <span>{mediaError}</span>
-                    <button type="button" onClick={() => setMediaError(null)} className="text-rose-500">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {uploadingMedia && (
-                  <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center gap-2.5 text-xs text-[#00A884] font-semibold">
-                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                    <span>Mengompresi (&le; 1MB) &amp; mengunggah ke Firebase Storage... {uploadProgress}%</span>
-                  </div>
-                )}
-
-                {/* Media Preview Bar */}
-                {mediaPreview && !uploadingMedia && (
-                  <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {mediaPreview.type === 'image' && (
-                        <img src={mediaPreview.url} alt="Preview" className="w-10 h-10 rounded-lg object-cover border border-white/10" />
-                      )}
-                      {mediaPreview.type === 'video' && <Video className="w-5 h-5 text-[#00A884]" />}
-                      {mediaPreview.type === 'audio' && <Mic className="w-5 h-5 text-[#00A884]" />}
-                      <div className="min-w-0">
-                        <p className="font-bold text-slate-800 dark:text-white truncate">
-                          Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
-                        </p>
-                        {mediaPreview.type === 'image' && mediaPreview.compressedSize && (
-                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono-tabular truncate">
-                            {formatFileSize(mediaPreview.compressedSize)}
-                            {mediaPreview.originalSize && mediaPreview.originalSize > mediaPreview.compressedSize
-                              ? ` (dari ${formatFileSize(mediaPreview.originalSize)})`
-                              : ''}
-                            {mediaPreview.uploadedToFirebase ? ' · Firebase Storage' : ' · Terkompresi ≤ 1MB'}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <button type="button" onClick={() => setMediaPreview(null)} className="text-slate-400 hover:text-rose-500">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {/* Composer for Groups */}
-                <form
-                  onSubmit={handleSend}
-                  className="p-2.5 sm:p-3 bg-slate-50 dark:bg-[#202C33] border-t border-slate-200 dark:border-white/[0.06] flex items-center gap-2 shrink-0"
-                >
-                  <label className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer shrink-0" title="Kirim Foto">
-                    <ImageIcon className="w-5 h-5 text-[#00A884]" />
-                    <input type="file" accept="image/*" onChange={(e) => handleMediaUpload(e, 'image')} className="hidden" />
-                  </label>
-
-                  <label className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer shrink-0" title="Kirim Video">
-                    <Video className="w-5 h-5 text-[#00A884]" />
-                    <input type="file" accept="video/*" onChange={(e) => handleMediaUpload(e, 'video')} className="hidden" />
-                  </label>
-
-                  {isRecordingVn ? (
-                    <div className="flex-1 flex items-center gap-2 px-4 h-10 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-600 dark:text-rose-300 text-xs font-bold">
-                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-ping" />
-                      <span>Merekam VN ({recordingSeconds}s)...</span>
-                    </div>
-                  ) : (
-                    <input
-                      type="text"
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      placeholder="Ketik pesan grup..."
-                      className="flex-1 h-10 px-4 rounded-full bg-white dark:bg-[#2A3942] border border-slate-200 dark:border-transparent text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#00A884]"
-                    />
-                  )}
-
-                  {isRecordingVn ? (
-                    <button
-                      type="button"
-                      onClick={stopVnRecording}
-                      className="w-10 h-10 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shrink-0 shadow"
-                      title="Selesai Rekam VN"
-                    >
-                      <Square className="w-4 h-4" />
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={startVnRecording}
-                      className="w-10 h-10 rounded-full text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 flex items-center justify-center shrink-0"
-                      title="Rekam Voice Note (VN)"
-                    >
-                      <Mic className="w-5 h-5 text-[#00A884]" />
-                    </button>
-                  )}
-
+                {(showScrollFab || unreadBelow > 0) && (
                   <button
-                    type="submit"
-                    disabled={sending || (!draft.trim() && !mediaPreview && !selectedSticker)}
-                    className="w-10 h-10 rounded-full bg-[#00A884] hover:bg-[#06CF9C] disabled:opacity-40 text-white flex items-center justify-center transition-colors shrink-0 shadow"
-                    aria-label="Kirim"
+                    type="button"
+                    onClick={() => scrollToBottom('smooth')}
+                    className="absolute bottom-20 right-5 z-20 px-3 py-2 rounded-full bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold shadow-xl flex items-center gap-1.5 transition-transform hover:scale-105"
                   >
-                    <Send className="w-4 h-4" />
+                    <ArrowDown className="w-4 h-4" />
+                    {unreadBelow > 0 && <span>{unreadBelow} baru</span>}
                   </button>
-                </form>
+                )}
+
+                <ChatComposer
+                  mode="group"
+                  placeholder="Ketik pesan grup..."
+                  maxLength={1500}
+                  draft={draft}
+                  onDraftChange={handleDraftChange}
+                  onSubmit={handleSend}
+                  sending={sending}
+                  canUseVip={canUseVip}
+                  selectedSticker={selectedSticker}
+                  onSelectSticker={setSelectedSticker}
+                  showEmojiDrawer={showEmojiDrawer}
+                  onToggleEmojiDrawer={() => setShowEmojiDrawer((s) => !s)}
+                  emojiTab={emojiTab}
+                  onChangeEmojiTab={setEmojiTab}
+                  replyTarget={replyTarget}
+                  onClearReply={() => setReplyTarget(null)}
+                  editTarget={editTarget}
+                  onCancelEdit={() => {
+                    setEditTarget(null);
+                    setDraft('');
+                  }}
+                  mediaPreview={mediaPreview}
+                  onClearMediaPreview={() => setMediaPreview(null)}
+                  uploadingMedia={uploadingMedia}
+                  uploadProgress={uploadProgress}
+                  mediaError={mediaError}
+                  onClearMediaError={() => setMediaError(null)}
+                  onFileSelect={handleMediaUpload}
+                  onPasteImageFile={uploadImageFile}
+                  isRecordingVn={isRecordingVn}
+                  recordingSeconds={recordingSeconds}
+                  onStartVn={startVnRecording}
+                  onStopVn={stopVnRecording}
+                  onCancelVn={cancelVnRecording}
+                />
               </>
             ) : (
               /* DM CHAT ROOM */
@@ -2051,250 +2425,289 @@ export function ChatPage() {
                               {peer.name}
                             </span>
                             {(peer.isPremium || peer.role === 'founder') && (
-                              <VerifiedBadge size="sm" isFounder={peer.role === 'founder'} badgeLabel={peer.activeBadge} />
+                              <VerifiedBadge
+                                size="sm"
+                                isFounder={peer.role === 'founder'}
+                                badgeLabel={peer.activeBadge}
+                              />
                             )}
                             {(peer.isPremium || peer.role === 'founder') && peer.statusEmoji && (
                               <StatusEmojiBadge statusEmoji={peer.statusEmoji} size="xs" />
                             )}
                           </div>
                           <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate">
-                            {peer.isOnline ? 'Online' : `UID: ${peer.uid}`}
+                            {typingSummaryText ? (
+                              <span className="text-[#00A884] font-semibold animate-pulse">
+                                sedang mengetik...
+                              </span>
+                            ) : peer.isOnline ? (
+                              <span className="text-emerald-500 font-semibold">Online</span>
+                            ) : (
+                              formatLastSeen(peer.lastActiveAt)
+                            )}
                           </p>
                         </div>
                       </Link>
                     )}
                   </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {relationship === 'none' && peer && (
+                      <button
+                        type="button"
+                        onClick={() => handleSendFriendRequest(peer.uid)}
+                        className="px-2.5 py-1.5 rounded-xl bg-[#E84A18]/15 text-[#E84A18] hover:bg-[#E84A18] hover:text-white text-xs font-bold inline-flex items-center gap-1 transition-colors"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Tambah Teman</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoomSearchOpen((v) => !v);
+                        setRoomSearchQuery('');
+                      }}
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors ${
+                        roomSearchOpen
+                          ? 'bg-[#00A884]/15 text-[#00A884]'
+                          : 'text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10'
+                      }`}
+                      title="Cari Pesan"
+                    >
+                      <Search className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cycleWallpaper}
+                      className="w-9 h-9 rounded-xl flex items-center justify-center text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 transition-colors"
+                      title="Ganti Tema Wallpaper"
+                    >
+                      <Palette className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
 
-                {/* Messages Feed */}
-                <div className="flex-1 overflow-y-auto wa-wallpaper px-3 sm:px-6 py-4 space-y-2.5">
-                  {loadingThread ? (
+                {roomSearchOpen && (
+                  <div className="px-4 py-2 bg-white dark:bg-[#1A242B] border-b border-slate-200 dark:border-white/[0.06] flex items-center gap-2 shrink-0">
+                    <Search className="w-4 h-4 text-[#00A884] shrink-0" />
+                    <input
+                      type="search"
+                      autoFocus
+                      value={roomSearchQuery}
+                      onChange={(e) => setRoomSearchQuery(e.target.value)}
+                      placeholder="Cari isi pesan dalam obrolan ini..."
+                      className="flex-1 bg-transparent text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoomSearchOpen(false);
+                        setRoomSearchQuery('');
+                      }}
+                      className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                {/* DM Messages Feed */}
+                <div
+                  ref={feedRef}
+                  onScroll={handleFeedScroll}
+                  className={`flex-1 overflow-y-auto ${roomWallpaperClass} px-3 sm:px-6 py-4`}
+                >
+                  {loadingThread && messages.length === 0 ? (
                     <div className="py-12 text-center text-xs text-slate-500">Memuat pesan...</div>
                   ) : messages.length === 0 ? (
                     <div className="max-w-xs mx-auto my-8 rounded-2xl bg-white/90 dark:bg-[#182229]/90 border border-slate-200 dark:border-white/10 p-4 text-center shadow-sm">
                       <p className="text-xs font-bold text-slate-800 dark:text-white">
-                        Mulai obrolan dengan {peer?.name}
+                        Mulai obrolan dengan {peer?.name || 'teman'}
+                      </p>
+                      <p className="text-[11px] text-slate-500 dark:text-gray-400 mt-1">
+                        Pesan, foto, video, voice note, dan reaksi emoji tersinkron real-time!
                       </p>
                     </div>
                   ) : (
-                    messages.map((m) => {
-                      const isMine = m.senderUid === me.uid;
-                      return (
-                        <div key={m._id} className={`flex items-end gap-1.5 group ${isMine ? 'justify-end' : 'justify-start'}`}>
-                          <div
-                            className={`max-w-[80%] sm:max-w-[68%] rounded-2xl px-3.5 py-2 shadow-sm ${
-                              isMine
-                                ? 'bg-[#D9FDD3] dark:bg-[#005C4B] text-slate-900 dark:text-white rounded-br-sm'
-                                : 'bg-white dark:bg-[#202C33] text-slate-900 dark:text-white rounded-bl-sm'
-                            }`}
-                          >
-                            {m.mediaType === 'image' && m.mediaUrl && (
-                              <div
-                                onClick={() => setZoomMedia({ url: m.mediaUrl!, type: 'image' })}
-                                className="mb-2 rounded-xl overflow-hidden max-w-xs bg-black cursor-pointer group/img relative"
-                              >
-                                <img
-                                  src={m.mediaUrl}
-                                  alt="Media"
-                                  className="w-full h-auto object-cover max-h-64 group-hover/img:scale-105 transition-transform"
-                                />
-                                <div className="absolute inset-0 bg-black/30 opacity-0 group-hover/img:opacity-100 flex items-center justify-center text-white transition-opacity">
-                                  <Maximize2 className="w-5 h-5" />
-                                </div>
-                              </div>
-                            )}
-                            {m.sticker && (
-                              <div className="mb-1">
-                                <VipStickerCard stickerId={m.sticker} />
-                              </div>
-                            )}
-                            {m.text && (
-                              <p className="text-xs sm:text-sm leading-relaxed break-words whitespace-pre-wrap">
-                                {renderCommentRichText(m.text)}
-                              </p>
-                            )}
-                            <div className="mt-1 flex items-center justify-end gap-1 text-[10px] text-slate-500 dark:text-gray-300/80 font-mono-tabular">
-                              <span>{formatMsgTime(m.createdAt)}</span>
-                              {isMine && (
-                                <CheckCheck className={`w-3.5 h-3.5 ${m.readAt ? 'text-sky-400' : 'text-slate-400'}`} />
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })
+                    renderFeedWithGrouping(messages, 'dm')
                   )}
+
+                  {typingSummaryText && (
+                    <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 dark:bg-[#202C33]/90 border border-slate-200 dark:border-white/10 text-[11px] text-[#00A884] font-semibold shadow-sm">
+                      <span className="flex gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00A884] animate-bounce" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00A884] animate-bounce [animation-delay:150ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#00A884] animate-bounce [animation-delay:300ms]" />
+                      </span>
+                      <span>sedang mengetik...</span>
+                    </div>
+                  )}
+
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Emoji Drawer */}
-                {showEmojiDrawer && (
-                  <div className="p-3 bg-white dark:bg-[#1B252C] border-t border-slate-200 dark:border-white/[0.06] max-h-56 overflow-y-auto">
-                    <div className="flex items-center gap-2 mb-2.5">
-                      <button
-                        type="button"
-                        onClick={() => setEmojiTab('free')}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold ${
-                          emojiTab === 'free' ? 'bg-[#E84A18] text-white' : 'bg-slate-100 dark:bg-[#2A3942] text-slate-600 dark:text-gray-300'
-                        }`}
-                      >
-                        Emoji Umum
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEmojiTab('vip')}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold inline-flex items-center gap-1 ${
-                          emojiTab === 'vip' ? 'bg-gradient-to-r from-amber-500 to-[#E84A18] text-white' : 'bg-slate-100 dark:bg-[#2A3942] text-amber-600'
-                        }`}
-                      >
-                        <Crown className="w-3 h-3" />
-                        <span>Stiker VIP</span>
-                      </button>
-                    </div>
-
-                    {emojiTab === 'free' ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {FREE_EMOJIS.map((em) => (
-                          <button
-                            key={em}
-                            type="button"
-                            onClick={() => setDraft((p) => `${p}${em}`)}
-                            className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-[#2A3942] hover:scale-110 text-lg flex items-center justify-center transition-transform"
-                          >
-                            {em}
-                          </button>
-                        ))}
-                      </div>
-                    ) : canUseVip ? (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {VIP_EMOJIS.map((v) => {
-                          const Icon = v.icon;
-                          return (
-                            <button
-                              key={v.id}
-                              type="button"
-                              onClick={() => {
-                                setSelectedSticker(v.id);
-                                setShowEmojiDrawer(false);
-                              }}
-                              className={`p-2 rounded-xl border text-left flex items-center gap-1.5 hover:scale-[1.02] transition-transform ${v.bgClass} ${v.borderClass} ${v.textClass}`}
-                            >
-                              <Icon className="w-4 h-4 shrink-0" />
-                              <span className="text-[11px] font-bold truncate">{v.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs">
-                        <span className="text-slate-700 dark:text-gray-200 flex items-center gap-1.5">
-                          <Lock className="w-4 h-4 text-amber-500" />
-                          Stiker eksklusif khusus Member Premium.
-                        </span>
-                        <Link to="/profile" className="px-3 py-1 rounded-lg bg-[#E84A18] text-white font-bold">
-                          Upgrade
-                        </Link>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {mediaError && (
-                  <div className="px-4 py-2 bg-rose-500/15 border-t border-rose-500/30 flex items-center justify-between gap-2 text-xs text-rose-600 dark:text-rose-300 font-semibold">
-                    <span>{mediaError}</span>
-                    <button type="button" onClick={() => setMediaError(null)} className="text-rose-500">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {uploadingMedia && (
-                  <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center gap-2.5 text-xs text-[#00A884] font-semibold">
-                    <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                    <span>Mengompresi (&le; 1MB) &amp; mengunggah ke Firebase Storage... {uploadProgress}%</span>
-                  </div>
-                )}
-
-                {mediaPreview && !uploadingMedia && (
-                  <div className="px-4 py-2 bg-slate-100 dark:bg-[#1A242B] border-t border-slate-200 dark:border-white/[0.06] flex items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      {mediaPreview.type === 'image' && (
-                        <img src={mediaPreview.url} alt="Preview" className="w-10 h-10 rounded-lg object-cover border border-white/10" />
-                      )}
-                      <div className="min-w-0">
-                        <p className="font-bold text-slate-800 dark:text-white truncate">
-                          Lampiran {mediaPreview.type.toUpperCase()} siap dikirim
-                        </p>
-                        {mediaPreview.type === 'image' && mediaPreview.compressedSize && (
-                          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono-tabular truncate">
-                            {formatFileSize(mediaPreview.compressedSize)}
-                            {mediaPreview.originalSize && mediaPreview.originalSize > mediaPreview.compressedSize
-                              ? ` (dari ${formatFileSize(mediaPreview.originalSize)})`
-                              : ''}
-                            {mediaPreview.uploadedToFirebase ? ' · Firebase Storage' : ' · Terkompresi ≤ 1MB'}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <button type="button" onClick={() => setMediaPreview(null)} className="text-slate-400 hover:text-rose-500">
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                {/* Composer for DM */}
-                <form
-                  onSubmit={handleSend}
-                  className="p-2.5 sm:p-3 bg-slate-50 dark:bg-[#202C33] border-t border-slate-200 dark:border-white/[0.06] flex items-center gap-2 shrink-0"
-                >
+                {(showScrollFab || unreadBelow > 0) && (
                   <button
                     type="button"
-                    onClick={() => setShowEmojiDrawer((s) => !s)}
-                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors shrink-0 ${
-                      showEmojiDrawer ? 'bg-[#E84A18] text-white' : 'text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10'
-                    }`}
-                    aria-label="Emoji dan Stiker"
+                    onClick={() => scrollToBottom('smooth')}
+                    className="absolute bottom-20 right-5 z-20 px-3 py-2 rounded-full bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold shadow-xl flex items-center gap-1.5 transition-transform hover:scale-105"
                   >
-                    <Smile className="w-5 h-5" />
+                    <ArrowDown className="w-4 h-4" />
+                    {unreadBelow > 0 && <span>{unreadBelow} baru</span>}
                   </button>
+                )}
 
-                  <label
-                    className="w-10 h-10 rounded-full flex items-center justify-center text-slate-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer shrink-0"
-                    title="Kirim Foto (Kompresi ≤ 1MB)"
-                  >
-                    <ImageIcon className="w-5 h-5 text-[#00A884]" />
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => handleMediaUpload(e, 'image')}
-                      className="hidden"
-                    />
-                  </label>
-
-                  <input
-                    type="text"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder={`Ketik pesan untuk ${peer?.name || 'teman'}...`}
-                    className="flex-1 h-10 px-4 rounded-full bg-white dark:bg-[#2A3942] border border-slate-200 dark:border-transparent text-xs sm:text-sm text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-[#E84A18]"
-                  />
-
-                  <button
-                    type="submit"
-                    disabled={sending || uploadingMedia || (!draft.trim() && !selectedSticker && !mediaPreview)}
-                    className="w-10 h-10 rounded-full bg-[#00A884] hover:bg-[#06CF9C] disabled:opacity-40 text-white flex items-center justify-center transition-colors shrink-0 shadow"
-                    aria-label="Kirim"
-                  >
-                    <Send className="w-4 h-4" />
-                  </button>
-                </form>
+                <ChatComposer
+                  mode="dm"
+                  placeholder={`Ketik pesan untuk ${peer?.name || 'teman'}...`}
+                  maxLength={1200}
+                  draft={draft}
+                  onDraftChange={handleDraftChange}
+                  onSubmit={handleSend}
+                  sending={sending}
+                  canUseVip={canUseVip}
+                  selectedSticker={selectedSticker}
+                  onSelectSticker={setSelectedSticker}
+                  showEmojiDrawer={showEmojiDrawer}
+                  onToggleEmojiDrawer={() => setShowEmojiDrawer((s) => !s)}
+                  emojiTab={emojiTab}
+                  onChangeEmojiTab={setEmojiTab}
+                  replyTarget={replyTarget}
+                  onClearReply={() => setReplyTarget(null)}
+                  editTarget={editTarget}
+                  onCancelEdit={() => {
+                    setEditTarget(null);
+                    setDraft('');
+                  }}
+                  mediaPreview={mediaPreview}
+                  onClearMediaPreview={() => setMediaPreview(null)}
+                  uploadingMedia={uploadingMedia}
+                  uploadProgress={uploadProgress}
+                  mediaError={mediaError}
+                  onClearMediaError={() => setMediaError(null)}
+                  onFileSelect={handleMediaUpload}
+                  onPasteImageFile={uploadImageFile}
+                  isRecordingVn={isRecordingVn}
+                  recordingSeconds={recordingSeconds}
+                  onStartVn={startVnRecording}
+                  onStopVn={stopVnRecording}
+                  onCancelVn={cancelVnRecording}
+                />
               </>
             )}
           </section>
         </div>
       </div>
 
-      {/* Zoom Media Modal (Lightbox) */}
+      {/* Confirmation Dialog Modal (replaces native window.confirm) */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white dark:bg-[#111B21] border border-slate-200 dark:border-white/15 p-5 shadow-2xl space-y-4">
+            <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
+              {confirmDialog.title}
+            </h3>
+            <p className="text-xs text-slate-600 dark:text-gray-300 leading-relaxed">
+              {confirmDialog.message}
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-gray-200 text-xs font-bold"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const fn = confirmDialog.onConfirm;
+                  setConfirmDialog(null);
+                  await fn();
+                }}
+                className={`px-4 py-2 rounded-xl text-white text-xs font-bold shadow ${
+                  confirmDialog.danger
+                    ? 'bg-rose-600 hover:bg-rose-500'
+                    : 'bg-[#00A884] hover:bg-[#06CF9C]'
+                }`}
+              >
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Group Info & Settings Modal */}
+      {showGroupInfoModal && activeGroup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#111B21] border border-slate-200 dark:border-white/15 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-extrabold text-slate-900 dark:text-white">Info Grup</h3>
+              <button
+                type="button"
+                onClick={() => setShowGroupInfoModal(false)}
+                className="text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="relative group shrink-0">
+                <img
+                  src={activeGroup.avatarUrl || defaultAvatarImg}
+                  alt={activeGroup.name}
+                  className="w-16 h-16 rounded-full object-cover border border-white/20 shadow"
+                />
+                <button
+                  type="button"
+                  onClick={() => groupAvatarInputRef.current?.click()}
+                  className="absolute inset-0 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"
+                  title="Ubah Foto Grup"
+                >
+                  <Camera className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-base font-extrabold text-slate-900 dark:text-white truncate">
+                  {activeGroup.name}
+                </p>
+                <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
+                  {activeGroup.description || 'Grup komunitas ZoneStream'}
+                </p>
+                <p className="text-[11px] font-bold text-[#00A884] mt-1">
+                  {activeGroup.members?.length || 1} Anggota · ID: {activeGroup.groupId}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => groupAvatarInputRef.current?.click()}
+                className="h-10 rounded-xl bg-slate-100 dark:bg-[#202C33] text-slate-800 dark:text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 hover:bg-slate-200 dark:hover:bg-[#2A3942]"
+              >
+                <Camera className="w-4 h-4" />
+                <span>Ganti Foto</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGroupInfoModal(false);
+                  setShowInviteModal(true);
+                }}
+                className="h-10 rounded-xl bg-[#00A884] hover:bg-[#06CF9C] text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>Undang UID</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Zoom Media Modal */}
       {zoomMedia && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/95 backdrop-blur-md p-4">
           <div className="relative max-w-5xl max-h-[90vh] w-full flex flex-col items-center justify-center">
@@ -2307,9 +2720,18 @@ export function ChatPage() {
               <X className="w-6 h-6" />
             </button>
             {zoomMedia.type === 'image' ? (
-              <img src={zoomMedia.url} alt="Zoomed" className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl" />
+              <img
+                src={zoomMedia.url}
+                alt="Zoomed"
+                className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl"
+              />
             ) : (
-              <video src={zoomMedia.url} controls autoPlay className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl" />
+              <video
+                src={zoomMedia.url}
+                controls
+                autoPlay
+                className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl"
+              />
             )}
           </div>
         </div>
@@ -2352,7 +2774,7 @@ export function ChatPage() {
                   required
                   value={inviteUid}
                   onChange={(e) => setInviteUid(e.target.value)}
-                  placeholder="contoh: 00000 atau user_xyz"
+                  placeholder="contoh: 00000 atau 5280074"
                   className="w-full h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#202C33] border border-slate-200 dark:border-white/10 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-[#00A884]"
                 />
               </div>

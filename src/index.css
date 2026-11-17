@@ -261,7 +261,96 @@
     transition-duration: 0.01ms !important;
   }
 
-  .skeleton-shimmer::after {
+  .skeleton-shimmer::after,
+  .animate-tier-sweep {
     display: none;
   }
+}
+
+/* Premium Tier Indicator — GPU-composited keyframes matching streak aesthetics */
+@keyframes tierAuraGlow {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale3d(0.985, 0.985, 1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translate3d(0, 0, 0) scale3d(1.035, 1.035, 1);
+    opacity: 0.95;
+  }
+}
+
+@keyframes tierSweepShimmer {
+  0% {
+    transform: translate3d(-140%, 0, 0) skewX(-18deg);
+  }
+  45%, 100% {
+    transform: translate3d(240%, 0, 0) skewX(-18deg);
+  }
+}
+
+@keyframes tierEmblemFloat {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
+  }
+  50% {
+    transform: translate3d(0, -1px, 0) scale3d(1.06, 1.06, 1);
+  }
+}
+
+.animate-tier-aura-glow {
+  animation: tierAuraGlow 3.8s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.animate-tier-sweep {
+  animation: tierSweepShimmer 4.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.animate-tier-emblem {
+  animation: tierEmblemFloat 4.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+@keyframes reactionTrayIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale3d(0.92, 0.92, 1);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
+  }
+}
+
+@keyframes reactionPop {
+  0% {
+    opacity: 0;
+    transform: scale3d(0.6, 0.6, 1);
+  }
+  65% {
+    opacity: 1;
+    transform: scale3d(1.12, 1.12, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: scale3d(1, 1, 1);
+  }
+}
+
+.animate-reaction-tray {
+  animation: reactionTrayIn 0.18s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
+}
+
+.animate-reaction-pop {
+  animation: reactionPop 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+  will-change: transform, opacity;
 }

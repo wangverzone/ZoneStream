@@ -10,8 +10,12 @@ export interface IGroupMessage {
   mediaType?: 'image' | 'video' | 'audio' | '';
   sticker?: string;
   replyToId?: string;
+  replySenderUid?: string;
   replySenderName?: string;
+  replySenderIsVerified?: boolean;
   replyText?: string;
+  reactions?: Record<string, string[]>;
+  editedAt?: Date | string | null;
   createdAt?: Date;
 }
 
@@ -28,8 +32,12 @@ const GroupMessageSchema = new Schema<IGroupMessageDocument>(
     mediaType: { type: String, default: '' },
     sticker: { type: String, default: '' },
     replyToId: { type: String, default: '' },
+    replySenderUid: { type: String, default: '' },
     replySenderName: { type: String, default: '' },
+    replySenderIsVerified: { type: Boolean, default: false },
     replyText: { type: String, default: '' },
+    reactions: { type: Schema.Types.Mixed, default: {} },
+    editedAt: { type: Date, default: null },
   },
   { timestamps: { createdAt: true, updatedAt: false } }
 );

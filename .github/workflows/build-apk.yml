@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       api_base_url:
-        description: 'URL Publik Backend ZoneStream (contoh: https://zonestream.anda.com) agar APK bisa streaming & login'
+        description: 'URL Publik Backend ZoneStream (otomatis terisi ke Vercel Anda)'
         required: false
-        default: ''
+        default: 'https://zonestream-beta.vercel.app'
       remote_server_url:
-        description: 'Opsional: URL Live Web jika ingin APK memuat tampilan langsung dari server'
+        description: 'Opsional: URL Live Web (biarkan kosong agar APK memakai aset offline lokal)'
         required: false
         default: ''
   push:
@@ -28,11 +28,10 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: '22'
 
       - name: Setup Java 21
         uses: actions/setup-java@v4
@@ -45,18 +44,21 @@ jobs:
 
       - name: Install dependencies & Capacitor Android
         run: |
-          npm ci || npm install
-          npm install --no-save @capacitor/android
+          npm install --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund @capacitor/android@8
 
       - name: Build ZoneStream web assets for APK
-        env:
-          VITE_API_BASE_URL: ${{ github.event.inputs.api_base_url || vars.ZONESTREAM_API_URL || '' }}
-        run: npm run build
+        run: |
+          RAW_API="${{ github.event.inputs.api_base_url || vars.ZONESTREAM_API_URL || 'https://zonestream-beta.vercel.app' }}"
+          CLEAN_API="${RAW_API%/}"
+          echo "VITE_API_BASE_URL=${CLEAN_API}" >> "$GITHUB_ENV"
+          VITE_API_BASE_URL="${CLEAN_API}" npm run build
 
       - name: Generate Android project & inject ZoneStream icon
         env:
           ZONESTREAM_SERVER_URL: ${{ github.event.inputs.remote_server_url || vars.ZONESTREAM_SERVER_URL || '' }}
         run: |
+          command -v convert >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick) || true
           if [ ! -d "android" ]; then
             npx cap add android
           fi

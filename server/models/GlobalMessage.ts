@@ -14,6 +14,8 @@ export interface IGlobalMessage {
   replySenderName?: string;
   replySenderIsVerified?: boolean;
   replyText?: string;
+  reactions?: Record<string, string[]>;
+  editedAt?: Date | string | null;
   createdAt?: Date | string;
 }
 
@@ -34,6 +36,8 @@ const GlobalMessageSchema = new Schema<IGlobalMessageDocument>(
     replySenderName: { type: String, default: '' },
     replySenderIsVerified: { type: Boolean, default: false },
     replyText: { type: String, default: '' },
+    reactions: { type: Schema.Types.Mixed, default: {} },
+    editedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

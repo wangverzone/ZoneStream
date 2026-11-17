@@ -11,6 +11,8 @@ export interface IChatMessage {
   replyToId?: string;
   replySenderName?: string;
   replyText?: string;
+  reactions?: Record<string, string[]>;
+  editedAt?: Date | string | null;
   readAt?: Date | null;
   createdAt?: Date;
 }
@@ -29,6 +31,8 @@ const ChatMessageSchema = new Schema<IChatMessageDocument>(
     replyToId: { type: String, default: '' },
     replySenderName: { type: String, default: '' },
     replyText: { type: String, default: '' },
+    reactions: { type: Schema.Types.Mixed, default: {} },
+    editedAt: { type: Date, default: null },
     readAt: { type: Date, default: null },
   },
   { timestamps: { createdAt: true, updatedAt: false } }

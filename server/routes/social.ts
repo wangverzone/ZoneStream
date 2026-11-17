@@ -24,6 +24,14 @@ import { ClanModel, type IClan } from '../models/Clan.ts';
 import { UserModel, type IUser } from '../models/User.ts';
 import { createNotification } from '../notifications.ts';
 import { getClanActivitiesRaw, recordClanActivity } from '../clanActivity.ts';
+import {
+  broadcastChatDelete,
+  broadcastChatEdit,
+  broadcastChatMessage,
+  broadcastChatReaction,
+  broadcastDmRead,
+  type ChatRoomType,
+} from '../wsChat.ts';
 
 const router = Router();
 
@@ -383,13 +391,38 @@ router.get('/profile/:uid', async (req: AuthenticatedRequest, res) => {
       ).length;
     }
 
+    const viewerUser = viewerUid ? await findUserByUid(viewerUid) : null;
+    const canViewVipExpiry = Boolean(
+      viewerUid === resolvedTargetUid || viewerUser?.role === 'founder'
+    );
+
     const likedBy = Array.isArray(target.likedBy) ? target.likedBy : [];
     const hasLiked = Boolean(viewerUid && likedBy.includes(viewerUid));
+
+    const publicSafePlan = (() => {
+      if (pub.role === 'founder') return 'Founder Lifetime';
+      const rawPlan = String(pub.premiumPlan || '').toLowerCase();
+      if (!pub.isPremium) return '';
+      if (rawPlan.includes('365') || rawPlan.includes('tahun') || rawPlan.includes('immortal') || rawPlan.includes('lifetime')) {
+        return 'VIP Immortal';
+      }
+      if (rawPlan.includes('60') || rawPlan.includes('pro')) {
+        return 'VIP Pro';
+      }
+      return 'VIP Aktif';
+    })();
 
     return res.json({
       ok: true,
       profile: {
         ...summary,
+        premiumPlan: canViewVipExpiry ? summary.premiumPlan : publicSafePlan,
+        premiumExpiryDate: canViewVipExpiry
+          ? pub.premiumExpiryDate
+            ? new Date(pub.premiumExpiryDate).toISOString()
+            : null
+          : null,
+        canViewVipExpiry,
         friendsCount,
         relationship,
         charisma: pub.charisma ?? 0,
@@ -770,6 +803,7 @@ router.get('/conversations', requireAuth, async (req: AuthenticatedRequest, res)
                 _id: String(entry.lastMessage._id),
                 senderUid: entry.lastMessage.senderUid,
                 text: entry.lastMessage.text || '',
+                mediaType: entry.lastMessage.mediaType || '',
                 sticker: entry.lastMessage.sticker || '',
                 readAt: entry.lastMessage.readAt || null,
                 createdAt: entry.lastMessage.createdAt,
@@ -812,12 +846,14 @@ router.get('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest, 
 
     let messages: any[] = [];
     const now = new Date();
+    let markedReadCount = 0;
 
     if (isDbMongoConnected()) {
-      await ChatMessageModel.updateMany(
+      const updateRes = await ChatMessageModel.updateMany(
         { conversationId, senderUid: peerUid, recipientUid: meUid, readAt: null },
         { $set: { readAt: now } }
       );
+      markedReadCount = updateRes.modifiedCount || 0;
       const docs = await ChatMessageModel.find({ conversationId })
         .sort({ createdAt: 1 })
         .limit(150);
@@ -832,6 +868,7 @@ router.get('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest, 
         if (m.conversationId === conversationId && m.senderUid === peerUid && m.recipientUid === meUid && !m.readAt) {
           m.readAt = now;
           changed = true;
+          markedReadCount += 1;
         }
       }
       if (changed) writeFallbackJson('messages-v1.json', all);
@@ -839,6 +876,10 @@ router.get('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest, 
         .filter((m) => m.conversationId === conversationId)
         .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
         .slice(-150);
+    }
+
+    if (markedReadCount > 0) {
+      broadcastDmRead(conversationId, meUid, peerUid, now.toISOString());
     }
 
     return res.json({
@@ -915,12 +956,16 @@ router.post('/messages/:peerUid', requireAuth, async (req: AuthenticatedRequest,
         replyToId,
         replySenderName,
         replyText,
+        reactions: {},
+        editedAt: null,
         readAt: null,
         createdAt: new Date(),
       };
       all.push(created);
       writeFallbackJson('messages-v1.json', all);
     }
+
+    broadcastChatMessage('dm', `dm:${conversationId}`, created, [meUid, peerUid]);
 
     return res.status(201).json({ ok: true, message: created });
   } catch (err) {
@@ -936,12 +981,17 @@ router.delete('/messages/:messageId', requireAuth, async (req: AuthenticatedRequ
     const messageId = String(req.params.messageId || '').trim();
     await connectDB();
 
+    let deletedConversationId = '';
+    let targetUids: string[] = [];
+
     if (isDbMongoConnected()) {
       const msg = await ChatMessageModel.findById(messageId);
       if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
       if (msg.senderUid !== meUid && req.authUser!.role !== 'founder') {
         return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
       }
+      deletedConversationId = msg.conversationId;
+      targetUids = [msg.senderUid, msg.recipientUid];
       await ChatMessageModel.deleteOne({ _id: messageId });
     } else {
       const all = readFallbackJson<StoredMessage[]>('messages-v1.json', []);
@@ -950,10 +1000,16 @@ router.delete('/messages/:messageId', requireAuth, async (req: AuthenticatedRequ
       if (found.senderUid !== meUid && req.authUser!.role !== 'founder') {
         return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
       }
+      deletedConversationId = found.conversationId;
+      targetUids = [found.senderUid, found.recipientUid];
       writeFallbackJson(
         'messages-v1.json',
         all.filter((m) => m._id !== messageId)
       );
+    }
+
+    if (deletedConversationId) {
+      broadcastChatDelete('dm', `dm:${deletedConversationId}`, messageId, targetUids);
     }
 
     return res.json({ ok: true });
@@ -1169,7 +1225,27 @@ router.get('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedRe
         .slice(-200);
     }
 
-    return res.json({ ok: true, group, messages });
+    const senderIds = Array.from(new Set(messages.map((m) => m.senderUid).filter(Boolean)));
+    const senderUsers = senderIds.length > 0 ? await findUsersByUids(senderIds) : [];
+    const senderMap = new Map(senderUsers.map((u) => [u.uid, toCommunityUserSummary(u)]));
+
+    const enrichedMessages = messages.map((m) => {
+      const s = senderMap.get(m.senderUid);
+      return {
+        ...m,
+        senderName: s?.name || m.senderName || 'User',
+        senderUsername: s?.username || '',
+        senderPhoto: s?.photoUrl || m.senderPhoto || '',
+        senderRole: s?.role || 'member',
+        senderIsPremium: Boolean(s?.isPremium || s?.role === 'founder'),
+        senderBadge: s?.activeBadge || 'Member',
+        senderBorder: s?.activeBorder || 'classic',
+        senderStatusEmoji: s?.statusEmoji || '',
+        senderLevel: s?.level || 1,
+      };
+    });
+
+    return res.json({ ok: true, group, messages: enrichedMessages });
   } catch (err) {
     console.error('[Social Group Messages Error]', err);
     return res.status(500).json({ error: 'Gagal memuat pesan grup' });
@@ -1186,7 +1262,9 @@ router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedR
     const mediaType = req.body?.mediaType || ''; // 'image' | 'video' | 'audio'
     const sticker = String(req.body?.sticker || '').trim();
     const replyToId = String(req.body?.replyToId || '').trim();
+    const replySenderUid = String(req.body?.replySenderUid || '').trim();
     const replySenderName = String(req.body?.replySenderName || '').trim().slice(0, 40);
+    const replySenderIsVerified = Boolean(req.body?.replySenderIsVerified);
     const replyText = String(req.body?.replyText || '').trim().slice(0, 140);
 
     if (!groupId) {
@@ -1201,12 +1279,15 @@ router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedR
       return res.status(404).json({ error: 'Pengguna tidak ditemukan.' });
     }
 
-    const canUseVipSticker = Boolean(sender.isPremium || sender.role === 'founder');
+    const senderSummary = toCommunityUserSummary(sender);
+    const canUseVipSticker = Boolean(senderSummary.isPremium || senderSummary.role === 'founder');
     const cleanSticker = sticker && canUseVipSticker ? sticker : '';
     void touchUserLastActive(meUid);
     await connectDB();
 
     let created: any;
+    let groupMembers: string[] = [];
+
     if (isDbMongoConnected()) {
       const group = await GroupChatModel.findOne({ groupId });
       if (!group) {
@@ -1215,18 +1296,23 @@ router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedR
       if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
         return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
       }
+      groupMembers = group.members || [];
       const doc = await GroupMessageModel.create({
         groupId,
         senderUid: meUid,
-        senderName: sender.name,
-        senderPhoto: sender.photoUrl || '',
+        senderName: senderSummary.name,
+        senderPhoto: senderSummary.photoUrl || '',
         text,
         mediaUrl,
         mediaType,
         sticker: cleanSticker,
         replyToId,
+        replySenderUid,
         replySenderName,
+        replySenderIsVerified,
         replyText,
+        reactions: {},
+        editedAt: null,
       });
       created = { ...doc.toObject(), _id: String(doc._id) };
     } else {
@@ -1238,30 +1324,96 @@ router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedR
       if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
         return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
       }
+      groupMembers = group.members || [];
       const all = readFallbackJson<StoredGroupMessage[]>('group-messages-v1.json', []);
       created = {
         _id: `gmsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         groupId,
         senderUid: meUid,
-        senderName: sender.name,
-        senderPhoto: sender.photoUrl || '',
+        senderName: senderSummary.name,
+        senderPhoto: senderSummary.photoUrl || '',
         text,
         mediaUrl,
         mediaType,
         sticker: cleanSticker,
         replyToId,
+        replySenderUid,
         replySenderName,
+        replySenderIsVerified,
         replyText,
+        reactions: {},
+        editedAt: null,
         createdAt: new Date(),
       };
       all.push(created);
       writeFallbackJson('group-messages-v1.json', all);
     }
 
-    return res.status(201).json({ ok: true, message: created });
+    const enrichedCreated = {
+      ...created,
+      senderUsername: senderSummary.username,
+      senderRole: senderSummary.role,
+      senderIsPremium: senderSummary.isPremium,
+      senderBadge: senderSummary.activeBadge,
+      senderBorder: senderSummary.activeBorder,
+      senderStatusEmoji: senderSummary.statusEmoji,
+      senderLevel: senderSummary.level,
+    };
+
+    broadcastChatMessage('group', `group:${groupId}`, enrichedCreated, groupMembers);
+
+    return res.status(201).json({ ok: true, message: enrichedCreated });
   } catch (err) {
     console.error('[Social Group Message Send Error]', err);
     return res.status(500).json({ error: 'Gagal mengirim pesan grup' });
+  }
+});
+
+// DELETE /api/social/groups/messages/:messageId — Delete own group message (or founder)
+router.delete('/groups/messages/:messageId', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const messageId = String(req.params.messageId || '').trim();
+    await connectDB();
+
+    let targetGroupId = '';
+    let groupMembers: string[] = [];
+
+    if (isDbMongoConnected()) {
+      const msg = await GroupMessageModel.findById(messageId);
+      if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+      if (msg.senderUid !== meUid && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
+      }
+      targetGroupId = msg.groupId;
+      const grp = await GroupChatModel.findOne({ groupId: targetGroupId });
+      groupMembers = grp?.members || [];
+      await GroupMessageModel.deleteOne({ _id: messageId });
+    } else {
+      const all = readFallbackJson<StoredGroupMessage[]>('group-messages-v1.json', []);
+      const found = all.find((m) => m._id === messageId);
+      if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+      if (found.senderUid !== meUid && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
+      }
+      targetGroupId = found.groupId;
+      const allGroups = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+      const grp = allGroups.find((g) => g.groupId === targetGroupId);
+      groupMembers = grp?.members || [];
+      writeFallbackJson(
+        'group-messages-v1.json',
+        all.filter((m) => m._id !== messageId)
+      );
+    }
+
+    if (targetGroupId) {
+      broadcastChatDelete('group', `group:${targetGroupId}`, messageId, groupMembers);
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[Social Group Message Delete Error]', err);
+    return res.status(500).json({ error: 'Gagal menghapus pesan grup' });
   }
 });
 
@@ -1428,23 +1580,27 @@ router.post('/global-messages', requireAuth, async (req: AuthenticatedRequest, r
       writeFallbackJson('global-messages-v1.json', all.slice(-300));
     }
 
+    const fullGlobalMessage = {
+      ...created,
+      channel,
+      senderUsername: senderSummary.username,
+      senderRole: senderSummary.role,
+      senderIsPremium: senderSummary.isPremium,
+      senderBadge: senderSummary.activeBadge,
+      senderBorder: senderSummary.activeBorder,
+      senderStatusEmoji: senderSummary.statusEmoji,
+      senderLevel: senderSummary.level,
+      senderCharisma: senderSummary.charisma ?? 0,
+      senderClan,
+      senderTopRank: senderRank?.topRank ?? null,
+      senderTopCategory: senderRank?.topCategory ?? null,
+    };
+
+    broadcastChatMessage('global', `global:${channel}`, fullGlobalMessage);
+
     return res.status(201).json({
       ok: true,
-      message: {
-        ...created,
-        channel,
-        senderUsername: senderSummary.username,
-        senderRole: senderSummary.role,
-        senderIsPremium: senderSummary.isPremium,
-        senderBadge: senderSummary.activeBadge,
-        senderBorder: senderSummary.activeBorder,
-        senderStatusEmoji: senderSummary.statusEmoji,
-        senderLevel: senderSummary.level,
-        senderCharisma: senderSummary.charisma ?? 0,
-        senderClan,
-        senderTopRank: senderRank?.topRank ?? null,
-        senderTopCategory: senderRank?.topCategory ?? null,
-      },
+      message: fullGlobalMessage,
     });
   } catch (err) {
     console.error('[Global Chat Send Error]', err);
@@ -1459,12 +1615,14 @@ router.delete('/global-messages/:messageId', requireAuth, async (req: Authentica
     const messageId = String(req.params.messageId || '').trim();
     await connectDB();
 
+    let deletedChannel = 'ch1';
     if (isDbMongoConnected()) {
       const msg = await GlobalMessageModel.findById(messageId);
       if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
       if (msg.senderUid !== meUid && req.authUser!.role !== 'founder') {
         return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
       }
+      deletedChannel = normalizeGlobalChannel(msg.channel);
       await GlobalMessageModel.deleteOne({ _id: messageId });
     } else {
       const all = readFallbackJson<StoredGlobalMessage[]>('global-messages-v1.json', []);
@@ -1473,16 +1631,260 @@ router.delete('/global-messages/:messageId', requireAuth, async (req: Authentica
       if (found.senderUid !== meUid && req.authUser!.role !== 'founder') {
         return res.status(403).json({ error: 'Hanya dapat menghapus pesan sendiri' });
       }
+      deletedChannel = normalizeGlobalChannel(found.channel);
       writeFallbackJson(
         'global-messages-v1.json',
         all.filter((m) => m._id !== messageId)
       );
     }
 
+    broadcastChatDelete('global', `global:${deletedChannel}`, messageId);
+
     return res.json({ ok: true });
   } catch (err) {
     console.error('[Global Chat Delete Error]', err);
     return res.status(500).json({ error: 'Gagal menghapus pesan' });
+  }
+});
+
+function toggleReactionMap(
+  current: Record<string, string[]> | undefined,
+  emoji: string,
+  uid: string
+): Record<string, string[]> {
+  const next: Record<string, string[]> = {};
+  if (current && typeof current === 'object') {
+    for (const [k, list] of Object.entries(current)) {
+      if (Array.isArray(list) && list.length > 0) {
+        next[k] = Array.from(new Set(list.map(String)));
+      }
+    }
+  }
+  const existing = next[emoji] || [];
+  if (existing.includes(uid)) {
+    const filtered = existing.filter((id) => id !== uid);
+    if (filtered.length > 0) next[emoji] = filtered;
+    else delete next[emoji];
+  } else {
+    next[emoji] = [...existing, uid];
+  }
+  return next;
+}
+
+// POST /api/social/chat/:roomType/:messageId/react — Toggle emoji reaction on DM, Group, or Global message
+router.post('/chat/:roomType/:messageId/react', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const roomType = String(req.params.roomType || '').trim() as ChatRoomType;
+    const messageId = String(req.params.messageId || '').trim();
+    const emoji = String(req.body?.emoji || '').trim().slice(0, 16);
+
+    if (!['dm', 'group', 'global'].includes(roomType)) {
+      return res.status(400).json({ error: 'Tipe ruang chat tidak valid.' });
+    }
+    if (!emoji) {
+      return res.status(400).json({ error: 'Emoji reaksi wajib diisi.' });
+    }
+
+    await connectDB();
+    let updatedReactions: Record<string, string[]> = {};
+    let roomKey = '';
+    let targetUids: string[] | undefined;
+
+    if (roomType === 'dm') {
+      if (isDbMongoConnected()) {
+        const msg = await ChatMessageModel.findById(messageId);
+        if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (msg.senderUid !== meUid && msg.recipientUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Tidak punya akses ke pesan ini' });
+        }
+        updatedReactions = toggleReactionMap(msg.reactions, emoji, meUid);
+        msg.reactions = updatedReactions;
+        msg.markModified('reactions');
+        await msg.save();
+        roomKey = `dm:${msg.conversationId}`;
+        targetUids = [msg.senderUid, msg.recipientUid];
+      } else {
+        const all = readFallbackJson<StoredMessage[]>('messages-v1.json', []);
+        const found = all.find((m) => m._id === messageId);
+        if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (found.senderUid !== meUid && found.recipientUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Tidak punya akses ke pesan ini' });
+        }
+        updatedReactions = toggleReactionMap(found.reactions, emoji, meUid);
+        found.reactions = updatedReactions;
+        writeFallbackJson('messages-v1.json', all);
+        roomKey = `dm:${found.conversationId}`;
+        targetUids = [found.senderUid, found.recipientUid];
+      }
+    } else if (roomType === 'group') {
+      if (isDbMongoConnected()) {
+        const msg = await GroupMessageModel.findById(messageId);
+        if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        const grp = await GroupChatModel.findOne({ groupId: msg.groupId });
+        if (!grp) return res.status(404).json({ error: 'Grup tidak ditemukan' });
+        if (!grp.members.includes(meUid) && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Anda bukan anggota grup ini' });
+        }
+        updatedReactions = toggleReactionMap(msg.reactions, emoji, meUid);
+        msg.reactions = updatedReactions;
+        msg.markModified('reactions');
+        await msg.save();
+        roomKey = `group:${msg.groupId}`;
+        targetUids = grp.members || [];
+      } else {
+        const all = readFallbackJson<StoredGroupMessage[]>('group-messages-v1.json', []);
+        const found = all.find((m) => m._id === messageId);
+        if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        const allGroups = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+        const grp = allGroups.find((g) => g.groupId === found.groupId);
+        if (!grp) return res.status(404).json({ error: 'Grup tidak ditemukan' });
+        if (!grp.members.includes(meUid) && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Anda bukan anggota grup ini' });
+        }
+        updatedReactions = toggleReactionMap(found.reactions, emoji, meUid);
+        found.reactions = updatedReactions;
+        writeFallbackJson('group-messages-v1.json', all);
+        roomKey = `group:${found.groupId}`;
+        targetUids = grp.members || [];
+      }
+    } else {
+      if (isDbMongoConnected()) {
+        const msg = await GlobalMessageModel.findById(messageId);
+        if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        updatedReactions = toggleReactionMap(msg.reactions, emoji, meUid);
+        msg.reactions = updatedReactions;
+        msg.markModified('reactions');
+        await msg.save();
+        roomKey = `global:${normalizeGlobalChannel(msg.channel)}`;
+      } else {
+        const all = readFallbackJson<StoredGlobalMessage[]>('global-messages-v1.json', []);
+        const found = all.find((m) => m._id === messageId);
+        if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        updatedReactions = toggleReactionMap(found.reactions, emoji, meUid);
+        found.reactions = updatedReactions;
+        writeFallbackJson('global-messages-v1.json', all);
+        roomKey = `global:${normalizeGlobalChannel(found.channel)}`;
+      }
+    }
+
+    if (roomKey) {
+      broadcastChatReaction(roomType, roomKey, messageId, updatedReactions, targetUids);
+    }
+
+    return res.json({ ok: true, messageId, reactions: updatedReactions });
+  } catch (err) {
+    console.error('[Social Chat Reaction Error]', err);
+    return res.status(500).json({ error: 'Gagal memperbarui reaksi pesan' });
+  }
+});
+
+// PATCH /api/social/chat/:roomType/:messageId — Edit own text message in DM, Group, or Global
+router.patch('/chat/:roomType/:messageId', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const meUid = req.authUser!.uid;
+    const roomType = String(req.params.roomType || '').trim() as ChatRoomType;
+    const messageId = String(req.params.messageId || '').trim();
+    const newText = String(req.body?.text || '').trim().slice(0, 1500);
+
+    if (!['dm', 'group', 'global'].includes(roomType)) {
+      return res.status(400).json({ error: 'Tipe ruang chat tidak valid.' });
+    }
+    if (!newText) {
+      return res.status(400).json({ error: 'Teks pesan tidak boleh kosong saat mengedit.' });
+    }
+
+    await connectDB();
+    const editedAt = new Date().toISOString();
+    let roomKey = '';
+    let targetUids: string[] | undefined;
+
+    if (roomType === 'dm') {
+      if (isDbMongoConnected()) {
+        const msg = await ChatMessageModel.findById(messageId);
+        if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (msg.senderUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Hanya dapat mengedit pesan sendiri' });
+        }
+        msg.text = newText;
+        msg.editedAt = new Date(editedAt);
+        await msg.save();
+        roomKey = `dm:${msg.conversationId}`;
+        targetUids = [msg.senderUid, msg.recipientUid];
+      } else {
+        const all = readFallbackJson<StoredMessage[]>('messages-v1.json', []);
+        const found = all.find((m) => m._id === messageId);
+        if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (found.senderUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Hanya dapat mengedit pesan sendiri' });
+        }
+        found.text = newText;
+        found.editedAt = editedAt;
+        writeFallbackJson('messages-v1.json', all);
+        roomKey = `dm:${found.conversationId}`;
+        targetUids = [found.senderUid, found.recipientUid];
+      }
+    } else if (roomType === 'group') {
+      if (isDbMongoConnected()) {
+        const msg = await GroupMessageModel.findById(messageId);
+        if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (msg.senderUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Hanya dapat mengedit pesan sendiri' });
+        }
+        msg.text = newText;
+        msg.editedAt = new Date(editedAt);
+        await msg.save();
+        roomKey = `group:${msg.groupId}`;
+        const grp = await GroupChatModel.findOne({ groupId: msg.groupId });
+        targetUids = grp?.members || [];
+      } else {
+        const all = readFallbackJson<StoredGroupMessage[]>('group-messages-v1.json', []);
+        const found = all.find((m) => m._id === messageId);
+        if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (found.senderUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Hanya dapat mengedit pesan sendiri' });
+        }
+        found.text = newText;
+        found.editedAt = editedAt;
+        writeFallbackJson('group-messages-v1.json', all);
+        roomKey = `group:${found.groupId}`;
+        const allGroups = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+        const grp = allGroups.find((g) => g.groupId === found.groupId);
+        targetUids = grp?.members || [];
+      }
+    } else {
+      if (isDbMongoConnected()) {
+        const msg = await GlobalMessageModel.findById(messageId);
+        if (!msg) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (msg.senderUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Hanya dapat mengedit pesan sendiri' });
+        }
+        msg.text = newText.slice(0, 255);
+        msg.editedAt = new Date(editedAt);
+        await msg.save();
+        roomKey = `global:${normalizeGlobalChannel(msg.channel)}`;
+      } else {
+        const all = readFallbackJson<StoredGlobalMessage[]>('global-messages-v1.json', []);
+        const found = all.find((m) => m._id === messageId);
+        if (!found) return res.status(404).json({ error: 'Pesan tidak ditemukan' });
+        if (found.senderUid !== meUid && req.authUser!.role !== 'founder') {
+          return res.status(403).json({ error: 'Hanya dapat mengedit pesan sendiri' });
+        }
+        found.text = newText.slice(0, 255);
+        found.editedAt = editedAt;
+        writeFallbackJson('global-messages-v1.json', all);
+        roomKey = `global:${normalizeGlobalChannel(found.channel)}`;
+      }
+    }
+
+    if (roomKey) {
+      broadcastChatEdit(roomType, roomKey, messageId, newText, editedAt, targetUids);
+    }
+
+    return res.json({ ok: true, messageId, text: newText, editedAt });
+  } catch (err) {
+    console.error('[Social Chat Edit Error]', err);
+    return res.status(500).json({ error: 'Gagal mengedit pesan' });
   }
 });
 

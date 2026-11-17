@@ -15,6 +15,24 @@ export function resolveApiUrl(urlOrPath: string): string {
   return input;
 }
 
+export function resolveWsUrl(pathWithQuery: string): string {
+  const cleanPath = pathWithQuery.startsWith('/') ? pathWithQuery : `/${pathWithQuery}`;
+  if (RAW_API_BASE) {
+    try {
+      const parsed = new URL(RAW_API_BASE);
+      const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${wsProto}//${parsed.host}${cleanPath}`;
+    } catch {
+      // Fallback to window origin below
+    }
+  }
+  if (typeof window !== 'undefined') {
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsProto}//${window.location.host}${cleanPath}`;
+  }
+  return cleanPath;
+}
+
 let bridgeInstalled = false;
 
 export function installCapacitorApiBridge(): void {
