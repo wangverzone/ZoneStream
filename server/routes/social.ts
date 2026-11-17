@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { verifyAuthToken, requireAuth, type AuthenticatedRequest } from '../auth.ts';
 import {
   connectDB,
+  findUserByIdentifier,
   findUserByUid,
   findUsersByUids,
   isDbMongoConnected,
@@ -72,8 +73,8 @@ async function getRelationshipStatus(
   return 'pending_received';
 }
 
-// GET /api/social/users?q=... — Search community users by UID/username/name (requires login & non-empty query for privacy)
-router.get('/users', async (req: AuthenticatedRequest, res) => {
+// Shared handler for GET /api/social/users & GET /api/social/search
+async function handleSearchCommunityUsers(req: AuthenticatedRequest, res: any) {
   try {
     const q = String(req.query.q || '').trim();
     const limit = Math.min(30, Math.max(1, Number(req.query.limit) || 20));
@@ -138,7 +139,10 @@ router.get('/users', async (req: AuthenticatedRequest, res) => {
     console.error('[Social Search Users Error]', err);
     return res.status(500).json({ error: 'Gagal mencari pengguna komunitas' });
   }
-});
+}
+
+router.get('/users', handleSearchCommunityUsers);
+router.get('/search', handleSearchCommunityUsers);
 
 async function getAllUsersSafe(): Promise<IUser[]> {
   await connectDB();
@@ -355,26 +359,27 @@ router.get('/profile/:uid', async (req: AuthenticatedRequest, res) => {
       void touchUserLastActive(viewerUid);
     }
 
-    const target = await findUserByUid(targetUid);
+    const target = (await findUserByUid(targetUid)) || (await findUserByIdentifier(targetUid));
     if (!target) {
       return res.status(404).json({ error: 'Profil pengguna tidak ditemukan.' });
     }
+    const resolvedTargetUid = target.uid;
 
     const pub = sanitizeUser(target);
     const summary = toCommunityUserSummary(target);
-    const relationship = await getRelationshipStatus(viewerUid, targetUid);
+    const relationship = await getRelationshipStatus(viewerUid, resolvedTargetUid);
 
     let friendsCount = 0;
     await connectDB();
     if (isDbMongoConnected()) {
       friendsCount = await FriendshipModel.countDocuments({
         status: 'accepted',
-        $or: [{ requesterUid: targetUid }, { recipientUid: targetUid }],
+        $or: [{ requesterUid: resolvedTargetUid }, { recipientUid: resolvedTargetUid }],
       });
     } else {
       const all = readFallbackJson<StoredFriendship[]>('friendships-v1.json', []);
       friendsCount = all.filter(
-        (f) => f.status === 'accepted' && (f.requesterUid === targetUid || f.recipientUid === targetUid)
+        (f) => f.status === 'accepted' && (f.requesterUid === resolvedTargetUid || f.recipientUid === resolvedTargetUid)
       ).length;
     }
 

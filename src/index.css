@@ -182,9 +182,56 @@
   }
 }
 
+@keyframes skeletonSweep {
+  0% {
+    transform: translate3d(-100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translate3d(-100%, 0, 0);
+  background: linear-gradient(
+    105deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.52) 48%,
+    rgba(255, 255, 255, 0.16) 62%,
+    transparent 82%
+  );
+  animation: skeletonSweep 1.65s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation-delay: var(--skeleton-delay, 0ms);
+  will-change: transform;
+  pointer-events: none;
+}
+
+.dark .skeleton-shimmer::after {
+  background: linear-gradient(
+    105deg,
+    transparent 18%,
+    rgba(255, 255, 255, 0.085) 48%,
+    rgba(232, 74, 24, 0.055) 60%,
+    transparent 82%
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .skeleton-shimmer::after {
+    display: none;
   }
 }

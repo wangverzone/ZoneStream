@@ -44,7 +44,7 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
     <Link
       to={targetHref}
       state={{ backTo, poster: item.poster, seriesTitle: item.title }}
-      className="group relative block rounded-xl overflow-hidden bg-slate-900 dark:bg-[#14161D] aspect-[3/4] border border-slate-200/80 dark:border-white/[0.07] shadow-sm transition-colors duration-200 lg:hover:-translate-y-1 hover:border-[#E84A18]/50 hover:shadow-[0_12px_28px_-8px_rgba(232,74,24,0.28)]"
+      className="group relative block rounded-xl overflow-hidden bg-slate-200 dark:bg-[#14161D] skeleton-shimmer aspect-[3/4] border border-slate-200/80 dark:border-white/[0.07] shadow-sm transition-colors duration-200 lg:hover:-translate-y-1 hover:border-[#E84A18]/50 hover:shadow-[0_12px_28px_-8px_rgba(232,74,24,0.28)]"
     >
       {currentSrc ? (
         <img
@@ -53,7 +53,7 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setRetryStage((prev) => prev + 1)}
-          className="w-full h-full object-cover lg:transition-transform lg:duration-500 lg:group-hover:scale-105"
+          className="relative z-[1] w-full h-full object-cover lg:transition-transform lg:duration-500 lg:group-hover:scale-105"
         />
       ) : (
         <div className="w-full h-full bg-gradient-to-br from-[#1C1F2B] via-[#13151E] to-[#0B0C10] flex flex-col items-center justify-center p-3 text-center">
@@ -70,10 +70,10 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
       )}
 
       {/* Top Scrim */}
-      <div className="absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/80 via-black/30 to-transparent pointer-events-none" />
+      <div className="absolute inset-x-0 top-0 h-14 bg-gradient-to-b from-black/80 via-black/30 to-transparent pointer-events-none z-[2]" />
 
       {/* Top Left Type / New Indicator */}
-      <div className="absolute top-2 left-2 flex items-center gap-1">
+      <div className="absolute top-2 left-2 flex items-center gap-1 z-[2]">
         {item.isNew ? (
           <span className="px-1.5 py-0.5 rounded bg-[#E84A18] text-white text-[9px] font-extrabold uppercase tracking-wider leading-none shadow-sm">
             UP
@@ -85,20 +85,20 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
       </div>
 
       {/* Top Right Score */}
-      <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 text-white text-[10px] font-bold flex items-center gap-0.5 font-mono-tabular">
+      <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 text-white text-[10px] font-bold flex items-center gap-0.5 font-mono-tabular z-[2]">
         <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400" />
         <span>{item.rating || '8.2'}</span>
       </span>
 
       {/* Hover Play Button Overlay (Bstation / Crunchyroll style) */}
-      <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center pointer-events-none">
+      <div className="absolute inset-0 bg-black/35 opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex items-center justify-center pointer-events-none z-[2]">
         <div className="w-11 h-11 rounded-full bg-[#E84A18] text-white flex items-center justify-center shadow-lg shadow-[#E84A18]/40 transform scale-90 group-hover:scale-100 transition-transform duration-200">
           <Play className="w-5 h-5 fill-current ml-0.5" />
         </div>
       </div>
 
       {/* Bottom Title, Episode & Genre Bar */}
-      <div className="absolute inset-x-0 bottom-0 p-2.5 pt-12 bg-gradient-to-t from-[#090A0F] via-[#090A0F]/85 to-transparent">
+      <div className="absolute inset-x-0 bottom-0 p-2.5 pt-12 bg-gradient-to-t from-[#090A0F] via-[#090A0F]/85 to-transparent z-[2]">
         <div className="flex items-center flex-wrap gap-1 mb-1">
           {item.episodeLabel && (
             <div className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#E84A18]/20 border border-[#E84A18]/35 text-[#FF7A4D] text-[10px] font-bold max-w-full truncate">

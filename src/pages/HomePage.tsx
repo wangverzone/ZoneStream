@@ -38,6 +38,14 @@ import { CountryFlagBadge } from '../components/CountryFlag';
 import { useAuth } from '../context/AuthContext';
 import { HeaderSearch } from '../components/HeaderSearch';
 import { NotificationBell } from '../components/NotificationBell';
+import {
+  HeroShowcaseSkeleton,
+  HorizontalSectionSkeleton,
+  MediaGridSkeleton,
+  SkeletonBlock,
+  TopClanSkeleton,
+  TrendingRankRailSkeleton,
+} from '../components/SkeletonLoaders';
 import { seedCatalogIndex } from '../utils/catalogSearch';
 import type {
   HeroSlide,
@@ -396,7 +404,7 @@ export function HomePage() {
         {/* Flagship Bstation / Crunchyroll Cinematic Hero Showcase */}
         <section aria-label="Unggulan" className="relative">
           {loading || !activeHero ? (
-            <div className="w-full h-[370px] sm:h-[430px] lg:h-[490px] rounded-3xl bg-slate-200 dark:bg-[#15171F] animate-pulse" />
+            <HeroShowcaseSkeleton />
           ) : (
             <div className="relative w-full h-[370px] sm:h-[430px] lg:h-[490px] rounded-3xl overflow-hidden bg-[#0B0D14] border border-slate-200 dark:border-white/[0.1] shadow-[0_24px_60px_rgba(0,0,0,0.55)] group">
               {/* Layer 1: Full-Bleed Atmospheric Cinema Backdrop (Sharp HD on mobile, ambient cinema backdrop on desktop) */}
@@ -682,7 +690,9 @@ export function HomePage() {
               Lihat Semua &gt;
             </Link>
           </div>
-          {topClans.length === 0 ? (
+          {loading && topClans.length === 0 ? (
+            <TopClanSkeleton />
+          ) : topClans.length === 0 ? (
             <div className="text-center py-6 text-gray-400 text-xs">
               Belum ada klan. Jadilah yang pertama membuat klan di menu Peringkat!
             </div>
@@ -860,7 +870,9 @@ export function HomePage() {
         </section>
 
         {/* Top 10 Trending Minggu Ini */}
-        {!loading && trendingTop.length > 0 && activeGenre === 'all' && (
+        {loading && activeGenre === 'all' ? (
+          <TrendingRankRailSkeleton />
+        ) : !loading && trendingTop.length > 0 && activeGenre === 'all' ? (
           <section className="mt-8">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -921,7 +933,7 @@ export function HomePage() {
               ))}
             </div>
           </section>
-        )}
+        ) : null}
 
         {/* Episode Terbaru (Auto-Update Real-time) */}
         <section className="mt-8">
@@ -960,14 +972,14 @@ export function HomePage() {
           </div>
 
           {loading || genreLoading ? (
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
-              {Array.from({ length: 12 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="aspect-[3/4] rounded-xl bg-slate-200 dark:bg-[#16181F] animate-pulse"
-                />
-              ))}
-            </div>
+            <MediaGridSkeleton
+              count={12}
+              label={
+                activeGenre === 'all'
+                  ? 'Memuat episode terbaru...'
+                  : `Memuat katalog ${GENRE_FILTERS.find((g) => g.id === activeGenre)?.label || ''}...`
+              }
+            />
           ) : (
             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
               {displayedEpisodes.slice(0, 36).map((item, idx) => (
@@ -978,7 +990,9 @@ export function HomePage() {
         </section>
 
         {/* Jadwal Rilis Hari Ini */}
-        {!loading && todaySchedule.length > 0 && activeGenre === 'all' && (
+        {loading && activeGenre === 'all' ? (
+          <HorizontalSectionSkeleton titleWidthClass="w-44" count={6} />
+        ) : !loading && todaySchedule.length > 0 && activeGenre === 'all' ? (
           <section className="mt-8">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -1006,10 +1020,18 @@ export function HomePage() {
               ))}
             </div>
           </section>
-        )}
+        ) : null}
 
         {/* Curated Section: Donghua Unggulan */}
-        {!loading && donghuaList.length > 0 && activeGenre === 'all' && (
+        {loading && activeGenre === 'all' ? (
+          <section aria-hidden="true" className="mt-8">
+            <div className="flex items-center justify-between mb-3">
+              <SkeletonBlock className="h-6 w-56 rounded-lg" />
+              <SkeletonBlock className="h-4 w-24 rounded" delayMs={80} />
+            </div>
+            <MediaGridSkeleton count={6} label="Memuat daftar donghua unggulan..." />
+          </section>
+        ) : !loading && donghuaList.length > 0 && activeGenre === 'all' ? (
           <section className="mt-8">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -1034,10 +1056,18 @@ export function HomePage() {
               ))}
             </div>
           </section>
-        )}
+        ) : null}
 
         {/* Curated Section: Anime Ongoing Terbaru */}
-        {!loading && animeList.length > 0 && activeGenre === 'all' && (
+        {loading && activeGenre === 'all' ? (
+          <section aria-hidden="true" className="mt-8">
+            <div className="flex items-center justify-between mb-3">
+              <SkeletonBlock className="h-6 w-52 rounded-lg" />
+              <SkeletonBlock className="h-4 w-24 rounded" delayMs={80} />
+            </div>
+            <MediaGridSkeleton count={6} label="Memuat daftar anime ongoing..." />
+          </section>
+        ) : !loading && animeList.length > 0 && activeGenre === 'all' ? (
           <section className="mt-8">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -1062,7 +1092,7 @@ export function HomePage() {
               ))}
             </div>
           </section>
-        )}
+        ) : null}
 
         {/* VIP Promo Banner for Free Users */}
         {!isPremium && (

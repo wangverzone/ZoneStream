@@ -122,6 +122,7 @@ export function GiftPremiumModal({
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<PublicCommunityUser[]>([]);
   const [searching, setSearching] = useState(false);
+  const [searchFeedback, setSearchFeedback] = useState<string | null>(null);
 
   const [giftMessage, setGiftMessage] = useState('');
   const [confirmStep, setConfirmStep] = useState(false);
@@ -141,6 +142,7 @@ export function GiftPremiumModal({
     setMode(isFounder ? 'gift' : initialRecipient ? 'gift' : initialMode);
     setSearchQuery('');
     setSearchResults([]);
+    setSearchFeedback(null);
     setGiftMessage('');
 
     fetch('/api/coins/packages')
@@ -155,33 +157,68 @@ export function GiftPremiumModal({
 
   useEffect(() => {
     if (!open || mode !== 'gift') return;
-    const clean = searchQuery.trim();
-    if (clean.length < 2) {
+    const rawClean = searchQuery.trim();
+    const clean = rawClean.replace(/^@+/, '').replace(/^uid:\s*/i, '').trim();
+    if (clean.length < 1) {
       setSearchResults([]);
+      setSearchFeedback(null);
       return;
     }
+
+    const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       setSearching(true);
+      setSearchFeedback(null);
       try {
         const token = getStoredToken();
-        const res = await fetch(`/api/social/search?q=${encodeURIComponent(clean)}`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        const json = await res.json();
-        if (res.ok && json.ok && Array.isArray(json.users)) {
-          setSearchResults(
-            json.users.filter(
-              (u: PublicCommunityUser) => u.uid !== user?.uid && u.role !== 'founder'
-            )
-          );
+        if (!token) {
+          setSearchResults([]);
+          setSearchFeedback('Sesi login tidak ditemukan. Silakan masuk ulang agar bisa mencari member.');
+          return;
         }
-      } catch {
-        setSearchResults([]);
+        const res = await fetch(
+          `/api/social/users?q=${encodeURIComponent(clean)}&limit=12`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: controller.signal,
+          }
+        );
+        const json = await res.json();
+        if (!res.ok || !json.ok) {
+          setSearchResults([]);
+          setSearchFeedback(json.error || 'Gagal mencari member di server.');
+          return;
+        }
+        if (json.requiresAuth) {
+          setSearchResults([]);
+          setSearchFeedback('Sesi tidak valid. Silakan masuk ulang.');
+          return;
+        }
+        const list = Array.isArray(json.users) ? (json.users as PublicCommunityUser[]) : [];
+        const selectable = list.filter((u) => u.uid !== user?.uid && u.role !== 'founder');
+        setSearchResults(selectable);
+
+        if (selectable.length === 0 && list.length > 0) {
+          const only = list[0];
+          if (only.uid === user?.uid) {
+            setSearchFeedback('Username tersebut adalah akunmu sendiri. Pilih tab "Pakai Sendiri" jika ingin menukar koin untuk akunmu.');
+          } else if (only.role === 'founder') {
+            setSearchFeedback('Akun Founder sudah memiliki Lifetime VIP sehingga tidak memerlukan gift Premium.');
+          }
+        }
+      } catch (err: any) {
+        if (err?.name !== 'AbortError') {
+          setSearchResults([]);
+          setSearchFeedback('Gagal terhubung ke server saat mencari username.');
+        }
       } finally {
         setSearching(false);
       }
-    }, 280);
-    return () => window.clearTimeout(timer);
+    }, 240);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [searchQuery, open, mode, user?.uid]);
 
   if (!open || !user) return null;
@@ -447,11 +484,20 @@ export function GiftPremiumModal({
                         </p>
                       )}
 
-                      {!searching && searchQuery.trim().length >= 2 && searchResults.length === 0 && (
-                        <p className="text-[11px] text-slate-500 dark:text-gray-400 px-1">
-                          Member tidak ditemukan. Pastikan username atau UID benar.
+                      {!searching && searchFeedback && (
+                        <p className="text-[11px] text-amber-600 dark:text-amber-300 px-1 font-medium">
+                          {searchFeedback}
                         </p>
                       )}
+
+                      {!searching &&
+                        !searchFeedback &&
+                        searchQuery.replace(/^@+/, '').trim().length >= 1 &&
+                        searchResults.length === 0 && (
+                          <p className="text-[11px] text-slate-500 dark:text-gray-400 px-1">
+                            Member tidak ditemukan. Pastikan username atau UID benar.
+                          </p>
+                        )}
 
                       {searchResults.length > 0 && (
                         <div className="rounded-xl border border-slate-200 dark:border-white/10 divide-y divide-slate-100 dark:divide-white/[0.06] max-h-40 overflow-y-auto bg-white dark:bg-[#171A23]">

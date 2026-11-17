@@ -541,11 +541,27 @@ export async function ensureFounderAccount() {
 }
 
 export async function findUserByIdentifier(identifier: string): Promise<IUser | null> {
-  const normalized = identifier.trim().toLowerCase();
+  const raw = String(identifier || '')
+    .trim()
+    .replace(/^@+/, '')
+    .replace(/^uid:\s*/i, '')
+    .trim();
+  if (!raw) return null;
+  const normalized = raw.toLowerCase();
+  const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const exactInsensitiveRx = new RegExp(`^${escaped}$`, 'i');
+
   const mongoOk = await connectDB();
   if (mongoOk) {
     const doc = await UserModel.findOne({
-      $or: [{ username: normalized }, { email: normalized }, { uid: normalized }],
+      $or: [
+        { username: normalized },
+        { username: exactInsensitiveRx },
+        { email: normalized },
+        { email: exactInsensitiveRx },
+        { uid: raw },
+        { uid: normalized },
+      ],
     });
     return doc ? doc.toObject() : null;
   }
@@ -555,7 +571,7 @@ export async function findUserByIdentifier(identifier: string): Promise<IUser | 
       (u) =>
         u.username.toLowerCase() === normalized ||
         u.email.toLowerCase() === normalized ||
-        u.uid === normalized
+        u.uid.toLowerCase() === normalized
     ) || null
   );
 }
@@ -1038,7 +1054,7 @@ export function toCommunityUserSummary(user: IUser) {
 
 export async function searchCommunityUsers(query: string, limit = 20): Promise<IUser[]> {
   const mongoOk = await connectDB();
-  const cleanQ = query
+  const cleanQ = String(query || '')
     .trim()
     .replace(/^@+/, '')
     .replace(/^uid:\s*/i, '')
@@ -1049,27 +1065,49 @@ export async function searchCommunityUsers(query: string, limit = 20): Promise<I
     return [];
   }
 
+  const lq = cleanQ.toLowerCase();
+
   if (mongoOk) {
     const escaped = cleanQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const rx = new RegExp(escaped, 'i');
-    const docs = await UserModel.find({
-      $or: [{ uid: rx }, { username: rx }, { name: rx }],
-    })
-      .sort({ isPremium: -1, level: -1 })
-      .limit(limit);
-    return docs
-      .map((d) => d.toObject())
-      .sort((a, b) =>
-        a.uid === cleanQ || a.username.toLowerCase() === cleanQ.toLowerCase()
-          ? -1
-          : b.uid === cleanQ || b.username.toLowerCase() === cleanQ.toLowerCase()
-          ? 1
-          : 0
-      );
+    const exactRx = new RegExp(`^${escaped}$`, 'i');
+    const partialRx = new RegExp(escaped, 'i');
+
+    const [exactDocs, partialDocs] = await Promise.all([
+      UserModel.find({
+        $or: [{ uid: cleanQ }, { username: lq }, { username: exactRx }],
+      }).limit(10),
+      UserModel.find({
+        $or: [{ uid: partialRx }, { username: partialRx }, { name: partialRx }],
+      })
+        .sort({ isPremium: -1, level: -1 })
+        .limit(limit),
+    ]);
+
+    const merged = new Map<string, IUser>();
+    for (const d of exactDocs) {
+      const obj = d.toObject();
+      merged.set(obj.uid, obj);
+    }
+    for (const d of partialDocs) {
+      const obj = d.toObject();
+      if (!merged.has(obj.uid)) {
+        merged.set(obj.uid, obj);
+      }
+    }
+
+    return Array.from(merged.values())
+      .sort((a, b) => {
+        const aExact = a.uid.toLowerCase() === lq || a.username.toLowerCase() === lq ? 1 : 0;
+        const bExact = b.uid.toLowerCase() === lq || b.username.toLowerCase() === lq ? 1 : 0;
+        if (aExact !== bExact) return bExact - aExact;
+        const aPrefix = a.username.toLowerCase().startsWith(lq) ? 1 : 0;
+        const bPrefix = b.username.toLowerCase().startsWith(lq) ? 1 : 0;
+        return bPrefix - aPrefix;
+      })
+      .slice(0, limit);
   }
 
   const all = Object.values(readFallbackUsers());
-  const lq = cleanQ.toLowerCase();
   const filtered = all.filter(
     (u) =>
       u.uid.toLowerCase().includes(lq) ||
@@ -1078,13 +1116,14 @@ export async function searchCommunityUsers(query: string, limit = 20): Promise<I
   );
 
   return filtered
-    .sort((a, b) =>
-      a.uid.toLowerCase() === lq || a.username.toLowerCase() === lq
-        ? -1
-        : b.uid.toLowerCase() === lq || b.username.toLowerCase() === lq
-        ? 1
-        : 0
-    )
+    .sort((a, b) => {
+      const aExact = a.uid.toLowerCase() === lq || a.username.toLowerCase() === lq ? 1 : 0;
+      const bExact = b.uid.toLowerCase() === lq || b.username.toLowerCase() === lq ? 1 : 0;
+      if (aExact !== bExact) return bExact - aExact;
+      const aPrefix = a.username.toLowerCase().startsWith(lq) ? 1 : 0;
+      const bPrefix = b.username.toLowerCase().startsWith(lq) ? 1 : 0;
+      return bPrefix - aPrefix;
+    })
     .slice(0, limit);
 }
 

@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import {
   connectDB,
+  findUserByIdentifier,
   findUserByUid,
   getJakartaDateString,
   isDbMongoConnected,
@@ -404,21 +405,25 @@ export async function executeSecureCoinPremiumGift(params: {
       return { ok: false, status: 403, error: 'Akun Anda sedang dibatasi dan tidak dapat bertransaksi.' };
     }
 
-    const targetDoc = isSelfRedeem ? senderDoc : await findUserByUid(cleanTargetUid);
+    const targetDoc = isSelfRedeem
+      ? senderDoc
+      : (await findUserByUid(cleanTargetUid)) || (await findUserByIdentifier(cleanTargetUid));
     if (!targetDoc) {
       return { ok: false, status: 404, error: 'Pengguna penerima tidak ditemukan.' };
     }
+    const resolvedTargetUid = targetDoc.uid;
+    const effectiveSelfRedeem = resolvedTargetUid === senderUid;
     if (targetDoc.isBanned) {
       return { ok: false, status: 400, error: 'Tidak dapat membagikan Premium ke akun yang dibanned.' };
     }
-    if (!isSelfRedeem && targetDoc.role === 'founder') {
+    if (!effectiveSelfRedeem && targetDoc.role === 'founder') {
       return {
         ok: false,
         status: 400,
         error: 'Akun Founder sudah memiliki akses Lifetime VIP. Pilih member lain ya!',
       };
     }
-    if (isSelfRedeem && senderDoc.role === 'founder') {
+    if (effectiveSelfRedeem && senderDoc.role === 'founder') {
       return {
         ok: false,
         status: 400,
@@ -449,7 +454,7 @@ export async function executeSecureCoinPremiumGift(params: {
           $inc: {
             coins: -pkg.coinCost,
             totalCoinsSpent: pkg.coinCost,
-            totalGiftsSent: isSelfRedeem ? 0 : 1,
+            totalGiftsSent: effectiveSelfRedeem ? 0 : 1,
           },
         },
         { new: true }
@@ -461,7 +466,7 @@ export async function executeSecureCoinPremiumGift(params: {
       if (s && Math.floor(Number(s.coins || 0)) >= pkg.coinCost && !s.isBanned) {
         s.coins = Math.floor(Number(s.coins || 0)) - pkg.coinCost;
         s.totalCoinsSpent = Math.floor(Number(s.totalCoinsSpent || 0)) + pkg.coinCost;
-        if (!isSelfRedeem) {
+        if (!effectiveSelfRedeem) {
           s.totalGiftsSent = Math.floor(Number(s.totalGiftsSent || 0)) + 1;
         }
         store[senderUid] = s;
@@ -484,7 +489,7 @@ export async function executeSecureCoinPremiumGift(params: {
 
     try {
       const nowMs = Date.now();
-      updatedTarget = await updateUserByUid(cleanTargetUid, (current) => {
+      updatedTarget = await updateUserByUid(resolvedTargetUid, (current) => {
         const existingExpiryMs = current.premiumExpiryDate
           ? new Date(current.premiumExpiryDate).getTime()
           : 0;
@@ -497,7 +502,7 @@ export async function executeSecureCoinPremiumGift(params: {
           ...current,
           isPremium: true,
           isVerified: true,
-          premiumPlan: isSelfRedeem
+          premiumPlan: effectiveSelfRedeem
             ? `${pkg.name} (Tukar Koin)`
             : `${pkg.name} (Gift dari @${deductedSender!.username})`,
           premiumExpiryDate: newExpiryIso,
@@ -513,7 +518,7 @@ export async function executeSecureCoinPremiumGift(params: {
           coins: expRes.nextCoins,
           totalCoinsEarned: expRes.nextTotalCoinsEarned,
           totalGiftsReceived:
-            (current.totalGiftsReceived || 0) + (isSelfRedeem ? 0 : 1),
+            (current.totalGiftsReceived || 0) + (effectiveSelfRedeem ? 0 : 1),
         };
       });
 
@@ -529,7 +534,7 @@ export async function executeSecureCoinPremiumGift(params: {
             $inc: {
               coins: pkg.coinCost,
               totalCoinsSpent: -pkg.coinCost,
-              totalGiftsSent: isSelfRedeem ? 0 : -1,
+              totalGiftsSent: effectiveSelfRedeem ? 0 : -1,
             },
           }
         ).catch(() => {});
@@ -541,7 +546,7 @@ export async function executeSecureCoinPremiumGift(params: {
             0,
             Math.floor(Number(store[senderUid].totalCoinsSpent || 0)) - pkg.coinCost
           );
-          if (!isSelfRedeem) {
+          if (!effectiveSelfRedeem) {
             store[senderUid].totalGiftsSent = Math.max(
               0,
               Math.floor(Number(store[senderUid].totalGiftsSent || 0)) - 1
@@ -556,10 +561,10 @@ export async function executeSecureCoinPremiumGift(params: {
         type: 'refund',
         amount: pkg.coinCost,
         balanceAfter: currentCoins,
-        peerUid: cleanTargetUid,
+        peerUid: resolvedTargetUid,
         packageId: pkg.id,
         durationDays: pkg.durationDays,
-        note: `Refund otomatis karena gagal mengaktifkan ${pkg.name} untuk UID ${cleanTargetUid}`,
+        note: `Refund otomatis karena gagal mengaktifkan ${pkg.name} untuk UID ${resolvedTargetUid}`,
       });
 
       console.error('[Coin Gift Rollback]', activateErr);
@@ -575,7 +580,7 @@ export async function executeSecureCoinPremiumGift(params: {
 
     const senderLedger = await recordCoinLedgerEntry({
       uid: senderUid,
-      type: isSelfRedeem ? 'self_redeem' : 'gift_sent',
+      type: effectiveSelfRedeem ? 'self_redeem' : 'gift_sent',
       amount: -pkg.coinCost,
       balanceAfter: Math.max(0, Number(freshSender.coins || 0)),
       peerUid: updatedTarget.uid,
@@ -584,12 +589,12 @@ export async function executeSecureCoinPremiumGift(params: {
       packageId: pkg.id,
       durationDays: pkg.durationDays,
       requestId,
-      note: isSelfRedeem
+      note: effectiveSelfRedeem
         ? `Tukar ${pkg.coinCost.toLocaleString('id-ID')} Koin untuk ${pkg.durationDays} Hari VIP Premium`
         : `Bagi Prem ${pkg.durationDays} Hari ke @${updatedTarget.username} (${pkg.coinCost.toLocaleString('id-ID')} Koin)`,
     });
 
-    if (!isSelfRedeem) {
+    if (!effectiveSelfRedeem) {
       await recordCoinLedgerEntry({
         uid: updatedTarget.uid,
         type: 'gift_received',
@@ -631,7 +636,7 @@ export async function executeSecureCoinPremiumGift(params: {
       sender: sanitizeUser(freshSender),
       recipient: toCommunityUserSummary(updatedTarget),
       package: pkg,
-      isSelfRedeem,
+      isSelfRedeem: effectiveSelfRedeem,
       newExpiryDate: newExpiryIso,
       txId: senderLedger?.txId,
     };

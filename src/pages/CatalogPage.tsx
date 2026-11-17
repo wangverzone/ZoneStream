@@ -13,6 +13,11 @@ import {
 import { Link, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { MediaCard } from '../components/MediaCard';
+import {
+  MediaCardSkeleton,
+  MediaGridSkeleton,
+  SkeletonBlock,
+} from '../components/SkeletonLoaders';
 import { seedCatalogIndex } from '../utils/catalogSearch';
 import type { MediaCardItem } from '../types';
 
@@ -316,11 +321,13 @@ export function CatalogPage() {
             <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 dark:text-white">
               Katalog Anime &amp; Donghua Global
             </h1>
-            {!loading && displayedItems.length > 0 && (
+            {loading ? (
+              <SkeletonBlock className="h-5 w-20 rounded-full" />
+            ) : displayedItems.length > 0 ? (
               <span className="px-2.5 py-0.5 rounded-full bg-[#E84A18]/15 text-[#E84A18] text-xs font-extrabold font-mono-tabular">
                 {displayedItems.length} Judul
               </span>
-            )}
+            ) : null}
           </div>
           <Link
             to="/community"
@@ -618,14 +625,7 @@ export function CatalogPage() {
 
         {/* Catalog Grid */}
         {loading ? (
-          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-2.5 sm:gap-4">
-            {Array.from({ length: 18 }).map((_, i) => (
-              <div
-                key={i}
-                className="aspect-[3/4] rounded-xl bg-slate-200 dark:bg-[#16181F] animate-pulse"
-              />
-            ))}
-          </div>
+          <MediaGridSkeleton count={18} label="Memuat katalog anime & donghua..." />
         ) : displayedItems.length === 0 ? (
           <div className="rounded-2xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/5 p-8 text-center">
             <p className="text-sm font-bold text-slate-700 dark:text-gray-200 mb-1">
@@ -661,6 +661,10 @@ export function CatalogPage() {
               {displayedItems.map((item, idx) => (
                 <MediaCard key={`${item.type}-${item.id}-${idx}`} item={item} />
               ))}
+              {loadingMore &&
+                Array.from({ length: 6 }).map((_, idx) => (
+                  <MediaCardSkeleton key={`more-skel-${idx}`} index={idx} />
+                ))}
             </div>
 
             {hasMore && (
