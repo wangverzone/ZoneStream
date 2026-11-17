@@ -13,6 +13,10 @@ import {
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { ThemeToggle } from './ThemeToggle';
+import { BackdropToggle } from './BackdropToggle';
+import { GlobalBackdropLayer } from './GlobalBackdropLayer';
+import { OfflineIndicator } from './OfflineIndicator';
+import { PWAInstallButton } from './PWAInstallButton';
 import { TelegramCsButton } from './TelegramCsButton';
 import { VerifiedBadge } from './VerifiedBadge';
 import { StatusEmojiBadge } from './VipEmojis';
@@ -115,12 +119,10 @@ export function Layout({
     !location.pathname.startsWith('/chat');
 
   return (
-    <div className="relative min-h-screen bg-[#F5F7FB] text-slate-900 dark:bg-[#090A0E] dark:text-[#F4F5F7] flex flex-col overflow-x-clip transition-colors duration-200">
-      {/* Subtle Ambient Top Glow */}
-      <div
-        aria-hidden="true"
-        className="pointer-events-none fixed inset-x-0 top-0 h-80 bg-[radial-gradient(ellipse_at_top,_rgba(232,74,24,0.08),_transparent_68%)] dark:bg-[radial-gradient(ellipse_at_top,_rgba(232,74,24,0.14),_transparent_68%)] z-0"
-      />
+    <div className="relative min-h-screen bg-transparent text-slate-900 dark:text-[#F4F5F7] flex flex-col overflow-x-clip transition-colors duration-200">
+      {/* Global GPU-Composited Photo / Video / Motion Background */}
+      <GlobalBackdropLayer />
+      <OfflineIndicator />
 
       {/* Real-time Ban Alert Banner (shown anywhere if active session was just banned) */}
       {!user && authError && authError.toLowerCase().includes('dibanned') && (
@@ -150,7 +152,7 @@ export function Layout({
           className="flex items-center gap-2 xl:gap-2.5 text-base xl:text-lg font-extrabold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
         >
           <img
-            src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
+            src="/assets/aistudio/1089871178568589499_751994dc.jfif"
             alt="ZoneStream Logo"
             className="w-8 h-8 xl:w-9 xl:h-9 rounded-xl object-cover ring-2 ring-[#E84A18]/80 shadow-lg shadow-[#E84A18]/25"
           />
@@ -217,7 +219,9 @@ export function Layout({
             <Bookmark className="w-4 h-4" />
           </Link>
           <NotificationBell />
+          <PWAInstallButton variant="compact" />
           <TelegramCsButton />
+          <BackdropToggle compact />
           <ThemeToggle compact />
 
           <Link
@@ -228,6 +232,8 @@ export function Layout({
               src={user?.photoUrl}
               alt={user?.name || 'Akun'}
               decorationId={user?.activeBorder}
+              level={user?.level}
+              isFounder={user?.role === 'founder'}
               size="xs"
             />
             <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1 xl:gap-1.5">
@@ -259,7 +265,7 @@ export function Layout({
             className="shrink-0 min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl overflow-hidden ring-1 ring-[#E84A18]/60"
           >
             <img
-              src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
+              src="/assets/aistudio/1089871178568589499_751994dc.jfif"
               alt="ZoneStream"
               className="w-10 h-10 object-cover"
             />
@@ -270,6 +276,8 @@ export function Layout({
             dropdownClassName="-left-12 -right-12 sm:left-0 sm:right-0"
           />
           <NotificationBell compact />
+          <PWAInstallButton variant="compact" />
+          <BackdropToggle compact />
           <ThemeToggle compact />
           <Link
             to="/profile"
@@ -286,6 +294,8 @@ export function Layout({
                 src={user.photoUrl}
                 alt={user.name}
                 decorationId={user.activeBorder}
+                level={user.level}
+                isFounder={user.role === 'founder'}
                 size="xs"
               />
             ) : (

@@ -30,6 +30,7 @@ import {
   buildWebVttDataUrl,
   useAppLanguage,
 } from '../utils/language';
+import { resolveApiUrl } from '../utils/apiBase';
 import type { EpisodeStreamData, StreamServer, WatchHistoryReward } from '../types';
 
 const MIDROLL_INTERVAL_SECONDS = 120; // Iklan muncul setiap 2 menit untuk user gratis
@@ -54,6 +55,23 @@ function isDirectVideoFile(url?: string, streamType?: string): boolean {
     u.includes('googlevideo.com/videoplayback') ||
     u.includes('pixeldrain.com/api/file/')
   );
+}
+
+function scoreServerQuality(srv: StreamServer): number {
+  if (!srv.url && !srv.serverId) return -999;
+  if (srv.url && isFrameBlockedHost(srv.url)) return -500;
+  let score = 0;
+  if (srv.url && isDirectVideoFile(srv.url, srv.streamType)) score += 200;
+  else if (srv.url) score += 60;
+
+  const label = `${srv.name || ''} ${srv.quality || ''}`.toLowerCase();
+  if (label.includes('1080') || label.includes('fhd')) score += 50;
+  else if (label.includes('720') || label.includes('hd')) score += 35;
+  else if (label.includes('480')) score += 15;
+  else if (label.includes('360')) score += 5;
+  else score += 20;
+
+  return score;
 }
 
 function formatCountdown(totalSeconds: number): string {
@@ -160,12 +178,11 @@ export function WatchPage() {
           }
           setStream(ep);
 
-          // Prioritize direct MP4/HLS server first, then first clean embed server
-          const directSrv = ep.servers?.find(
-            (s) => s.url && !isFrameBlockedHost(s.url) && isDirectVideoFile(s.url, s.streamType)
-          );
-          const safeEmbedSrv = ep.servers?.find((s) => s.url && !isFrameBlockedHost(s.url));
-          const chosenSrv = directSrv || safeEmbedSrv;
+          // Prioritize highest HD direct MP4/HLS server first, then cleanest HD embed server
+          const rankedServers = [...(ep.servers || [])]
+            .filter((s) => (s.url || s.serverId) && !(s.url && isFrameBlockedHost(s.url)))
+            .sort((a, b) => scoreServerQuality(b) - scoreServerQuality(a));
+          const chosenSrv = rankedServers.find((s) => Boolean(s.url)) || rankedServers[0];
           const candidateUrl =
             chosenSrv?.url ||
             (ep.defaultStreamingUrl && !isFrameBlockedHost(ep.defaultStreamingUrl)
@@ -621,8 +638,9 @@ export function WatchPage() {
                 <div className="flex items-center gap-3.5 min-w-0">
                   {stream?.poster && (
                     <img
-                      src={stream.poster}
+                      src={resolveApiUrl(stream.poster)}
                       alt={stream.seriesTitle || stream.title}
+                      decoding="async"
                       referrerPolicy="no-referrer"
                       className="w-12 h-12 sm:w-14 sm:h-14 rounded-full object-cover shrink-0 border border-white/15 shadow-md"
                     />
@@ -718,18 +736,32 @@ export function WatchPage() {
                 <div className="flex items-center flex-wrap gap-2">
                   {stream.servers.map((srv, idx) => {
                     const active = activeServerName === srv.name;
+                    const qText =
+                      srv.quality ||
+                      (srv.streamType === 'mp4' || srv.streamType === 'hls' ? 'HD' : '');
                     return (
                       <button
                         key={`${srv.name}-${idx}`}
                         type="button"
                         onClick={() => handleSelectServer(srv)}
-                        className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+                        className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-all ${
                           active
                             ? 'bg-[#E84A18] text-white shadow-md shadow-[#E84A18]/25'
                             : 'bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-[#1B1E26] dark:hover:bg-[#232732] dark:text-gray-200 border border-transparent dark:border-white/5'
                         }`}
                       >
-                        {srv.name}
+                        <span>{srv.name}</span>
+                        {qText && !srv.name.toLowerCase().includes(qText.toLowerCase()) && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                              active
+                                ? 'bg-white/20 text-white'
+                                : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                            }`}
+                          >
+                            {qText}
+                          </span>
+                        )}
                       </button>
                     );
                   })}

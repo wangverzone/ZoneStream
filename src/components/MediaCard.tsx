@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Film, Play, Star } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
+import { resolveApiUrl } from '../utils/apiBase';
 import type { MediaCardItem } from '../types';
 
 export function resolveFallbackPosterUrl(poster?: string, retryStage = 0): string {
   const raw = String(poster || '').trim();
   if (!raw) return '';
-  if (retryStage === 0) return raw;
+  if (retryStage === 0) return resolveApiUrl(raw);
 
   // Stage 1: If proxied via /api/stream/img?url=..., try direct original URL with no-referrer
   // If raw was already a direct https:// URL, try proxying via /api/stream/img?url=...
@@ -20,7 +21,7 @@ export function resolveFallbackPosterUrl(poster?: string, retryStage = 0): strin
         // Ignore
       }
     } else if (/^https?:\/\//i.test(raw)) {
-      return `/api/stream/img?url=${encodeURIComponent(raw)}`;
+      return resolveApiUrl(`/api/stream/img?url=${encodeURIComponent(raw)}`);
     }
   }
 
@@ -51,6 +52,7 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
           src={currentSrc}
           alt={item.title}
           loading="lazy"
+          decoding="async"
           referrerPolicy="no-referrer"
           onError={() => setRetryStage((prev) => prev + 1)}
           className="relative z-[1] w-full h-full object-cover lg:transition-transform lg:duration-500 lg:group-hover:scale-105"

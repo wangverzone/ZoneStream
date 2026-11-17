@@ -738,6 +738,8 @@ export function CommentSection({
                           src={c.authorPhoto}
                           alt={c.authorName}
                           decorationId={c.authorBorder}
+                          level={c.authorLevel}
+                          isFounder={isCommentFounder}
                           size="sm"
                         />
                       </Link>

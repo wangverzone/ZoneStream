@@ -612,7 +612,13 @@ router.post('/presence', requireAuth, async (req: AuthenticatedRequest, res) => 
 });
 
 // Update profile (Foto Profil, Latar, Tema Discord, Dekorasi Avatar Discord, Lencana Telegram & Emoji Status wajib Premium/Founder)
-const FREE_BORDERS = new Set(['none', 'classic']);
+const FREE_BORDERS = new Set(['none', 'classic', 'level-auto', 'rank-bronze']);
+const LEVEL_RANK_BORDER_TIERS: Record<string, { name: string; minLevel: number }> = {
+  'rank-bronze': { name: 'Bronze Vanguard', minLevel: 1 },
+  'rank-silver': { name: 'Silver Sentinel', minLevel: 5 },
+  'rank-gold': { name: 'Gold Sovereign', minLevel: 15 },
+  'rank-platinum': { name: 'Platinum Paragon', minLevel: 30 },
+};
 
 router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
@@ -669,6 +675,18 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
       });
     }
 
+    const levelRankTier = cleanBorder ? LEVEL_RANK_BORDER_TIERS[cleanBorder] : undefined;
+    const userLevel = Math.max(1, Number(existing.level || 1));
+    const hasUnlockedLevelRankBorder = Boolean(
+      levelRankTier && (existing.role === 'founder' || userLevel >= levelRankTier.minLevel)
+    );
+
+    if (levelRankTier && !hasUnlockedLevelRankBorder) {
+      return res.status(403).json({
+        error: `Bingkai ${levelRankTier.name} terkunci. Capai Level ${levelRankTier.minLevel} untuk membukanya!`,
+      });
+    }
+
     const tryingPhotoEdit =
       typeof photoUrl === 'string' && photoUrl !== (existing.photoUrl || '');
     const tryingBannerEdit =
@@ -678,6 +696,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
       cleanBorder.length > 0 &&
       !FREE_BORDERS.has(cleanBorder) &&
       !hasUnlockedStreakBorder &&
+      !hasUnlockedLevelRankBorder &&
       cleanBorder !== existing.activeBorder;
     const tryingPremiumTheme =
       typeof cleanTheme === 'string' &&
@@ -738,7 +757,12 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
 
       let nextBorder = current.activeBorder || 'none';
       if (typeof cleanBorder === 'string' && cleanBorder.length > 0) {
-        if (hasPremiumAccess || FREE_BORDERS.has(cleanBorder) || hasUnlockedStreakBorder) {
+        if (
+          hasPremiumAccess ||
+          FREE_BORDERS.has(cleanBorder) ||
+          hasUnlockedStreakBorder ||
+          hasUnlockedLevelRankBorder
+        ) {
           nextBorder = cleanBorder;
         }
       }

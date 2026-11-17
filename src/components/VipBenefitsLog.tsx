@@ -16,7 +16,9 @@ import {
 import { Link } from 'react-router-dom';
 import {
   DISCORD_AVATAR_DECORATIONS,
+  LEVEL_RANK_BORDERS,
   STREAK_FRAME_REWARDS,
+  getLevelRankTier,
   normalizeDecorationId,
 } from './AvatarDecoration';
 import { TELEGRAM_BADGE_MAP, VerifiedBadge } from './VerifiedBadge';
@@ -129,7 +131,15 @@ export const VipBenefitsLog: React.FC<VipBenefitsLogProps> = ({
   }, [user?.profileTheme]);
 
   const activeDecorationInfo = useMemo(() => {
-    const normId = normalizeDecorationId(user?.activeBorder || 'none');
+    const normId = normalizeDecorationId(user?.activeBorder || 'classic', level, isFounder);
+    const rankFound = LEVEL_RANK_BORDERS.find((r) => r.id === normId);
+    if (rankFound) {
+      return {
+        name: `${rankFound.name} (${rankFound.tierName})`,
+        type: 'Bingkai Level',
+        unlocked: true,
+      };
+    }
     const streakFound = STREAK_FRAME_REWARDS.find((f) => f.id === normId);
     if (streakFound) {
       return { name: streakFound.name, type: 'Frame Streak 3D', unlocked: true };
@@ -138,8 +148,13 @@ export const VipBenefitsLog: React.FC<VipBenefitsLogProps> = ({
     if (discordFound && normId !== 'none') {
       return { name: discordFound.name, type: 'Dekorasi VIP 3D', unlocked: true };
     }
-    return { name: 'Standar Kosmik', type: 'Frame Default', unlocked: true };
-  }, [user?.activeBorder]);
+    const currentTier = getLevelRankTier(level, isFounder);
+    return {
+      name: normId === 'none' ? 'Polos (Tanpa Bingkai)' : `${currentTier.name} (${currentTier.tierName})`,
+      type: normId === 'none' ? 'Frame Polos' : 'Bingkai Level',
+      unlocked: true,
+    };
+  }, [user?.activeBorder, level, isFounder]);
 
   const acquiredBadges = useMemo(() => {
     const list: Array<{

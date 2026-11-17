@@ -761,6 +761,8 @@ export function ChatPage() {
                     src={me.photoUrl}
                     alt={me.name}
                     decorationId={me.activeBorder}
+                    level={me.level}
+                    isFounder={me.role === 'founder'}
                     size="sm"
                   />
                 </Link>
@@ -901,6 +903,8 @@ export function ChatPage() {
                             src={c.peer.photoUrl}
                             alt={c.peer.name}
                             decorationId={c.peer.activeBorder}
+                            level={c.peer.level}
+                            isFounder={c.peer.role === 'founder'}
                             size="md"
                           >
                             {c.peer.isOnline && (
@@ -1304,6 +1308,8 @@ export function ChatPage() {
                                 src={m.senderPhoto || defaultAvatarImg}
                                 alt={m.senderName || 'User'}
                                 decorationId={m.senderBorder}
+                                level={m.senderLevel}
+                                isFounder={m.senderRole === 'founder'}
                                 size="sm"
                               />
                             </AvatarWithBadges>
@@ -2027,7 +2033,14 @@ export function ChatPage() {
 
                     {peer && (
                       <Link to={`/u/${peer.uid}`} className="flex items-center gap-2.5 min-w-0 group">
-                        <AvatarDecoration src={peer.photoUrl} alt={peer.name} decorationId={peer.activeBorder} size="sm">
+                        <AvatarDecoration
+                          src={peer.photoUrl}
+                          alt={peer.name}
+                          decorationId={peer.activeBorder}
+                          level={peer.level}
+                          isFounder={peer.role === 'founder'}
+                          size="sm"
+                        >
                           {peer.isOnline && (
                             <span className="absolute bottom-0 right-0 z-30 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-[#202C33]" />
                           )}

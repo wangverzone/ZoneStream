@@ -21,10 +21,11 @@ import { Layout } from '../components/Layout';
 import { TELEGRAM_BADGE_MAP, VerifiedBadge, resolveDisplayBadgeLabel } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
-import { AvatarDecoration } from '../components/AvatarDecoration';
+import { AvatarDecoration, getLevelRankTier } from '../components/AvatarDecoration';
 import { LevelUpCard } from '../components/LevelUpCard';
 import { OnlineStatusPill } from '../components/ProfileStatusBadges';
 import { GiftPremiumModal } from '../components/GiftPremiumModal';
+import { BannerMedia } from '../components/BannerMedia';
 import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
 import type { PublicProfileDetail, RelationshipStatus } from '../types';
 import defaultAvatarImg from '../assets/images/default_avatar_ink_1794755346613.jpg';
@@ -260,11 +261,10 @@ export function PublicProfilePage() {
         >
           {/* Banner */}
           <div className="relative h-52 sm:h-72 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
-            <img
-              src={profile.bannerUrl || defaultBannerImg}
+            <BannerMedia
+              src={profile.bannerUrl}
+              fallbackSrc={defaultBannerImg}
               alt={`Latar ${profile.name}`}
-              referrerPolicy="no-referrer"
-              decoding="async"
               fetchPriority="high"
               className="w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] brightness-[1.02]"
             />
@@ -309,6 +309,8 @@ export function PublicProfilePage() {
                     src={profile.photoUrl}
                     alt={profile.name}
                     decorationId={profile.activeBorder}
+                    level={profile.level}
+                    isFounder={isTargetFounder}
                     bgColor={profile.profileBgColor}
                     size="xl"
                   >
@@ -349,6 +351,17 @@ export function PublicProfilePage() {
                     <span className="font-bold text-[#E84A18]">
                       {isTargetFounder ? 'Lv. ∞' : `Lv. ${profile.level}`}
                     </span>
+                    {(() => {
+                      const rankTier = getLevelRankTier(profile.level, isTargetFounder);
+                      return (
+                        <>
+                          <span>·</span>
+                          <span className={`font-bold ${rankTier.textClass}`}>
+                            {rankTier.tierName}
+                          </span>
+                        </>
+                      );
+                    })()}
                     {hasVip && (() => {
                       const safeBadge = resolveDisplayBadgeLabel(profile.activeBadge, isTargetFounder, hasVip);
                       return (

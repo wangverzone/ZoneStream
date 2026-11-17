@@ -114,9 +114,9 @@ export function DetailPage() {
     <Layout>
       {loading ? (
         <div className="p-4 sm:p-8 space-y-4">
-          <div className="h-64 rounded-2xl bg-slate-200 dark:bg-[#16181F] animate-pulse" />
-          <div className="h-8 w-2/3 rounded-xl bg-slate-200 dark:bg-[#16181F] animate-pulse" />
-          <div className="h-32 rounded-2xl bg-slate-200 dark:bg-[#16181F] animate-pulse" />
+          <div className="h-64 rounded-2xl bg-slate-200 dark:bg-[#16181F] skeleton-shimmer" />
+          <div className="h-8 w-2/3 rounded-xl bg-slate-200 dark:bg-[#16181F] skeleton-shimmer" />
+          <div className="h-32 rounded-2xl bg-slate-200 dark:bg-[#16181F] skeleton-shimmer" />
         </div>
       ) : !detail ? (
         <div className="p-8 text-center">
@@ -136,12 +136,13 @@ export function DetailPage() {
             <img
               src={resolvedBackdropSrc}
               alt={detail.title}
+              decoding="async"
               referrerPolicy="no-referrer"
               onError={() => {
                 if (backdropStage < 3) setBackdropStage((prev) => prev + 1);
               }}
-              className={`w-full h-full object-cover ${
-                detail.hasWideBanner ? 'opacity-90' : 'blur-sm scale-105 opacity-65'
+              className={`w-full h-full object-cover contrast-[1.05] saturate-[1.06] ${
+                detail.hasWideBanner ? 'opacity-90' : 'opacity-80'
               }`}
             />
             <div className="absolute inset-0 bg-gradient-to-t from-[#F5F7FB] dark:from-[#090A0E] via-black/45 to-black/30" />
@@ -162,6 +163,7 @@ export function DetailPage() {
               <img
                 src={resolvedPosterSrc}
                 alt={detail.title}
+                decoding="async"
                 referrerPolicy="no-referrer"
                 onError={() => {
                   if (posterStage < 3) setPosterStage((prev) => prev + 1);

@@ -510,6 +510,8 @@ export function FounderUserMonitorPanel({ cardClass = '' }: { cardClass?: string
                             src={u.photoUrl}
                             alt={u.name}
                             decorationId={u.activeBorder}
+                            level={u.level}
+                            isFounder={isTargetFounder}
                             size="sm"
                           />
                           {u.isOnline && !u.isBanned && (

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="zsBg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#141724" />
+      <stop offset="100%" stop-color="#090A0E" />
+    </linearGradient>
+    <linearGradient id="zsAccent" x1="112" y1="96" x2="416" y2="416" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF6D3B" />
+      <stop offset="100%" stop-color="#E84A18" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#zsBg)" />
+  <rect x="20" y="20" width="472" height="472" rx="96" stroke="url(#zsAccent)" stroke-opacity="0.35" stroke-width="8" />
+  <path
+    d="M192 146C192 135.2 203.8 128.6 213 134.2L376 232.2C384.9 237.6 384.9 250.4 376 255.8L213 353.8C203.8 359.4 192 352.8 192 342V146Z"
+    fill="url(#zsAccent)"
+  />
+  <path
+    d="M140 378H372"
+    stroke="#F59E0B"
+    stroke-width="22"
+    stroke-linecap="round"
+    stroke-opacity="0.9"
+  />
+</svg>

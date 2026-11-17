@@ -15,7 +15,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { TELEGRAM_BADGE_MAP, VerifiedBadge, resolveDisplayBadgeLabel } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
-import { AvatarDecoration } from '../components/AvatarDecoration';
+import { AvatarDecoration, getLevelRankTier } from '../components/AvatarDecoration';
 import { PROFILE_THEMES, useAuth } from '../context/AuthContext';
 import type { PublicCommunityUser, RelationshipStatus } from '../types';
 
@@ -312,6 +312,8 @@ export function CommunityPage() {
                           src={u.photoUrl}
                           alt={u.name}
                           decorationId={u.activeBorder}
+                          level={u.level}
+                          isFounder={isFounder}
                           size="lg"
                         >
                           {u.isOnline && (
@@ -342,7 +344,11 @@ export function CommunityPage() {
                         <div className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-gray-400 mt-0.5">
                           <span className="truncate">@{u.username}</span>
                           <span>·</span>
-                          <span className="font-mono-tabular">UID: {u.uid}</span>
+                          <span className={`font-bold shrink-0 ${getLevelRankTier(u.level, isFounder).textClass}`}>
+                            {getLevelRankTier(u.level, isFounder).tierName}
+                          </span>
+                          <span>·</span>
+                          <span className="font-mono-tabular shrink-0">UID: {u.uid}</span>
                         </div>
                         {hasVip && (() => {
                           const safeBadge = resolveDisplayBadgeLabel(u.activeBadge, isFounder, hasVip);

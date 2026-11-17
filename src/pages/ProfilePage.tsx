@@ -12,6 +12,7 @@ import {
   Diamond,
   ExternalLink,
   Eye,
+  Film,
   Flame,
   Gift,
   History,
@@ -30,6 +31,7 @@ import {
   Settings,
   ShieldBan,
   ShieldCheck,
+  Smartphone,
   Smile,
   Sparkles,
   Star,
@@ -56,8 +58,11 @@ import { TELEGRAM_BADGE_MAP, VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import {
+  AUTO_LEVEL_BORDER_PRESET,
   AvatarDecoration,
+  LEVEL_RANK_BORDERS,
   STREAK_FRAME_REWARDS,
+  getLevelRankTier,
   normalizeDecorationId,
 } from '../components/AvatarDecoration';
 import { FounderUserMonitorPanel } from '../components/FounderUserMonitorPanel';
@@ -68,8 +73,12 @@ import { CoinTransactionHistoryModal } from '../components/CoinTransactionHistor
 import { GiftPremiumModal } from '../components/GiftPremiumModal';
 import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
 import { VipBenefitsLog } from '../components/VipBenefitsLog';
+import { BannerMedia } from '../components/BannerMedia';
+import { PWAInstallButton } from '../components/PWAInstallButton';
 import { useAuth, PROFILE_THEMES } from '../context/AuthContext';
+import { useBackground } from '../context/BackgroundContext';
 import { useTheme } from '../context/ThemeContext';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
 import {
   CLAN_INVITE_RESOLVED_EVENT,
@@ -204,6 +213,8 @@ export function ProfilePage() {
   } = useAuth();
   const { lang, currentLanguageOption, changeLanguage } = useAppLanguage();
   const { isDark, setTheme } = useTheme();
+  const { config: bgConfig, activePreset: activeBgPreset, openCustomizer } = useBackground();
+  const { isInstalled: isPwaInstalled } = usePWAInstall();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -367,9 +378,12 @@ export function ProfilePage() {
         text: `Frame ${frameName} berhasil dipasang ke avatar profilmu!`,
       });
     } else {
+      const isLevelFrame = frameId.startsWith('rank-') || frameId === 'level-auto';
       setStreakFrameNotice({
         type: 'err',
-        text: 'Gagal memasang frame. Pastikan streak kamu sudah memenuhi syarat.',
+        text: isLevelFrame
+          ? 'Gagal memasang bingkai level. Pastikan level kamu sudah memenuhi syarat.'
+          : 'Gagal memasang frame. Pastikan streak kamu sudah memenuhi syarat.',
       });
     }
   };
@@ -845,7 +859,7 @@ export function ProfilePage() {
           <div className="relative z-10 w-full max-w-md">
             <div className="text-center mb-6">
               <img
-                src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
+                src="/assets/aistudio/1089871178568589499_751994dc.jfif"
                 alt="ZoneStream Logo"
                 className="w-16 h-16 mx-auto rounded-2xl object-cover ring-2 ring-[#E84A18] shadow-xl shadow-[#E84A18]/35 mb-3"
               />
@@ -1302,11 +1316,10 @@ export function ProfilePage() {
         >
           {/* Cover Banner */}
           <div className="relative h-44 sm:h-60 w-full overflow-hidden bg-slate-900 dark:bg-[#0D0F16]">
-            <img
-              src={user?.bannerUrl || defaultBannerImg}
+            <BannerMedia
+              src={user?.bannerUrl}
+              fallbackSrc={defaultBannerImg}
               alt="Latar Belakang Profil"
-              referrerPolicy="no-referrer"
-              decoding="async"
               fetchPriority="high"
               className="w-full h-full object-cover object-center contrast-[1.04] saturate-[1.06] transition-transform duration-500"
             />
@@ -1351,6 +1364,8 @@ export function ProfilePage() {
                     src={user?.photoUrl}
                     alt={user?.name || 'ZoneStream'}
                     decorationId={user?.activeBorder}
+                    level={user?.level}
+                    isFounder={isFounderUser}
                     bgColor={user?.profileBgColor}
                     size="xl"
                   >
@@ -1398,6 +1413,17 @@ export function ProfilePage() {
                         <span className="font-mono tabular-nums font-bold text-[#E84A18]">
                           Lv. {levelDisplay}
                         </span>
+                        {(() => {
+                          const rankTier = getLevelRankTier(user?.level, isFounderUser);
+                          return (
+                            <>
+                              <span aria-hidden="true" className="text-slate-400">·</span>
+                              <span className={`font-bold ${rankTier.textClass}`}>
+                                {rankTier.tierName}
+                              </span>
+                            </>
+                          );
+                        })()}
                         <span aria-hidden="true" className="text-slate-400">·</span>
                         <span className="inline-flex items-center gap-1 font-semibold">
                           {hasVipBadge && <BadgeIcon className="w-3.5 h-3.5 text-amber-500" />}
@@ -2083,6 +2109,176 @@ export function ProfilePage() {
                   })}
                 </div>
               </div>
+
+              {/* Level-Scaled Rank Borders Gallery */}
+              {(() => {
+                const userLv = Math.max(1, Number(user?.level || 1));
+                const currentRankTier = getLevelRankTier(user?.level, isFounderUser);
+                const normalizedBorder = normalizeDecorationId(user?.activeBorder);
+                const isAutoEquipped = normalizedBorder === 'level-auto';
+                const autoBusy = equippingFrameId === AUTO_LEVEL_BORDER_PRESET.id;
+
+                return (
+                  <div className="pt-5 mt-5 border-t border-slate-200 dark:border-white/[0.06]">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                          Progres Bingkai Level (Bronze → Silver → Gold → Platinum)
+                        </h4>
+                        <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF]">
+                          Tingkatkan level akunmu untuk membuka bingkai SVG animasi berjenjang — aktif di profil, komentar &amp; chat.
+                        </p>
+                      </div>
+                      <span className={`text-xs font-extrabold whitespace-nowrap ${currentRankTier.textClass}`}>
+                        Rank Saat Ini: {currentRankTier.tierName} ({isFounderUser ? 'Lv. ∞' : `Lv. ${userLv}`})
+                      </span>
+                    </div>
+
+                    {/* Auto Level Scale Option */}
+                    <div
+                      className={`mb-3 rounded-xl border p-3 flex items-center justify-between gap-3 transition-colors ${
+                        isAutoEquipped
+                          ? 'bg-[#E84A18]/[0.08] border-[#E84A18]/60'
+                          : 'bg-slate-50 dark:bg-[#171A23] border-slate-200 dark:border-white/10'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="p-1 shrink-0">
+                          <AvatarDecoration
+                            src={user?.photoUrl}
+                            alt={AUTO_LEVEL_BORDER_PRESET.name}
+                            decorationId="level-auto"
+                            level={user?.level}
+                            isFounder={isFounderUser}
+                            size="md"
+                          />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                            {AUTO_LEVEL_BORDER_PRESET.name} ({currentRankTier.tierName})
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-gray-400 truncate">
+                            {AUTO_LEVEL_BORDER_PRESET.subtitle}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {isAutoEquipped ? (
+                          <span className="px-2.5 py-1.5 rounded-lg bg-[#E84A18]/20 text-[#E84A18] dark:text-[#FF8A65] text-[11px] font-extrabold inline-flex items-center gap-1 whitespace-nowrap">
+                            <Check className="w-3 h-3" />
+                            <span>Aktif</span>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={autoBusy}
+                            onClick={() =>
+                              void handleEquipStreakFrame(
+                                AUTO_LEVEL_BORDER_PRESET.id,
+                                AUTO_LEVEL_BORDER_PRESET.name
+                              )
+                            }
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-950 hover:opacity-90 text-[11px] font-extrabold transition-opacity disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {autoBusy ? '...' : 'Aktifkan Auto'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {LEVEL_RANK_BORDERS.map((tier) => {
+                        const unlocked = Boolean(isFounderUser || userLv >= tier.minLevel);
+                        const equipped = normalizedBorder === tier.id;
+                        const progressNum = isFounderUser
+                          ? tier.minLevel
+                          : Math.min(userLv, tier.minLevel);
+                        const pct = Math.round((progressNum / Math.max(1, tier.minLevel)) * 100);
+                        const busy = equippingFrameId === tier.id;
+
+                        return (
+                          <div
+                            key={tier.id}
+                            className={`rounded-xl border p-3 flex items-center gap-3 transition-colors ${
+                              equipped
+                                ? 'bg-[#E84A18]/[0.08] border-[#E84A18]/60'
+                                : unlocked
+                                ? 'bg-slate-50 dark:bg-[#171A23] border-slate-200 dark:border-white/10'
+                                : 'bg-slate-50/60 dark:bg-[#12141B] border-slate-200/70 dark:border-white/[0.05]'
+                            }`}
+                          >
+                            <div className="p-1 shrink-0">
+                              <AvatarDecoration
+                                src={user?.photoUrl}
+                                alt={tier.name}
+                                decorationId={tier.id}
+                                size="md"
+                              />
+                            </div>
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                                  {tier.name}
+                                </p>
+                                <span
+                                  className={`text-[10px] font-mono tabular-nums font-bold shrink-0 ${tier.textClass}`}
+                                >
+                                  {tier.levelRangeLabel}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-slate-500 dark:text-gray-400 truncate mt-0.5">
+                                {tier.subtitle}
+                              </p>
+
+                              <div className="mt-2 flex items-center gap-2">
+                                <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-white/10 overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full transition-all duration-300"
+                                    style={{
+                                      width: `${pct}%`,
+                                      backgroundColor: tier.accentColor,
+                                    }}
+                                  />
+                                </div>
+                                <span className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-gray-400 shrink-0">
+                                  Lv.{progressNum}/{tier.minLevel}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="shrink-0">
+                              {equipped ? (
+                                <span className="px-2.5 py-1.5 rounded-lg bg-[#E84A18]/20 text-[#E84A18] dark:text-[#FF8A65] text-[11px] font-extrabold inline-flex items-center gap-1 whitespace-nowrap">
+                                  <Check className="w-3 h-3" />
+                                  <span>Aktif</span>
+                                </span>
+                              ) : unlocked ? (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => void handleEquipStreakFrame(tier.id, tier.name)}
+                                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-950 hover:opacity-90 text-[11px] font-extrabold transition-opacity disabled:opacity-50 whitespace-nowrap"
+                                >
+                                  {busy ? '...' : 'Pasang'}
+                                </button>
+                              ) : (
+                                <span
+                                  className="px-2.5 py-1.5 rounded-lg bg-slate-200/80 dark:bg-white/[0.06] text-slate-500 dark:text-gray-400 text-[10px] font-bold inline-flex items-center gap-1 whitespace-nowrap"
+                                  title={`Capai Level ${tier.minLevel} untuk membuka`}
+                                >
+                                  <Lock className="w-3 h-3" />
+                                  <span>Lv.{tier.minLevel}</span>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             </div>
           )}
@@ -2230,6 +2426,68 @@ export function ProfilePage() {
                             </button>
                           );
                         })}
+                      </div>
+                    </div>
+
+                    {/* App-Wide Photo / Video Background Customizer */}
+                    <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="w-9 h-9 rounded-xl bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center shrink-0">
+                            <Film className="w-4 h-4" />
+                          </span>
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                              Latar Belakang Aplikasi (Foto &amp; Video)
+                            </h3>
+                            <p className="text-xs text-slate-500 dark:text-[#9CA3AF] truncate">
+                              {bgConfig.mode === 'none'
+                                ? 'Mode polos (tanpa gambar/video latar)'
+                                : bgConfig.mode === 'custom-upload'
+                                ? `Upload sendiri: ${bgConfig.customUploadName || 'Media Kustom'}`
+                                : bgConfig.mode === 'custom-url'
+                                ? `Link kustom (${bgConfig.customUrlKind === 'video' ? 'Video' : 'Foto'})`
+                                : `${activeBgPreset?.label || 'Preset'} · Opasitas ${bgConfig.opacity}%`}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={openCustomizer}
+                          className="min-h-[40px] px-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition-colors whitespace-nowrap shrink-0"
+                        >
+                          <Film className="w-3.5 h-3.5" />
+                          <span>Ganti Foto / Video</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Standalone App (PWA) Card */}
+                    <div className={`rounded-2xl border p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="w-9 h-9 rounded-xl bg-[#E84A18]/15 text-[#E84A18] flex items-center justify-center shrink-0">
+                            <Smartphone className="w-4 h-4" />
+                          </span>
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                              Aplikasi Standalone (Mode Layar Penuh)
+                            </h3>
+                            <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
+                              {isPwaInstalled
+                                ? 'Aplikasi sudah berjalan dalam mode Standalone tanpa bar browser.'
+                                : 'Pasang ZoneStream ke perangkat agar terbuka seperti aplikasi asli tanpa bar browser.'}
+                            </p>
+                          </div>
+                        </div>
+                        {isPwaInstalled ? (
+                          <span className="px-3.5 py-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-300 text-xs font-extrabold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Mode Aplikasi Aktif</span>
+                          </span>
+                        ) : (
+                          <PWAInstallButton variant="pill" />
+                        )}
                       </div>
                     </div>
 

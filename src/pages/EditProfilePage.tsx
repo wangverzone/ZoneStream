@@ -6,10 +6,12 @@ import {
   Check,
   ChevronRight,
   Crown,
+  Film,
   Frame,
   Globe,
   Image as ImageIcon,
   KeyRound,
+  Link2,
   Lock,
   Mail,
   MessageSquareQuote,
@@ -31,19 +33,31 @@ import {
 import { StatusEmojiBadge, VIP_EMOJIS } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import {
+  AUTO_LEVEL_BORDER_PRESET,
   AvatarDecoration,
   DISCORD_AVATAR_DECORATIONS,
+  LEVEL_RANK_BORDERS,
   STREAK_FRAME_REWARDS,
+  getLevelRankTier,
   normalizeDecorationId,
 } from '../components/AvatarDecoration';
+import { BannerMedia } from '../components/BannerMedia';
 import { useAuth, AVATAR_BORDER_STYLES, PROFILE_THEMES } from '../context/AuthContext';
+import { useBackground } from '../context/BackgroundContext';
 import { APP_LANGUAGES, useAppLanguage } from '../utils/language';
+import { sanitizeMediaUrl } from '../utils/backdropStorage';
 import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
 import { SOUND_PRESETS, useSoundSettings } from '../utils/soundEffects';
 import defaultBannerImg from '../assets/images/default_profile_banner_1794755346957.jpg';
 import heroFallbackImg from '../assets/images/donghua_hero_fallback_1794755348232.jpg';
+import celestialPalaceImg from '../assets/images/bg_celestial_palace_1794925701211.jpg';
+import cyberRainCityImg from '../assets/images/bg_cyber_rain_city_1794925702075.jpg';
+import sakuraShrineImg from '../assets/images/bg_sakura_shrine_night_1794925700466.jpg';
 
 const PRESET_BANNERS = [
+  { label: 'Istana Langit', src: celestialPalaceImg },
+  { label: 'Kota Lampion', src: cyberRainCityImg },
+  { label: 'Kuil Sakura', src: sakuraShrineImg },
   { label: 'Mecha Cyber', src: defaultBannerImg },
   { label: 'Xianxia Cultivator', src: heroFallbackImg },
 ];
@@ -90,6 +104,7 @@ function fileToCompressedDataUrl(file: File, maxSize: number): Promise<string> {
 
 export function EditProfilePage() {
   const { user, isPremium, updateProfile } = useAuth();
+  const { config: bgConfig, openCustomizer: openBackdropCustomizer } = useBackground();
   const { lang, currentLanguageOption, changeLanguage } = useAppLanguage();
   const { settings: soundSettings } = useSoundSettings();
   const navigate = useNavigate();
@@ -104,12 +119,13 @@ export function EditProfilePage() {
   const [bio, setBio] = useState(user?.bio || '');
   const [photoUrl, setPhotoUrl] = useState(user?.photoUrl || '');
   const [bannerUrl, setBannerUrl] = useState(user?.bannerUrl || '');
+  const [bannerUrlInput, setBannerUrlInput] = useState('');
   const [activeBorder, setActiveBorder] = useState(user?.activeBorder || 'none');
   const [activeBadge, setActiveBadge] = useState(user?.activeBadge || 'Member');
   const [profileTheme, setProfileTheme] = useState(user?.profileTheme || 'default');
   const [profileBgColor, setProfileBgColor] = useState(user?.profileBgColor || '');
   const [statusEmoji, setStatusEmoji] = useState(user?.statusEmoji || '');
-  const [borderFilter, setBorderFilter] = useState<'all' | 'vip' | 'streak'>('all');
+  const [borderFilter, setBorderFilter] = useState<'all' | 'rank' | 'vip' | 'streak'>('all');
 
   const [editingField, setEditingField] = useState<
     | 'name'
@@ -403,10 +419,10 @@ export function EditProfilePage() {
           }
         >
           <div className="relative h-52 sm:h-64 w-full overflow-hidden bg-slate-900 dark:bg-[#14161D]">
-            <img
-              src={bannerUrl || defaultBannerImg}
+            <BannerMedia
+              src={bannerUrl}
+              fallbackSrc={defaultBannerImg}
               alt="Banner Preview"
-              referrerPolicy="no-referrer"
               className="w-full h-full object-cover"
             />
             <div className={`absolute inset-0 bg-gradient-to-t ${activeThemeDef.bannerGradientOverlay}`} />
@@ -461,6 +477,8 @@ export function EditProfilePage() {
                 src={photoUrl}
                 alt={name}
                 decorationId={activeBorder}
+                level={user?.level}
+                isFounder={isFounder}
                 bgColor={profileBgColor}
                 size="xl"
               >
@@ -633,7 +651,7 @@ export function EditProfilePage() {
                   </p>
                 </div>
 
-                <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0B0D12] border border-slate-200 dark:border-white/5">
+                <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-[#0B0D12] border border-slate-200 dark:border-white/5">
                   <button
                     type="button"
                     onClick={() => setBorderFilter('all')}
@@ -644,6 +662,17 @@ export function EditProfilePage() {
                     }`}
                   >
                     Semua
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBorderFilter('rank')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold whitespace-nowrap transition-colors ${
+                      borderFilter === 'rank'
+                        ? 'bg-white dark:bg-[#1C1F2B] text-cyan-600 dark:text-cyan-300 shadow-sm'
+                        : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    Level Rank
                   </button>
                   <button
                     type="button"
@@ -671,6 +700,108 @@ export function EditProfilePage() {
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                {(borderFilter === 'all' || borderFilter === 'rank') && (() => {
+                  const userLv = Math.max(1, Number(user?.level || 1));
+                  const currentTier = getLevelRankTier(user?.level, isFounder);
+                  const autoSelected = normalizeDecorationId(activeBorder) === 'level-auto';
+                  return (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveBorder(AUTO_LEVEL_BORDER_PRESET.id);
+                          void triggerAutoSave(
+                            { activeBorder: AUTO_LEVEL_BORDER_PRESET.id },
+                            `Border ${AUTO_LEVEL_BORDER_PRESET.name} (${currentTier.tierName}) dipasang!`
+                          );
+                        }}
+                        className={`relative rounded-xl p-3 border flex flex-col items-center text-center gap-2 transition-colors ${
+                          autoSelected
+                            ? 'border-[#E84A18] bg-[#E84A18]/10 ring-1 ring-[#E84A18]/40'
+                            : 'border-cyan-500/30 bg-cyan-500/[0.04] hover:bg-cyan-500/[0.09]'
+                        }`}
+                      >
+                        <div className="py-1">
+                          <AvatarDecoration
+                            src={photoUrl}
+                            alt={AUTO_LEVEL_BORDER_PRESET.name}
+                            decorationId="level-auto"
+                            level={user?.level}
+                            isFounder={isFounder}
+                            bgColor={profileBgColor}
+                            size="md"
+                          />
+                        </div>
+                        <div className="min-w-0 w-full">
+                          <p className="text-[11px] font-extrabold text-slate-900 dark:text-white truncate">
+                            {AUTO_LEVEL_BORDER_PRESET.name}
+                          </p>
+                          <p className={`text-[10px] font-semibold truncate ${currentTier.textClass}`}>
+                            Aktif: {currentTier.tierName}
+                          </p>
+                        </div>
+                        {autoSelected && (
+                          <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-[#E84A18] text-white flex items-center justify-center">
+                            <Check className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+                      </button>
+
+                      {LEVEL_RANK_BORDERS.map((tier) => {
+                        const unlocked = Boolean(isFounder || userLv >= tier.minLevel);
+                        const selected = normalizeDecorationId(activeBorder) === tier.id;
+                        return (
+                          <button
+                            key={tier.id}
+                            type="button"
+                            disabled={!unlocked}
+                            onClick={() => {
+                              setActiveBorder(tier.id);
+                              void triggerAutoSave(
+                                { activeBorder: tier.id },
+                                `Bingkai ${tier.name} berhasil dipasang!`
+                              );
+                            }}
+                            className={`relative rounded-xl p-3 border flex flex-col items-center text-center gap-2 transition-colors ${
+                              selected
+                                ? 'border-[#E84A18] bg-[#E84A18]/10 ring-1 ring-[#E84A18]/40'
+                                : !unlocked
+                                ? 'border-slate-200 dark:border-white/5 bg-slate-50/70 dark:bg-[#171920] opacity-60 cursor-not-allowed'
+                                : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#181B24] dark:hover:bg-[#212533]'
+                            }`}
+                          >
+                            <div className="py-1">
+                              <AvatarDecoration
+                                src={photoUrl}
+                                alt={tier.name}
+                                decorationId={tier.id}
+                                bgColor={profileBgColor}
+                                size="md"
+                              />
+                            </div>
+                            <div className="min-w-0 w-full">
+                              <p className="text-[11px] font-extrabold text-slate-900 dark:text-white truncate">
+                                {tier.name}
+                              </p>
+                              <p className={`text-[10px] font-semibold truncate ${tier.textClass}`}>
+                                {unlocked ? `${tier.tierName} (${tier.levelRangeLabel})` : `Butuh Lv. ${tier.minLevel}`}
+                              </p>
+                            </div>
+                            {selected && (
+                              <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-[#E84A18] text-white flex items-center justify-center">
+                                <Check className="w-2.5 h-2.5" />
+                              </span>
+                            )}
+                            {!unlocked && (
+                              <Lock className="w-3 h-3 text-slate-400 absolute top-2 right-2" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </>
+                  );
+                })()}
+
                 {(borderFilter === 'all' || borderFilter === 'streak') &&
                   STREAK_FRAME_REWARDS.map((sf) => {
                     const unlocked = Boolean(
@@ -888,6 +1019,31 @@ export function EditProfilePage() {
 
             <button
               type="button"
+              onClick={openBackdropCustomizer}
+              className="w-full min-h-[58px] px-4 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-colors text-left"
+            >
+              <div className="flex items-center gap-3">
+                <Film className="w-5 h-5 text-[#E84A18]" />
+                <span className="text-sm font-medium text-slate-900 dark:text-white">
+                  Latar Belakang Aplikasi (Foto &amp; Video)
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
+                <span className="truncate max-w-[140px] text-[#E84A18] font-semibold">
+                  {bgConfig.mode === 'none'
+                    ? 'Polos'
+                    : bgConfig.mode === 'custom-upload'
+                    ? 'Upload Sendiri'
+                    : bgConfig.mode === 'custom-url'
+                    ? 'Link Kustom'
+                    : 'Aktif · Ganti'}
+                </span>
+                <ChevronRight className="w-4 h-4" />
+              </div>
+            </button>
+
+            <button
+              type="button"
               onClick={() =>
                 canCustomizePremium
                   ? avatarInputRef.current?.click()
@@ -983,9 +1139,11 @@ export function EditProfilePage() {
               </div>
               <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-[#9CA3AF]">
                 <span className="truncate max-w-[150px] font-semibold text-slate-800 dark:text-gray-200">
-                  {AVATAR_BORDER_STYLES[normalizeDecorationId(activeBorder)]?.label ||
-                    AVATAR_BORDER_STYLES[activeBorder]?.label ||
-                    'Tanpa Dekorasi'}
+                  {normalizeDecorationId(activeBorder) === 'level-auto'
+                    ? `${getLevelRankTier(user?.level, isFounder).name} (Auto)`
+                    : AVATAR_BORDER_STYLES[normalizeDecorationId(activeBorder)]?.label ||
+                      AVATAR_BORDER_STYLES[activeBorder]?.label ||
+                      'Tanpa Dekorasi'}
                 </span>
                 <ChevronRight className="w-4 h-4" />
               </div>
@@ -1313,7 +1471,7 @@ export function EditProfilePage() {
       {/* Edit Banner Modal (Premium & Founder) */}
       {editingField === 'banner' && canCustomizePremium && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-          <div className="w-full max-w-md rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
+          <div className="w-full max-w-md max-h-[88dvh] overflow-y-auto rounded-3xl bg-white dark:bg-[#14161D] border border-slate-200 dark:border-white/10 p-5 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-bold text-slate-900 dark:text-white">
                 Ubah Latar Belakang Profil
@@ -1330,37 +1488,67 @@ export function EditProfilePage() {
             <button
               type="button"
               onClick={() => bannerInputRef.current?.click()}
-              className="w-full min-h-[46px] mb-4 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold flex items-center justify-center gap-2"
+              className="w-full min-h-[46px] mb-3 rounded-xl bg-[#E84A18] hover:bg-[#F35B2B] text-white text-xs font-bold flex items-center justify-center gap-2"
             >
               <Camera className="w-4 h-4" />
               <span>Upload Gambar dari Galeri / Perangkat</span>
             </button>
 
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const safe = sanitizeMediaUrl(bannerUrlInput);
+                if (!safe) return;
+                setBannerUrl(safe);
+                setBannerUrlInput('');
+                setEditingField(null);
+                void triggerAutoSave({ bannerUrl: safe }, 'Latar URL tersimpan!');
+              }}
+              className="mb-4 flex gap-2"
+            >
+              <div className="relative flex-1">
+                <Link2 className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="url"
+                  value={bannerUrlInput}
+                  onChange={(e) => setBannerUrlInput(e.target.value)}
+                  placeholder="Tempel link Foto atau Video (.mp4)..."
+                  className="w-full h-10 pl-8 pr-3 rounded-xl bg-slate-50 dark:bg-[#1B1E26] border border-slate-200 dark:border-white/10 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-[#E84A18]"
+                />
+              </div>
+              <button
+                type="submit"
+                className="h-10 px-3.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-950 text-xs font-bold whitespace-nowrap"
+              >
+                Pakai URL
+              </button>
+            </form>
+
             <p className="text-xs font-semibold text-slate-500 dark:text-gray-400 mb-2">
-              Atau pilih latar bawaan:
+              Atau pilih latar bawaan HD:
             </p>
             <div className="grid grid-cols-2 gap-2.5">
               {PRESET_BANNERS.map((p) => (
-                  <button
-                    key={p.label}
-                    type="button"
-                    onClick={() => {
-                      setBannerUrl(p.src);
-                      setEditingField(null);
-                      void triggerAutoSave({ bannerUrl: p.src }, 'Latar belakang tersimpan!');
-                    }}
-                    className="group relative h-24 rounded-xl overflow-hidden border border-slate-200 dark:border-white/10 hover:border-[#E84A18]"
-                  >
-                    <img src={p.src} alt={p.label} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/45 flex items-end p-2">
-                      <span className="text-[11px] font-bold text-white">{p.label}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => {
+                    setBannerUrl(p.src);
+                    setEditingField(null);
+                    void triggerAutoSave({ bannerUrl: p.src }, 'Latar belakang tersimpan!');
+                  }}
+                  className="group relative h-24 rounded-xl overflow-hidden border border-slate-200 dark:border-white/10 hover:border-[#E84A18]"
+                >
+                  <img src={p.src} alt={p.label} className="w-full h-full object-cover" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/20 to-transparent flex items-end p-2">
+                    <span className="text-[11px] font-bold text-white">{p.label}</span>
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
-        )}
+        </div>
+      )}
 
       {/* Discord-Style Profile Theme Modal (Premium & Founder) */}
       {editingField === 'theme' && canCustomizePremium && (
@@ -1631,6 +1819,117 @@ export function EditProfilePage() {
               </button>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 overflow-y-auto pr-1 py-1">
+              {(() => {
+                const userLv = Math.max(1, Number(user?.level || 1));
+                const currentTier = getLevelRankTier(user?.level, isFounder);
+                const autoSelected = normalizeDecorationId(activeBorder) === 'level-auto';
+                return (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveBorder(AUTO_LEVEL_BORDER_PRESET.id);
+                        setEditingField(null);
+                        void triggerAutoSave(
+                          { activeBorder: AUTO_LEVEL_BORDER_PRESET.id },
+                          `Border ${AUTO_LEVEL_BORDER_PRESET.name} (${currentTier.tierName}) dipasang!`
+                        );
+                      }}
+                      className={`relative rounded-2xl p-3.5 border flex flex-col items-center text-center gap-2.5 transition-colors ${
+                        autoSelected
+                          ? 'border-[#E84A18] bg-gradient-to-b from-[#E84A18]/20 to-transparent ring-1 ring-[#E84A18]/50 shadow-lg'
+                          : 'border-cyan-500/30 bg-cyan-500/[0.05] hover:bg-cyan-500/[0.11]'
+                      }`}
+                    >
+                      <div className="py-1.5">
+                        <AvatarDecoration
+                          src={photoUrl}
+                          alt={AUTO_LEVEL_BORDER_PRESET.name}
+                          decorationId="level-auto"
+                          level={user?.level}
+                          isFounder={isFounder}
+                          size="lg"
+                        />
+                      </div>
+                      <div className="min-w-0 w-full">
+                        <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                          {AUTO_LEVEL_BORDER_PRESET.name}
+                        </p>
+                        <p className={`text-[10px] line-clamp-1 font-semibold ${currentTier.textClass}`}>
+                          Aktif: {currentTier.tierName} ({isFounder ? 'Lv. ∞' : `Lv. ${userLv}`})
+                        </p>
+                      </div>
+                      {autoSelected ? (
+                        <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#E84A18] text-white flex items-center justify-center shadow">
+                          <Check className="w-3 h-3" />
+                        </span>
+                      ) : (
+                        <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[9px] font-bold">
+                          Auto
+                        </span>
+                      )}
+                    </button>
+
+                    {LEVEL_RANK_BORDERS.map((tier) => {
+                      const unlocked = Boolean(isFounder || userLv >= tier.minLevel);
+                      const selected = normalizeDecorationId(activeBorder) === tier.id;
+                      return (
+                        <button
+                          key={tier.id}
+                          type="button"
+                          disabled={!unlocked}
+                          onClick={() => {
+                            setActiveBorder(tier.id);
+                            setEditingField(null);
+                            void triggerAutoSave(
+                              { activeBorder: tier.id },
+                              `Bingkai ${tier.name} berhasil dipasang!`
+                            );
+                          }}
+                          className={`relative rounded-2xl p-3.5 border flex flex-col items-center text-center gap-2.5 transition-colors ${
+                            selected
+                              ? 'border-[#E84A18] bg-gradient-to-b from-[#E84A18]/20 to-transparent ring-1 ring-[#E84A18]/50 shadow-lg'
+                              : !unlocked
+                              ? 'border-slate-200 dark:border-white/5 bg-slate-100/70 dark:bg-[#171920] opacity-60 cursor-not-allowed'
+                              : 'border-slate-200 dark:border-white/10 bg-slate-50 hover:bg-slate-100 dark:bg-[#181B24] dark:hover:bg-[#212533]'
+                          }`}
+                        >
+                          <div className="py-1.5">
+                            <AvatarDecoration
+                              src={photoUrl}
+                              alt={tier.name}
+                              decorationId={tier.id}
+                              size="lg"
+                            />
+                          </div>
+                          <div className="min-w-0 w-full">
+                            <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                              {tier.name}
+                            </p>
+                            <p className={`text-[10px] line-clamp-1 font-semibold ${tier.textClass}`}>
+                              Level Rank {tier.levelRangeLabel}
+                            </p>
+                          </div>
+                          {!unlocked ? (
+                            <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-slate-800/80 text-gray-300 text-[9px] font-bold inline-flex items-center gap-0.5">
+                              <Lock className="w-2.5 h-2.5" /> Lv.{tier.minLevel}
+                            </span>
+                          ) : selected ? (
+                            <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#E84A18] text-white flex items-center justify-center shadow">
+                              <Check className="w-3 h-3" />
+                            </span>
+                          ) : (
+                            <span className="absolute top-2 right-2 px-1.5 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-[9px] font-bold">
+                              Terbuka
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+
               {STREAK_FRAME_REWARDS.map((sf) => {
                 const bestStreak = Math.max(user?.longestStreak || 0, user?.watchStreak || 0);
                 const unlocked = Boolean(

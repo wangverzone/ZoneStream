@@ -225,6 +225,36 @@
   );
 }
 
+@keyframes backdropDrift {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale3d(1.02, 1.02, 1);
+  }
+  50% {
+    transform: translate3d(-0.8%, -0.6%, 0) scale3d(1.07, 1.07, 1);
+  }
+}
+
+.animate-backdrop-drift {
+  animation: backdropDrift 26s ease-in-out infinite;
+  will-change: transform;
+  transform-origin: center center;
+}
+
+@keyframes zsPageFadeIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.animate-zs-page-enter {
+  animation: zsPageFadeIn 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

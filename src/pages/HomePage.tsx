@@ -31,11 +31,14 @@ import { AdsterraBanner728x90 } from '../components/AdsterraAds';
 import { AvatarDecoration } from '../components/AvatarDecoration';
 import { MediaCard, resolveFallbackPosterUrl } from '../components/MediaCard';
 import { TelegramCsButton } from '../components/TelegramCsButton';
+import { BackdropToggle } from '../components/BackdropToggle';
+import { PWAInstallButton } from '../components/PWAInstallButton';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { VerifiedBadge } from '../components/VerifiedBadge';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { CountryFlagBadge } from '../components/CountryFlag';
 import { useAuth } from '../context/AuthContext';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 import { HeaderSearch } from '../components/HeaderSearch';
 import { NotificationBell } from '../components/NotificationBell';
 import {
@@ -103,6 +106,7 @@ function ResilientPosterImage({
       src={resolved}
       alt={alt}
       loading="lazy"
+      decoding="async"
       referrerPolicy="no-referrer"
       onError={() => {
         if (stage < 3) setStage((prev) => prev + 1);
@@ -114,6 +118,7 @@ function ResilientPosterImage({
 
 export function HomePage() {
   const { user, isPremium, getLocalHistory, getLocalBookmarks, toggleBookmark } = useAuth();
+  const { isInstalled } = usePWAInstall();
   const navigate = useNavigate();
 
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>([]);
@@ -295,9 +300,11 @@ export function HomePage() {
         <header className="flex items-center justify-between gap-2 sm:gap-3 mb-4">
           <Link to="/profile" className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 group">
             <AvatarDecoration
-              src={user?.photoUrl || '/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif'}
+              src={user?.photoUrl || '/assets/aistudio/1089871178568589499_751994dc.jfif'}
               alt={user?.name || 'ZoneStream'}
               decorationId={user?.activeBorder}
+              level={user?.level}
+              isFounder={user?.role === 'founder'}
               size="md"
             />
             <div className="min-w-0 flex-1">
@@ -363,7 +370,9 @@ export function HomePage() {
 
           <div className="flex items-center gap-1 sm:gap-1.5 relative shrink-0">
             <div className="lg:hidden flex items-center gap-1 sm:gap-1.5">
+              <PWAInstallButton variant="compact" />
               <TelegramCsButton />
+              <BackdropToggle compact />
               <ThemeToggle compact />
             </div>
 
@@ -407,14 +416,12 @@ export function HomePage() {
             <HeroShowcaseSkeleton />
           ) : (
             <div className="relative w-full h-[370px] sm:h-[430px] lg:h-[490px] rounded-3xl overflow-hidden bg-[#0B0D14] border border-slate-200 dark:border-white/[0.1] shadow-[0_24px_60px_rgba(0,0,0,0.55)] group">
-              {/* Layer 1: Full-Bleed Atmospheric Cinema Backdrop (Sharp HD on mobile, ambient cinema backdrop on desktop) */}
+              {/* Layer 1: Full-Bleed Crisp HD Atmospheric Cinema Backdrop */}
               <ResilientPosterImage
                 src={activeHero.backdrop || activeHero.poster}
                 alt={activeHero.title}
                 className={`w-full h-full object-cover object-center contrast-[1.06] saturate-[1.08] transition-transform duration-700 group-hover:scale-[1.03] ${
-                  activeHero.hasWideBanner
-                    ? 'opacity-95'
-                    : 'opacity-90 sm:scale-105 sm:blur-sm sm:opacity-75'
+                  activeHero.hasWideBanner ? 'opacity-95' : 'opacity-90 sm:opacity-85'
                 }`}
               />
 
@@ -1299,30 +1306,32 @@ export function HomePage() {
           </div>
         </section>
 
-        {/* Mobile App PWA Download Banner */}
-        <section className="mt-12 p-6 rounded-3xl bg-gradient-to-r from-blue-600/15 via-purple-600/15 to-[#E84A18]/15 border border-blue-500/20 flex flex-col sm:flex-row items-center justify-between gap-6 shadow-xl">
+        {/* Standalone App (PWA) Install Banner */}
+        <section className="mt-12 p-5 sm:p-6 rounded-3xl bg-gradient-to-r from-[#E84A18]/15 via-purple-600/12 to-blue-600/15 border border-[#E84A18]/25 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 shadow-xl backdrop-blur-md">
           <div className="flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#E84A18] to-amber-500 flex items-center justify-center text-white shadow-lg shrink-0">
-              <Smartphone className="w-7 h-7" />
-            </div>
+            <img
+              src="/pwa-192x192.png"
+              alt="ZoneStream App"
+              className="w-14 h-14 rounded-2xl object-cover ring-2 ring-[#E84A18]/70 shadow-lg shrink-0"
+            />
             <div>
-              <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
-                Download Aplikasi Wibuku (PWA) di Android &amp; iOS
+              <h2 className="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-[#E84A18] shrink-0" />
+                <span>Aplikasi ZoneStream Standalone (Android, iOS &amp; PC)</span>
               </h2>
-              <p className="text-xs text-slate-600 dark:text-gray-300 mt-0.5">
-                Install aplikasi ke layar utama perangkat Anda untuk pengalaman streaming full-screen, akses offline, dan notifikasi rilis instan.
+              <p className="text-xs text-slate-600 dark:text-gray-300 mt-0.5 leading-relaxed">
+                Pasang langsung ke layar utama untuk mode aplikasi layar penuh tanpa bar browser, cache poster HD ultra cepat, &amp; akses offline.
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              alert('Buka menu browser Anda (ikon titik tiga / Share) lalu pilih "Add to Home Screen" atau "Install App" untuk menginstal Wibuku!');
-            }}
-            className="px-5 py-2.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 hover:bg-[#E84A18] dark:hover:bg-[#E84A18] dark:hover:text-white text-xs font-extrabold transition-colors whitespace-nowrap shadow-md"
-          >
-            Install Aplikasi Sekarang
-          </button>
+          {isInstalled ? (
+            <span className="px-4 py-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 text-xs font-extrabold inline-flex items-center gap-2 whitespace-nowrap shrink-0">
+              <ShieldCheck className="w-4 h-4" />
+              <span>Terpasang (Mode Aplikasi Penuh)</span>
+            </span>
+          ) : (
+            <PWAInstallButton variant="cta" className="w-full sm:w-auto shrink-0" />
+          )}
         </section>
 
         {/* Professional Multi-Column Footer */}
@@ -1331,7 +1340,7 @@ export function HomePage() {
             <div className="space-y-3 md:col-span-1">
               <div className="flex items-center gap-2.5 text-slate-900 dark:text-white font-extrabold text-sm">
                 <img
-                  src="/assets/aistudio/sara_seo_pfp_6f6b2a74.jfif"
+                  src="/assets/aistudio/1089871178568589499_751994dc.jfif"
                   alt="ZoneStream Logo"
                   className="w-8 h-8 rounded-xl object-cover ring-2 ring-[#E84A18]/60 shadow-md"
                 />

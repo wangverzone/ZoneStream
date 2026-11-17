@@ -18,6 +18,78 @@ export interface StreakFrameReward {
   tierLabel: string;
 }
 
+export type LevelRankBorderId = 'rank-bronze' | 'rank-silver' | 'rank-gold' | 'rank-platinum';
+
+export interface LevelRankBorderTier {
+  id: LevelRankBorderId;
+  tierName: 'Bronze' | 'Silver' | 'Gold' | 'Platinum';
+  name: string;
+  subtitle: string;
+  minLevel: number;
+  levelRangeLabel: string;
+  accentColor: string;
+  textClass: string;
+}
+
+export const AUTO_LEVEL_BORDER_PRESET = {
+  id: 'level-auto',
+  name: 'Auto Skala Level',
+  subtitle: 'Otomatis naik dari Bronze → Silver → Gold → Platinum sesuai levelmu',
+  accentColor: '#E84A18',
+};
+
+export const LEVEL_RANK_BORDERS: LevelRankBorderTier[] = [
+  {
+    id: 'rank-bronze',
+    tierName: 'Bronze',
+    name: 'Bronze Vanguard',
+    subtitle: 'Cincin perunggu tempa dengan orbit percikan hangat',
+    minLevel: 1,
+    levelRangeLabel: 'Lv. 1–4',
+    accentColor: '#D97706',
+    textClass: 'text-amber-600 dark:text-amber-400',
+  },
+  {
+    id: 'rank-silver',
+    tierName: 'Silver',
+    name: 'Silver Sentinel',
+    subtitle: 'Cincin perak murni ganda berotasi berlawanan & kristal',
+    minLevel: 5,
+    levelRangeLabel: 'Lv. 5–14',
+    accentColor: '#94A3B8',
+    textClass: 'text-slate-600 dark:text-slate-300',
+  },
+  {
+    id: 'rank-gold',
+    tierName: 'Gold',
+    name: 'Gold Sovereign',
+    subtitle: 'Astrolab emas 24K bersinar & mahkota kaisar berkilau',
+    minLevel: 15,
+    levelRangeLabel: 'Lv. 15–29',
+    accentColor: '#FACC15',
+    textClass: 'text-yellow-600 dark:text-yellow-400',
+  },
+  {
+    id: 'rank-platinum',
+    tierName: 'Platinum',
+    name: 'Platinum Paragon',
+    subtitle: 'Orbit kristal prismatik kembar, sayap platina & permata puncak',
+    minLevel: 30,
+    levelRangeLabel: 'Lv. 30+',
+    accentColor: '#38BDF8',
+    textClass: 'text-cyan-600 dark:text-cyan-300',
+  },
+];
+
+export function getLevelRankTier(level?: number, isFounder?: boolean): LevelRankBorderTier {
+  if (isFounder) return LEVEL_RANK_BORDERS[3];
+  const lv = Math.max(1, Number(level || 1));
+  if (lv >= 30) return LEVEL_RANK_BORDERS[3];
+  if (lv >= 15) return LEVEL_RANK_BORDERS[2];
+  if (lv >= 5) return LEVEL_RANK_BORDERS[1];
+  return LEVEL_RANK_BORDERS[0];
+}
+
 export const STREAK_FRAME_REWARDS: StreakFrameReward[] = [
   {
     id: 'streak-ember',
@@ -150,9 +222,19 @@ export function upgradeAvatarUrlToHd(rawUrl?: string): string {
   return url;
 }
 
-export function normalizeDecorationId(rawId?: string): string {
+export function normalizeDecorationId(
+  rawId?: string,
+  level?: number,
+  isFounder?: boolean
+): string {
   const id = String(rawId || '').trim().toLowerCase();
-  if (!id || id === 'classic' || id === 'none') return 'none';
+  if (id === 'none') return 'none';
+  if (!id || id === 'classic' || id === 'level-auto') {
+    if (level !== undefined || isFounder) {
+      return getLevelRankTier(level, isFounder).id;
+    }
+    return 'level-auto';
+  }
 
   const legacyMap: Record<string, string> = {
     gold: 'dragon-crown',
@@ -178,6 +260,7 @@ export function normalizeDecorationId(rawId?: string): string {
   };
 
   if (legacyMap[id]) return legacyMap[id];
+  if (LEVEL_RANK_BORDERS.some((r) => r.id === id)) return id;
   if (STREAK_FRAME_REWARDS.some((s) => s.id === id)) return id;
   if (DISCORD_AVATAR_DECORATIONS.some((d) => d.id === id)) return id;
   return 'dragon-crown';
@@ -187,6 +270,8 @@ interface AvatarDecorationProps {
   src?: string;
   alt?: string;
   decorationId?: string;
+  level?: number;
+  isFounder?: boolean;
   bgColor?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
@@ -214,6 +299,8 @@ export function AvatarDecoration({
   src,
   alt = 'Avatar',
   decorationId,
+  level,
+  isFounder,
   bgColor,
   size = 'md',
   className = '',
@@ -221,7 +308,7 @@ export function AvatarDecoration({
 }: AvatarDecorationProps) {
   const hdSrc = upgradeAvatarUrlToHd(src);
   const [imgSrc, setImgSrc] = useState<string>(hdSrc);
-  const resolvedId = normalizeDecorationId(decorationId);
+  const resolvedId = normalizeDecorationId(decorationId, level ?? 1, isFounder);
   const dims = SIZE_MAP[size] || SIZE_MAP.md;
   const svgUid = useId().replace(/:/g, '');
   const cleanBg =
@@ -284,6 +371,376 @@ export function AvatarDecoration({
 
 function render3DDecorationSvg(id: string, uid = 'g') {
   switch (id) {
+    case 'rank-bronze':
+      return (
+        <div className="relative w-full h-full">
+          {/* Forged Bronze Base Ring & Chevrons */}
+          <svg viewBox="0 0 120 120" className="absolute inset-0 w-full h-full overflow-visible">
+            <defs>
+              <linearGradient id={`rb-ring-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FED7AA" />
+                <stop offset="35%" stopColor="#EA580C" />
+                <stop offset="72%" stopColor="#B45309" />
+                <stop offset="100%" stopColor="#451A03" />
+              </linearGradient>
+              <linearGradient id={`rb-shine-${uid}`} x1="0%" y1="100%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#9A3412" />
+                <stop offset="55%" stopColor="#F59E0B" />
+                <stop offset="100%" stopColor="#FFFBEB" />
+              </linearGradient>
+            </defs>
+            <circle cx="60" cy="60" r="42.5" fill="none" stroke="#9A3412" strokeWidth="6" opacity="0.2" />
+            <circle cx="60" cy="60" r="42" fill="none" stroke={`url(#rb-ring-${uid})`} strokeWidth="3.2" />
+            {/* Top Forged Bronze Shield Chevron */}
+            <path
+              d="M49 19 L60 11 L71 19 L66 23 L60 18.5 L54 23 Z"
+              fill={`url(#rb-shine-${uid})`}
+              stroke="#FED7AA"
+              strokeWidth="1"
+              strokeLinejoin="round"
+            />
+            {/* Bottom Forged Bronze Accent */}
+            <polygon
+              points="60,97 65,103 60,109 55,103"
+              fill={`url(#rb-shine-${uid})`}
+              stroke="#FED7AA"
+              strokeWidth="1"
+            />
+          </svg>
+
+          {/* GPU-Composited Slow Rotating Bronze Orbit */}
+          <div className="absolute inset-0 animate-streak-spin-slow">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <circle
+                cx="60"
+                cy="60"
+                r="45.5"
+                fill="none"
+                stroke="#FDBA74"
+                strokeWidth="1.4"
+                strokeDasharray="14 14 4 14"
+                strokeLinecap="round"
+                opacity="0.85"
+              />
+              <circle cx="60" cy="14.5" r="2.6" fill="#FDBA74" stroke="#78350F" strokeWidth="0.9" />
+              <circle cx="60" cy="105.5" r="2.6" fill="#EA580C" stroke="#FED7AA" strokeWidth="0.9" />
+            </svg>
+          </div>
+        </div>
+      );
+
+    case 'rank-silver':
+      return (
+        <div className="relative w-full h-full">
+          {/* Sterling Silver Base Ring */}
+          <svg viewBox="0 0 120 120" className="absolute inset-0 w-full h-full overflow-visible">
+            <defs>
+              <linearGradient id={`rs-ring-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FFFFFF" />
+                <stop offset="32%" stopColor="#E2E8F0" />
+                <stop offset="68%" stopColor="#94A3B8" />
+                <stop offset="100%" stopColor="#334155" />
+              </linearGradient>
+              <linearGradient id={`rs-gem-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FFFFFF" />
+                <stop offset="50%" stopColor="#BAE6FD" />
+                <stop offset="100%" stopColor="#64748B" />
+              </linearGradient>
+            </defs>
+            <circle cx="60" cy="60" r="42.5" fill="none" stroke="#94A3B8" strokeWidth="7" opacity="0.22" />
+            <circle cx="60" cy="60" r="42" fill="none" stroke={`url(#rs-ring-${uid})`} strokeWidth="3.4" />
+            {/* Side Winged Silver Studs */}
+            <polygon points="14,60 19,56 22,60 19,64" fill={`url(#rs-gem-${uid})`} stroke="#FFFFFF" strokeWidth="0.9" />
+            <polygon points="106,60 101,56 98,60 101,64" fill={`url(#rs-gem-${uid})`} stroke="#FFFFFF" strokeWidth="0.9" />
+          </svg>
+
+          {/* GPU-Composited Forward Segmented Silver Arc */}
+          <div className="absolute inset-0 animate-streak-spin">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <defs>
+                <linearGradient id={`rs-arc-${uid}`} x1="0%" y1="0%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#F8FAFC" />
+                  <stop offset="50%" stopColor="#94A3B8" />
+                  <stop offset="100%" stopColor="#E0F2FE" />
+                </linearGradient>
+              </defs>
+              <circle
+                cx="60"
+                cy="60"
+                r="46"
+                fill="none"
+                stroke={`url(#rs-arc-${uid})`}
+                strokeWidth="2"
+                strokeDasharray="24 10 8 10"
+                strokeLinecap="round"
+              />
+              <circle cx="60" cy="14" r="3" fill="#FFFFFF" stroke="#64748B" strokeWidth="1" />
+            </svg>
+          </div>
+
+          {/* GPU-Composited Counter-Rotating Filigree Track */}
+          <div className="absolute inset-0 animate-streak-spin-rev">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <circle
+                cx="60"
+                cy="60"
+                r="39.5"
+                fill="none"
+                stroke="#E2E8F0"
+                strokeWidth="1.2"
+                strokeDasharray="6 10"
+                opacity="0.8"
+              />
+              <circle cx="20.5" cy="60" r="2.6" fill="#CBD5E1" stroke="#FFFFFF" strokeWidth="0.9" />
+              <circle cx="99.5" cy="60" r="2.6" fill="#CBD5E1" stroke="#FFFFFF" strokeWidth="0.9" />
+            </svg>
+          </div>
+
+          {/* GPU-Composited Pulsing Top Crest & Bottom Crystal */}
+          <div className="absolute inset-0 animate-streak-pulse">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <path
+                d="M47 20 L54 10 L60 15 L66 10 L73 20 Q60 16 47 20 Z"
+                fill="#E2E8F0"
+                stroke="#FFFFFF"
+                strokeWidth="1.1"
+              />
+              <polygon
+                points="60,96 65,103.5 60,111 55,103.5"
+                fill="#E0F2FE"
+                stroke="#FFFFFF"
+                strokeWidth="1.1"
+              />
+            </svg>
+          </div>
+        </div>
+      );
+
+    case 'rank-gold':
+      return (
+        <div className="relative w-full h-full">
+          {/* 24K Sovereign Gold Ring */}
+          <svg viewBox="0 0 120 120" className="absolute inset-0 w-full h-full overflow-visible">
+            <defs>
+              <linearGradient id={`rg-gold-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FFFBEB" />
+                <stop offset="30%" stopColor="#FDE047" />
+                <stop offset="68%" stopColor="#F59E0B" />
+                <stop offset="100%" stopColor="#92400E" />
+              </linearGradient>
+              <radialGradient id={`rg-ruby-${uid}`} cx="35%" cy="30%" r="65%">
+                <stop offset="0%" stopColor="#FFFBEB" />
+                <stop offset="45%" stopColor="#FACC15" />
+                <stop offset="100%" stopColor="#B45309" />
+              </radialGradient>
+            </defs>
+            <circle cx="60" cy="60" r="42.5" fill="none" stroke="#FACC15" strokeWidth="7.5" opacity="0.22" />
+            <circle cx="60" cy="60" r="42" fill="none" stroke={`url(#rg-gold-${uid})`} strokeWidth="3.6" />
+            {/* Side Imperial Laurel Studs */}
+            <path d="M18 48 C12 54, 12 66, 18 72 L21 67 C17 62, 17 58, 21 53 Z" fill={`url(#rg-gold-${uid})`} />
+            <path d="M102 48 C108 54, 108 66, 102 72 L99 67 C103 62, 103 58, 99 53 Z" fill={`url(#rg-gold-${uid})`} />
+          </svg>
+
+          {/* GPU-Composited Radiant Gold Astrolabe Orbit */}
+          <div className="absolute inset-0 animate-streak-spin">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <defs>
+                <linearGradient id={`rg-arc-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#FFFBEB" />
+                  <stop offset="50%" stopColor="#FACC15" />
+                  <stop offset="100%" stopColor="#D97706" />
+                </linearGradient>
+              </defs>
+              <circle
+                cx="60"
+                cy="60"
+                r="46.5"
+                fill="none"
+                stroke={`url(#rg-arc-${uid})`}
+                strokeWidth="2.4"
+                strokeDasharray="22 8 6 8"
+                strokeLinecap="round"
+              />
+              <circle cx="60" cy="13.5" r="3.8" fill={`url(#rg-ruby-${uid})`} stroke="#FFFBEB" strokeWidth="1.1" />
+              <circle cx="60" cy="106.5" r="3.4" fill="#FDE047" stroke="#FFFFFF" strokeWidth="1" />
+            </svg>
+          </div>
+
+          {/* GPU-Composited Inner Counter-Rotating Rune Ring */}
+          <div className="absolute inset-0 animate-streak-spin-rev">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <circle
+                cx="60"
+                cy="60"
+                r="39.5"
+                fill="none"
+                stroke="#FEF08A"
+                strokeWidth="1.3"
+                strokeDasharray="8 10"
+                opacity="0.85"
+              />
+              <circle cx="20.5" cy="60" r="2.8" fill="#FBBF24" stroke="#FFFBEB" strokeWidth="1" />
+              <circle cx="99.5" cy="60" r="2.8" fill="#FBBF24" stroke="#FFFBEB" strokeWidth="1" />
+            </svg>
+          </div>
+
+          {/* GPU-Composited Shimmering Sovereign Diadem & Gem */}
+          <div className="absolute inset-0 animate-streak-shimmer">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <defs>
+                <linearGradient id={`rg-crown-${uid}`} x1="0%" y1="100%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#D97706" />
+                  <stop offset="55%" stopColor="#FACC15" />
+                  <stop offset="100%" stopColor="#FFFBEB" />
+                </linearGradient>
+              </defs>
+              <path
+                d="M42 22 L49 7 L60 15 L71 7 L78 22 Q60 17 42 22 Z"
+                fill={`url(#rg-crown-${uid})`}
+                stroke="#FFFBEB"
+                strokeWidth="1.2"
+              />
+              <polygon points="60,4 64,12 60,19 56,12" fill="#FFFBEB" stroke="#FACC15" strokeWidth="1" />
+              <polygon
+                points="60,94 66,103 60,112 54,103"
+                fill={`url(#rg-crown-${uid})`}
+                stroke="#FFFBEB"
+                strokeWidth="1.2"
+              />
+            </svg>
+          </div>
+        </div>
+      );
+
+    case 'rank-platinum':
+      return (
+        <div className="relative w-full h-full">
+          {/* Luminous Prismatic Platinum Ring */}
+          <svg viewBox="0 0 120 120" className="absolute inset-0 w-full h-full overflow-visible">
+            <defs>
+              <linearGradient id={`rp-alloy-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#FFFFFF" />
+                <stop offset="30%" stopColor="#A5F3FC" />
+                <stop offset="65%" stopColor="#818CF8" />
+                <stop offset="100%" stopColor="#E2E8F0" />
+              </linearGradient>
+              <radialGradient id={`rp-prism-${uid}`} cx="35%" cy="30%" r="70%">
+                <stop offset="0%" stopColor="#FFFFFF" />
+                <stop offset="45%" stopColor="#67E8F9" />
+                <stop offset="100%" stopColor="#4F46E5" />
+              </radialGradient>
+            </defs>
+            <circle cx="60" cy="60" r="42" fill="none" stroke="#38BDF8" strokeWidth="8.5" opacity="0.22" />
+            <circle cx="60" cy="60" r="42" fill="none" stroke={`url(#rp-alloy-${uid})`} strokeWidth="3.8" />
+            <circle
+              cx="60"
+              cy="60"
+              r="39.5"
+              fill="none"
+              stroke="#FFFFFF"
+              strokeWidth="1"
+              strokeDasharray="16 6"
+              opacity="0.85"
+            />
+          </svg>
+
+          {/* GPU-Composited Slow Tilted Crystal Orbit A */}
+          <div className="absolute inset-0 animate-streak-spin-slow">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <defs>
+                <linearGradient id={`rp-orb1-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#FFFFFF" />
+                  <stop offset="50%" stopColor="#38BDF8" />
+                  <stop offset="100%" stopColor="#818CF8" />
+                </linearGradient>
+              </defs>
+              <ellipse
+                cx="60"
+                cy="60"
+                rx="51.5"
+                ry="18"
+                transform="rotate(-24 60 60)"
+                fill="none"
+                stroke={`url(#rp-orb1-${uid})`}
+                strokeWidth="2.3"
+              />
+              <circle cx="13" cy="40" r="4" fill="#A5F3FC" stroke="#FFFFFF" strokeWidth="1.1" />
+              <circle cx="107" cy="80" r="3.6" fill="#C7D2FE" stroke="#FFFFFF" strokeWidth="1" />
+            </svg>
+          </div>
+
+          {/* GPU-Composited Counter-Rotating Crystal Orbit B */}
+          <div className="absolute inset-0 animate-streak-spin-rev">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <ellipse
+                cx="60"
+                cy="60"
+                rx="51.5"
+                ry="18"
+                transform="rotate(24 60 60)"
+                fill="none"
+                stroke="#E0F2FE"
+                strokeWidth="1.7"
+                strokeDasharray="14 8"
+                opacity="0.9"
+              />
+              <polygon points="106,37 110,41 106,45 102,41" fill="#FFFFFF" stroke="#38BDF8" strokeWidth="0.9" />
+            </svg>
+          </div>
+
+          {/* GPU-Composited Shimmering Platinum Paragon Wings & Tiara */}
+          <div className="absolute inset-0 animate-streak-shimmer">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <defs>
+                <linearGradient id={`rp-wing-${uid}`} x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stopColor="#FFFFFF" />
+                  <stop offset="50%" stopColor="#BAE6FD" />
+                  <stop offset="100%" stopColor="#6366F1" />
+                </linearGradient>
+              </defs>
+              {/* Left & Right Platinum Crystal Crest Wings */}
+              <path
+                d="M21 56 C4 46, 3 27, 14 19 C15 28, 21 34, 27 37 C11 39, 7 51, 14 61 C19 59, 23 58, 26 60 Z"
+                fill={`url(#rp-wing-${uid})`}
+                stroke="#FFFFFF"
+                strokeWidth="1.1"
+              />
+              <path
+                d="M99 56 C116 46, 117 27, 106 19 C105 28, 99 34, 93 37 C109 39, 113 51, 106 61 C101 59, 97 58, 94 60 Z"
+                fill={`url(#rp-wing-${uid})`}
+                stroke="#FFFFFF"
+                strokeWidth="1.1"
+              />
+              {/* Top Sovereign Platinum Tiara */}
+              <path
+                d="M41 22 L49 7 L60 15 L71 7 L79 22 Q60 16.5 41 22 Z"
+                fill={`url(#rp-wing-${uid})`}
+                stroke="#FFFFFF"
+                strokeWidth="1.2"
+              />
+            </svg>
+          </div>
+
+          {/* GPU-Composited Faceted Diamond Core Pulse */}
+          <div className="absolute inset-0 animate-streak-pulse">
+            <svg viewBox="0 0 120 120" className="w-full h-full overflow-visible">
+              <polygon
+                points="60,2 65.5,11.5 60,21 54.5,11.5"
+                fill={`url(#rp-prism-${uid})`}
+                stroke="#FFFFFF"
+                strokeWidth="1.2"
+              />
+              <polygon
+                points="60,94 66,104 60,113.5 54,104"
+                fill={`url(#rp-prism-${uid})`}
+                stroke="#FFFFFF"
+                strokeWidth="1.2"
+              />
+            </svg>
+          </div>
+        </div>
+      );
+
     case 'streak-ember':
       return (
         <div className="relative w-full h-full">

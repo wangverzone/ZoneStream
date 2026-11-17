@@ -324,15 +324,45 @@ export const AVATAR_BORDER_STYLES: Record<
     previewColor: 'from-rose-500 via-amber-400 to-red-600',
     premiumOnly: false,
   },
+  'level-auto': {
+    label: 'Auto Skala Level (Bronze → Platinum)',
+    ringClass: 'ring-1 ring-[#E84A18]/50',
+    previewColor: 'from-amber-600 via-yellow-400 to-cyan-400',
+    premiumOnly: false,
+  },
+  'rank-bronze': {
+    label: 'Bronze Vanguard (Lv. 1+)',
+    ringClass: 'ring-1 ring-amber-600/50',
+    previewColor: 'from-orange-300 via-amber-600 to-amber-900',
+    premiumOnly: false,
+  },
+  'rank-silver': {
+    label: 'Silver Sentinel (Lv. 5+)',
+    ringClass: 'ring-1 ring-slate-300/50',
+    previewColor: 'from-white via-slate-300 to-slate-600',
+    premiumOnly: false,
+  },
+  'rank-gold': {
+    label: 'Gold Sovereign (Lv. 15+)',
+    ringClass: 'ring-1 ring-yellow-400/55',
+    previewColor: 'from-amber-200 via-yellow-400 to-amber-700',
+    premiumOnly: false,
+  },
+  'rank-platinum': {
+    label: 'Platinum Paragon (Lv. 30+)',
+    ringClass: 'ring-1 ring-cyan-300/60',
+    previewColor: 'from-white via-cyan-300 to-indigo-500',
+    premiumOnly: false,
+  },
   none: {
     label: 'Polos (Tanpa Dekorasi)',
     ringClass: 'ring-1 ring-white/15',
     previewColor: 'from-slate-600 to-slate-800',
   },
   classic: {
-    label: 'Polos (Tanpa Dekorasi)',
-    ringClass: 'ring-1 ring-white/15',
-    previewColor: 'from-slate-600 to-slate-800',
+    label: 'Auto Skala Level (Bronze → Platinum)',
+    ringClass: 'ring-1 ring-[#E84A18]/50',
+    previewColor: 'from-amber-600 via-yellow-400 to-cyan-400',
   },
 };
 
