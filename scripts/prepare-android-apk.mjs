@@ -3,18 +3,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const rootDir = process.cwd();
-const androidResDir = path.join(rootDir, 'android', 'app', 'src', 'main', 'res');
-const androidManifestPath = path.join(rootDir, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+const androidDir = path.join(rootDir, 'android');
+const androidResDir = path.join(androidDir, 'app', 'src', 'main', 'res');
+const androidManifestPath = path.join(androidDir, 'app', 'src', 'main', 'AndroidManifest.xml');
 
-const sourceIconPath = fs.existsSync(path.join(rootDir, 'public', 'assets', 'aistudio', '1089871178568589499_751994dc.jfif'))
-  ? path.join(rootDir, 'public', 'assets', 'aistudio', '1089871178568589499_751994dc.jfif')
-  : path.join(rootDir, 'public', 'pwa-512x512.png');
-
+const pngIcon512 = path.join(rootDir, 'public', 'pwa-512x512.png');
+const pngIcon192 = path.join(rootDir, 'public', 'pwa-192x192.png');
 const maskableSourcePath = path.join(rootDir, 'public', 'pwa-maskable-512x512.png');
+const jfifIconPath = path.join(rootDir, 'public', 'assets', 'aistudio', '1089871178568589499_751994dc.jfif');
+
+const primaryIconPath = fs.existsSync(pngIcon512)
+  ? pngIcon512
+  : fs.existsSync(jfifIconPath)
+  ? jfifIconPath
+  : pngIcon192;
 
 if (!fs.existsSync(androidResDir)) {
   console.error('Android directory not found. Run "npx cap add android" first.');
   process.exit(1);
+}
+
+// 0. Write local.properties if ANDROID_HOME or ANDROID_SDK_ROOT is set
+const sdkRoot = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || '';
+if (sdkRoot && fs.existsSync(sdkRoot)) {
+  const localPropsPath = path.join(androidDir, 'local.properties');
+  const escapedSdk = sdkRoot.replace(/\\/g, '\\\\');
+  fs.writeFileSync(localPropsPath, `sdk.dir=${escapedSdk}\n`, 'utf8');
+  console.log(`Configured android/local.properties -> ${sdkRoot}`);
 }
 
 // 1. Update app_name & title_activity_main to ZoneStream
@@ -57,6 +72,13 @@ try {
   hasConvert = false;
 }
 
+const copyFallbackIcons = (outLauncher, outRound, outFg) => {
+  const fallbackPng = fs.existsSync(pngIcon512) ? pngIcon512 : pngIcon192;
+  fs.copyFileSync(fallbackPng, outLauncher);
+  fs.copyFileSync(fallbackPng, outRound);
+  fs.copyFileSync(fs.existsSync(maskableSourcePath) ? maskableSourcePath : fallbackPng, outFg);
+};
+
 for (const d of densities) {
   const dir = path.join(androidResDir, d.folder);
   fs.mkdirSync(dir, { recursive: true });
@@ -66,21 +88,25 @@ for (const d of densities) {
   const outFg = path.join(dir, 'ic_launcher_foreground.png');
 
   if (hasConvert) {
-    execSync(
-      `convert "${sourceIconPath}" -resize ${d.launcher}x${d.launcher}^ -gravity center -extent ${d.launcher}x${d.launcher} -strip "${outLauncher}"`
-    );
-    execSync(
-      `convert "${sourceIconPath}" -resize ${d.launcher}x${d.launcher}^ -gravity center -extent ${d.launcher}x${d.launcher} -strip "${outRound}"`
-    );
-    const fgSource = fs.existsSync(maskableSourcePath) ? maskableSourcePath : sourceIconPath;
-    execSync(
-      `convert "${fgSource}" -resize ${d.foreground}x${d.foreground}^ -gravity center -extent ${d.foreground}x${d.foreground} -strip "${outFg}"`
-    );
+    try {
+      execSync(
+        `convert "${primaryIconPath}" -resize ${d.launcher}x${d.launcher}^ -gravity center -extent ${d.launcher}x${d.launcher} -strip "${outLauncher}"`,
+        { stdio: 'ignore' }
+      );
+      execSync(
+        `convert "${primaryIconPath}" -resize ${d.launcher}x${d.launcher}^ -gravity center -extent ${d.launcher}x${d.launcher} -strip "${outRound}"`,
+        { stdio: 'ignore' }
+      );
+      const fgSource = fs.existsSync(maskableSourcePath) ? maskableSourcePath : primaryIconPath;
+      execSync(
+        `convert "${fgSource}" -resize ${d.foreground}x${d.foreground}^ -gravity center -extent ${d.foreground}x${d.foreground} -strip "${outFg}"`,
+        { stdio: 'ignore' }
+      );
+    } catch {
+      copyFallbackIcons(outLauncher, outRound, outFg);
+    }
   } else {
-    const fallbackPng = path.join(rootDir, 'public', 'pwa-192x192.png');
-    fs.copyFileSync(fallbackPng, outLauncher);
-    fs.copyFileSync(fallbackPng, outRound);
-    fs.copyFileSync(fs.existsSync(maskableSourcePath) ? maskableSourcePath : fallbackPng, outFg);
+    copyFallbackIcons(outLauncher, outRound, outFg);
   }
 }
 console.log('Generated ZoneStream launcher icons for all Android densities');
