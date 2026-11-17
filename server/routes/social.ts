@@ -453,7 +453,13 @@ router.post('/profile/:uid/like', requireAuth, async (req: AuthenticatedRequest,
     let finalCharisma = 0;
 
     const updated = await updateUserByUid(targetUid, (current) => {
-      const prevLikedBy = Array.isArray(current.likedBy) ? [...current.likedBy] : [];
+      const prevLikedBy = Array.isArray(current.likedBy)
+        ? Array.from(
+            new Set(
+              current.likedBy.filter((id) => typeof id === 'string' && id.trim().length > 0)
+            )
+          )
+        : [];
       const alreadyLiked = prevLikedBy.includes(viewerUid);
       const nextLikedBy = alreadyLiked
         ? prevLikedBy.filter((id) => id !== viewerUid)
@@ -462,8 +468,15 @@ router.post('/profile/:uid/like', requireAuth, async (req: AuthenticatedRequest,
 
       const isTargetFounder =
         String(current.email || '').toLowerCase() === 'wanglin72kk@gmail.com' ||
-        current.role === 'founder';
-      finalCharisma = isTargetFounder ? 9999 + nextLikedBy.length : nextLikedBy.length;
+        current.role === 'founder' ||
+        current.uid === '00000';
+
+      // Preserve any bonus/base charisma beyond previous likedBy count while applying the +1 / -1 delta
+      const prevBaseBonus = isTargetFounder
+        ? 9999
+        : Math.max(0, Math.floor(Number(current.charisma || 0)) - prevLikedBy.length);
+
+      finalCharisma = prevBaseBonus + nextLikedBy.length;
 
       return {
         ...current,
@@ -480,6 +493,7 @@ router.post('/profile/:uid/like', requireAuth, async (req: AuthenticatedRequest,
       ok: true,
       charisma: finalCharisma,
       liked,
+      likesCount: Array.isArray(updated.likedBy) ? updated.likedBy.length : 0,
       message: liked
         ? 'Berhasil menyukai profil (+1 Charisma ♥)!'
         : 'Suka pada profil dibatalkan.',

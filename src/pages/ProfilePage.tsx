@@ -207,6 +207,7 @@ export function ProfilePage() {
     register,
     logout,
     refreshUser,
+    applyUserSnapshot,
     updateProfile,
     toggleFounderAdPreview,
     getLocalHistory,
@@ -537,6 +538,7 @@ export function ProfilePage() {
           setPaymentError(null);
           setProofStatusMsg(null);
           playSoundEffect('levelUp');
+          if (json.user) applyUserSnapshot(json.user);
           await refreshUser();
         } else if (json.verificationStage === 'verifying_proof') {
           setActiveTx((prev) =>
@@ -606,6 +608,7 @@ export function ProfilePage() {
         );
         setProofStatusMsg(null);
         playSoundEffect('levelUp');
+        if (json.user) applyUserSnapshot(json.user);
         await refreshUser();
       } else {
         setActiveTx((prev) =>
@@ -704,6 +707,7 @@ export function ProfilePage() {
         );
         setProofStatusMsg(null);
         playSoundEffect('levelUp');
+        if (json.user) applyUserSnapshot(json.user);
         await refreshUser();
       } else {
         setPaymentError(json.error || 'Gagal memverifikasi pembayaran');

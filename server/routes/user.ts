@@ -199,7 +199,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Login / Register with Firebase Google Auth ID Token
+// Login / Register with Firebase Google Auth ID Token or Native Android Google OAuth ID Token
 router.post('/firebase-google', async (req, res) => {
   try {
     const { idToken } = req.body || {};
@@ -207,25 +207,61 @@ router.post('/firebase-google', async (req, res) => {
       return res.status(400).json({ error: 'Token Google Firebase tidak ditemukan.' });
     }
 
-    const verifyResp = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_WEB_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ idToken }),
-      }
-    );
+    let verifiedEmail = '';
+    let verifiedName: string | undefined;
+    let verifiedPhoto: string | undefined;
 
-    const verifyJson = (await verifyResp.json()) as any;
-    const fbUser = verifyJson?.users?.[0];
-    if (!verifyResp.ok || !fbUser?.email || fbUser.emailVerified === false) {
+    // 1. Primary verification via Firebase IdentityToolkit accounts:lookup
+    try {
+      const verifyResp = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_WEB_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken }),
+        }
+      );
+
+      const verifyJson = (await verifyResp.json()) as any;
+      const fbUser = verifyJson?.users?.[0];
+      if (verifyResp.ok && fbUser?.email && fbUser.emailVerified !== false) {
+        verifiedEmail = String(fbUser.email);
+        verifiedName = fbUser.displayName ? String(fbUser.displayName) : undefined;
+        verifiedPhoto = fbUser.photoUrl ? String(fbUser.photoUrl) : undefined;
+      }
+    } catch {
+      // Fall through to Google OAuth tokeninfo verification
+    }
+
+    // 2. Fallback verification via Google OAuth2 tokeninfo (for Native Android APK Google ID Tokens)
+    if (!verifiedEmail) {
+      try {
+        const googleResp = await fetch(
+          `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`
+        );
+        const googleJson = (await googleResp.json()) as any;
+        if (
+          googleResp.ok &&
+          googleJson?.email &&
+          String(googleJson.email_verified) !== 'false'
+        ) {
+          verifiedEmail = String(googleJson.email);
+          verifiedName = googleJson.name ? String(googleJson.name) : undefined;
+          verifiedPhoto = googleJson.picture ? String(googleJson.picture) : undefined;
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (!verifiedEmail) {
       return res.status(401).json({ error: 'Verifikasi akun Google Firebase gagal.' });
     }
 
     const user = await findOrCreateGoogleUser({
-      email: String(fbUser.email),
-      name: fbUser.displayName ? String(fbUser.displayName) : undefined,
-      photoUrl: fbUser.photoUrl ? String(fbUser.photoUrl) : undefined,
+      email: verifiedEmail,
+      name: verifiedName,
+      photoUrl: verifiedPhoto,
     });
 
     if (user.isBanned && user.role !== 'founder') {
@@ -995,7 +1031,6 @@ router.post('/history', requireAuth, async (req: AuthenticatedRequest, res) => {
           (current.totalWatchMinutes || 0) + 5,
           ((current.totalEpisodesWatched || 0) + 1) * 18
         ),
-        charisma: current.role === 'founder' ? Math.max(9999, current.charisma ?? 9999) : (current.charisma ?? 0),
         watchHistory: [entry, ...filtered].slice(0, 30),
       };
     });

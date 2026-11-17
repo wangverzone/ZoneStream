@@ -1029,7 +1029,8 @@ router.post('/webhook', async (req, res) => {
 
     const updatedUser = await activatePremiumFromTransaction(
       tx,
-      liveDetail.txnId || txnId || orderId
+      liveDetail.txnId || txnId || orderId,
+      'pakasir_webhook'
     );
     return res.status(200).json({
       ok: true,

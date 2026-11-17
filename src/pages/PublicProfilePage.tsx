@@ -135,6 +135,11 @@ export function PublicProfilePage() {
         setProfile((prev) =>
           prev ? { ...prev, charisma: json.charisma, hasLiked: Boolean(json.liked) } : prev
         );
+        window.dispatchEvent(
+          new CustomEvent('zonestream:charisma-updated', {
+            detail: { uid: profile.uid, charisma: json.charisma, liked: Boolean(json.liked) },
+          })
+        );
         showToast(json.message || 'Berhasil menyukai profil! +1 Charisma (♥)');
       } else {
         showToast(json.error || 'Gagal menyukai profil');

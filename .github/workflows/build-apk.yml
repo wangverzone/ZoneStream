@@ -84,8 +84,8 @@ jobs:
           if [ ! -d "android" ]; then
             npx cap add android
           fi
-          node scripts/prepare-android-apk.mjs
           npx cap sync android
+          node scripts/prepare-android-apk.mjs
 
       - name: Compile ZoneStream.apk
         run: |

@@ -2,10 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Bookmark,
   CalendarDays,
+  Clock,
   Compass,
   Home,
+  Layers,
   MessageCircle,
+  Settings,
   ShieldAlert,
+  Trophy,
   User as UserIcon,
   Users,
   X,
@@ -39,6 +43,7 @@ export function Layout({
   const { lang, currentLanguageOption, changeLanguage } = useAppLanguage();
   const t = UI_TRANSLATIONS[lang] || UI_TRANSLATIONS.id;
   const [unreadChat, setUnreadChat] = useState(0);
+  const [showQuickGearMenu, setShowQuickGearMenu] = useState(false);
   const prevUnreadChatRef = useRef<{ uid: string; count: number } | null>(null);
 
   const desktopNavItems = [
@@ -50,11 +55,11 @@ export function Layout({
   ];
 
   const mobileNavItems = [
-    { to: '/', label: t.navHome, icon: Home },
-    { to: '/catalog', label: t.navCatalog, icon: Compass },
-    { to: '/library', label: t.navLibrary, icon: Bookmark },
-    { to: '/community', label: t.navCommunity, icon: Users },
-    { to: '/chat', label: t.navChat, icon: MessageCircle },
+    { to: '/', label: 'Home', icon: Home, isAvatar: false },
+    { to: '/schedule', label: 'Jadwal', icon: CalendarDays, isAvatar: false },
+    { to: '/library', label: 'Riwayat', icon: Clock, isAvatar: false },
+    { to: '/catalog', label: 'Katalog', icon: Layers, isAvatar: false },
+    { to: '/profile', label: 'Profil', icon: UserIcon, isAvatar: true },
   ];
 
   const cycleLanguage = () => {
@@ -62,6 +67,10 @@ export function Layout({
     const next = APP_LANGUAGES[(idx + 1) % APP_LANGUAGES.length];
     changeLanguage(next.code);
   };
+
+  useEffect(() => {
+    setShowQuickGearMenu(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     if (!user) {
@@ -116,15 +125,15 @@ export function Layout({
   const showMobileTopSearchBar =
     !hideBottomNav &&
     location.pathname !== '/' &&
-    !location.pathname.startsWith('/chat');
+    !location.pathname.startsWith('/chat') &&
+    !location.pathname.startsWith('/profile');
 
   return (
-    <div className="relative min-h-screen bg-transparent text-slate-900 dark:text-[#F4F5F7] flex flex-col overflow-x-clip transition-colors duration-200">
-      {/* Global GPU-Composited Photo / Video / Motion Background */}
+    <div className="relative min-h-screen bg-[#0D0E12] text-[#F4F5F7] flex flex-col overflow-x-clip transition-colors duration-200">
       <GlobalBackdropLayer />
       <OfflineIndicator />
 
-      {/* Real-time Ban Alert Banner (shown anywhere if active session was just banned) */}
+      {/* Real-time Ban Alert Banner */}
       {!user && authError && authError.toLowerCase().includes('dibanned') && (
         <div
           role="alert"
@@ -146,15 +155,15 @@ export function Layout({
       )}
 
       {/* Desktop Top Navigation Bar */}
-      <header className="hidden lg:flex sticky top-0 z-40 items-center justify-between gap-3 xl:gap-6 px-4 xl:px-8 h-16 bg-white/90 dark:bg-[#090A0E]/85 backdrop-blur-xl border-b border-slate-200 dark:border-white/[0.06] transition-colors">
+      <header className="hidden lg:flex sticky top-0 z-40 items-center justify-between gap-3 xl:gap-6 px-4 xl:px-8 h-16 bg-[#0D0E12]/90 backdrop-blur-xl border-b border-white/[0.06] transition-colors">
         <Link
           to="/"
-          className="flex items-center gap-2 xl:gap-2.5 text-base xl:text-lg font-extrabold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0"
+          className="flex items-center gap-2 xl:gap-2.5 text-base xl:text-lg font-extrabold tracking-tight text-white whitespace-nowrap shrink-0"
         >
           <img
             src="/assets/aistudio/1089871178568589499_751994dc.jfif"
             alt="ZoneStream Logo"
-            className="w-8 h-8 xl:w-9 xl:h-9 rounded-xl object-cover ring-2 ring-[#E84A18]/80 shadow-lg shadow-[#E84A18]/25"
+            className="w-8 h-8 xl:w-9 xl:h-9 rounded-xl object-cover ring-2 ring-[#2E90FA]/80 shadow-lg"
           />
           <span>ZoneStream</span>
         </Link>
@@ -168,19 +177,17 @@ export function Layout({
                 key={item.to}
                 to={item.to}
                 className={`whitespace-nowrap shrink-0 py-1.5 transition-colors relative inline-flex items-center gap-1.5 ${
-                  active
-                    ? 'text-[#E84A18] font-bold'
-                    : 'text-slate-600 hover:text-slate-900 dark:text-[#9CA3AF] dark:hover:text-white'
+                  active ? 'text-[#2E90FA] font-bold' : 'text-[#9CA3AF] hover:text-white'
                 }`}
               >
                 <span>{item.label}</span>
                 {showUnread && (
-                  <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#25D366] text-[#0B141A] text-[10px] font-extrabold flex items-center justify-center font-mono-tabular">
+                  <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center font-mono-tabular">
                     {unreadChat > 99 ? '99+' : unreadChat}
                   </span>
                 )}
                 {active && (
-                  <span className="absolute inset-x-0 -bottom-[19px] h-0.5 bg-[#E84A18] rounded-full" />
+                  <span className="absolute inset-x-0 -bottom-[19px] h-0.5 bg-[#2E90FA] rounded-full" />
                 )}
               </Link>
             );
@@ -200,7 +207,7 @@ export function Layout({
             type="button"
             onClick={cycleLanguage}
             title={`Bahasa: ${currentLanguageOption.label} (Klik untuk ganti)`}
-            className="h-10 px-2 xl:px-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-gray-200 inline-flex items-center gap-1.5 transition-colors shrink-0"
+            className="h-10 px-2 xl:px-2.5 rounded-xl bg-[#161820] hover:bg-[#1E212B] border border-white/[0.08] text-xs font-bold text-gray-200 inline-flex items-center gap-1.5 transition-colors shrink-0"
           >
             <CountryFlagBadge countryCode={currentLanguageOption.countryCode} size="xs" />
             <span className="uppercase">{currentLanguageOption.code}</span>
@@ -212,8 +219,8 @@ export function Layout({
             title="Watchlist & Riwayat"
             className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-colors shrink-0 ${
               isActive('/library')
-                ? 'bg-[#E84A18]/15 border-[#E84A18]/40 text-[#E84A18]'
-                : 'bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-gray-300'
+                ? 'bg-[#2E90FA]/15 border-[#2E90FA]/40 text-[#2E90FA]'
+                : 'bg-[#161820] hover:bg-[#1E212B] border-white/[0.08] text-gray-300'
             }`}
           >
             <Bookmark className="w-4 h-4" />
@@ -226,7 +233,7 @@ export function Layout({
 
           <Link
             to="/profile"
-            className="flex items-center gap-2 py-1.5 px-2 xl:px-3 rounded-xl bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border border-slate-200 dark:border-white/[0.08] transition-colors whitespace-nowrap shrink-0"
+            className="flex items-center gap-2 py-1.5 px-2 xl:px-3 rounded-xl bg-[#161820] hover:bg-[#1E212B] border border-white/[0.08] transition-colors whitespace-nowrap shrink-0"
           >
             <AvatarDecoration
               src={user?.photoUrl}
@@ -236,7 +243,7 @@ export function Layout({
               isFounder={user?.role === 'founder'}
               size="xs"
             />
-            <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1 xl:gap-1.5">
+            <span className="text-xs font-bold text-white flex items-center gap-1 xl:gap-1.5">
               <span className="max-w-[68px] xl:max-w-[115px] truncate">
                 {user ? user.name : 'Masuk Akun'}
               </span>
@@ -256,52 +263,26 @@ export function Layout({
         </div>
       </header>
 
-      {/* Mobile / Tablet Compact Top Search Header (non-sticky to preserve mobile viewport) */}
+      {/* Mobile Compact Header on Secondary Pages */}
       {showMobileTopSearchBar && (
-        <header className="lg:hidden relative z-30 flex items-center gap-2 sm:gap-2.5 px-3 sm:px-6 pt-3 pb-1">
+        <header className="lg:hidden relative z-30 flex items-center gap-2.5 px-3.5 pt-3 pb-1">
           <Link
             to="/"
             aria-label="Beranda ZoneStream"
-            className="shrink-0 min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl overflow-hidden ring-1 ring-[#E84A18]/60"
+            className="shrink-0 w-10 h-10 flex items-center justify-center rounded-xl overflow-hidden border border-white/10 bg-[#161820]"
           >
             <img
               src="/assets/aistudio/1089871178568589499_751994dc.jfif"
               alt="ZoneStream"
-              className="w-10 h-10 object-cover"
+              className="w-full h-full object-cover"
             />
           </Link>
           <HeaderSearch
             className="flex-1 min-w-0"
-            placeholder="Cari judul anime / donghua..."
-            dropdownClassName="-left-12 -right-12 sm:left-0 sm:right-0"
+            placeholder="Cari Anime Di Sini..."
+            dropdownClassName="-left-10 -right-10 sm:left-0 sm:right-0"
           />
           <NotificationBell compact />
-          <PWAInstallButton variant="compact" />
-          <BackdropToggle compact />
-          <ThemeToggle compact />
-          <Link
-            to="/profile"
-            aria-label={user ? user.name : 'Masuk Akun'}
-            title={user ? user.name : 'Masuk Akun'}
-            className={`shrink-0 h-9 w-9 sm:h-10 sm:w-10 rounded-xl border flex items-center justify-center transition-colors ${
-              isActive('/profile')
-                ? 'bg-[#E84A18]/15 border-[#E84A18]/50'
-                : 'bg-white dark:bg-[#13151C] border-slate-200 dark:border-white/[0.08] hover:border-[#E84A18]/40'
-            }`}
-          >
-            {user ? (
-              <AvatarDecoration
-                src={user.photoUrl}
-                alt={user.name}
-                decorationId={user.activeBorder}
-                level={user.level}
-                isFounder={user.role === 'founder'}
-                size="xs"
-              />
-            ) : (
-              <UserIcon className="w-4 h-4 text-slate-600 dark:text-gray-300" />
-            )}
-          </Link>
         </header>
       )}
 
@@ -314,57 +295,143 @@ export function Layout({
         {children}
       </main>
 
-      {/* Mobile / Tablet Fixed Bottom Navigation */}
+      {/* Floating White Gear FAB (Matches Reference Screenshot) */}
+      {!hideBottomNav && !location.pathname.startsWith('/chat') && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowQuickGearMenu((prev) => !prev)}
+            aria-label="Menu Cepat & Pengaturan"
+            className="lg:hidden fixed right-4 bottom-20 z-40 w-13 h-13 rounded-full bg-white text-[#0E1015] shadow-[0_10px_30px_rgba(0,0,0,0.65)] flex items-center justify-center active:scale-95 transition-transform"
+          >
+            <Settings
+              className={`w-6 h-6 stroke-[2.2] transition-transform duration-300 ${
+                showQuickGearMenu ? 'rotate-90' : ''
+              }`}
+            />
+            {unreadChat > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center border-2 border-[#0D0E12]">
+                {unreadChat > 9 ? '9+' : unreadChat}
+              </span>
+            )}
+          </button>
+
+          {showQuickGearMenu && (
+            <div
+              className="lg:hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end justify-center p-3 pb-20"
+              onClick={() => setShowQuickGearMenu(false)}
+            >
+              <div
+                className="w-full max-w-md rounded-3xl bg-[#161820] border border-white/10 p-4 shadow-2xl space-y-3"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
+                  <span className="text-sm font-extrabold text-white">Menu Pintasan & Pengaturan</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowQuickGearMenu(false)}
+                    className="w-8 h-8 rounded-full bg-white/[0.07] text-gray-300 flex items-center justify-center"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <Link
+                    to="/chat"
+                    onClick={() => setShowQuickGearMenu(false)}
+                    className="p-3 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center relative"
+                  >
+                    <MessageCircle className="w-5 h-5 text-sky-400" />
+                    <span className="text-[11px] font-bold text-white">Pesan Chat</span>
+                    {unreadChat > 0 && (
+                      <span className="absolute top-2 right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center">
+                        {unreadChat}
+                      </span>
+                    )}
+                  </Link>
+                  <Link
+                    to="/leaderboard"
+                    onClick={() => setShowQuickGearMenu(false)}
+                    className="p-3 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center"
+                  >
+                    <Trophy className="w-5 h-5 text-amber-400" />
+                    <span className="text-[11px] font-bold text-white">Top Rank</span>
+                  </Link>
+                  <Link
+                    to="/community"
+                    onClick={() => setShowQuickGearMenu(false)}
+                    className="p-3 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center"
+                  >
+                    <Users className="w-5 h-5 text-emerald-400" />
+                    <span className="text-[11px] font-bold text-white">Cari User</span>
+                  </Link>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <div className="flex items-center gap-2">
+                    <ThemeToggle compact />
+                    <BackdropToggle compact />
+                    <TelegramCsButton />
+                    <PWAInstallButton variant="compact" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={cycleLanguage}
+                    className="h-9 px-3 rounded-xl bg-[#1E212B] border border-white/[0.08] text-xs font-bold text-white inline-flex items-center gap-1.5"
+                  >
+                    <CountryFlagBadge countryCode={currentLanguageOption.countryCode} size="xs" />
+                    <span className="uppercase">{currentLanguageOption.code}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Mobile / Tablet Fixed Bottom Navigation (Clean 5-Icon Bar Matching Screenshot) */}
       {!hideBottomNav && (
         <nav
           aria-label="Navigasi utama"
-          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#0F1117]/95 backdrop-blur-xl border-t border-slate-200 dark:border-white/[0.08] shadow-[0_-8px_30px_rgba(0,0,0,0.08)] dark:shadow-[0_-10px_32px_rgba(0,0,0,0.45)] pb-[env(safe-area-inset-bottom)] transition-colors"
+          className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0D0E12]/98 backdrop-blur-xl border-t border-white/[0.06] pb-[env(safe-area-inset-bottom)]"
         >
-          <div className="grid grid-cols-5 items-center h-16 max-w-lg mx-auto px-1">
+          <div className="grid grid-cols-5 items-center h-16 max-w-lg mx-auto px-2">
             {mobileNavItems.map((item) => {
               const active = isActive(item.to);
               const Icon = item.icon;
-              const showUnread = item.to === '/chat' && unreadChat > 0;
               return (
                 <Link
                   key={item.to}
                   to={item.to}
                   aria-current={active ? 'page' : undefined}
-                  className="relative flex flex-col items-center justify-center min-h-[48px] h-full rounded-xl active:scale-95 transition-all"
+                  className="relative flex flex-col items-center justify-center min-h-[48px] h-full active:scale-95 transition-all"
                 >
-                  {active && (
-                    <>
-                      <span
-                        aria-hidden="true"
-                        className="absolute top-0 inset-x-4 h-[2.5px] rounded-b-full bg-[#E84A18]"
-                      />
-                      <span
-                        aria-hidden="true"
-                        className="absolute inset-x-2.5 top-0 h-10 rounded-b-2xl bg-gradient-to-b from-[#E84A18]/18 to-transparent pointer-events-none"
-                      />
-                    </>
-                  )}
-                  <div className="relative">
-                    <Icon
-                      className={`w-5 h-5 transition-colors ${
-                        active ? 'text-[#E84A18]' : 'text-slate-500 dark:text-[#6E7480]'
+                  {item.isAvatar ? (
+                    <div
+                      className={`w-7 h-7 rounded-full overflow-hidden p-[1.5px] transition-all ${
+                        active ? 'ring-2 ring-white' : 'ring-1 ring-white/35 opacity-85'
                       }`}
-                    />
-                    {showUnread && (
-                      <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 rounded-full bg-[#25D366] text-[#0B141A] text-[9px] font-extrabold flex items-center justify-center font-mono-tabular">
-                        {unreadChat > 9 ? '9+' : unreadChat}
+                    >
+                      <img
+                        src={user?.photoUrl || '/assets/aistudio/1089871178568589499_751994dc.jfif'}
+                        alt={user?.name || 'Profil'}
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full rounded-full object-cover"
+                      />
+                    </div>
+                  ) : active ? (
+                    <>
+                      <span className="px-4 py-1 rounded-full bg-[#2E303E] text-white flex items-center justify-center">
+                        <Icon className="w-5 h-5" />
                       </span>
-                    )}
-                  </div>
-                  <span
-                    className={`text-[10px] mt-1 tracking-tight truncate max-w-full px-1 ${
-                      active
-                        ? 'text-[#E84A18] font-bold'
-                        : 'text-slate-500 dark:text-[#6E7480] font-medium'
-                    }`}
-                  >
-                    {item.label}
-                  </span>
+                      <span className="text-[11px] font-bold text-white mt-0.5 leading-none">
+                        {item.label}
+                      </span>
+                    </>
+                  ) : (
+                    <Icon className="w-5 h-5 text-gray-300/85 hover:text-white transition-colors" />
+                  )}
                 </Link>
               );
             })}

@@ -26,6 +26,8 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { VerifiedBadge } from '../components/VerifiedBadge';
+import { AvatarDecoration } from '../components/AvatarDecoration';
+import { StatusEmojiBadge } from '../components/VipEmojis';
 import { AvatarWithBadges, ClanLeaderSvgEmblem, TopRankSvgEmblem } from '../components/AvatarBadges';
 import {
   acceptClanInvite,
@@ -69,7 +71,7 @@ function getToken(): string {
 }
 
 export function LeaderboardPage() {
-  const { user, refreshUser, lastClanInviteResult, clearLastClanInviteResult } = useAuth();
+  const { user, refreshUser, applyUserSnapshot, lastClanInviteResult, clearLastClanInviteResult } = useAuth();
   const navigate = useNavigate();
   const { inviteCode: routeInviteCode } = useParams<{ inviteCode?: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -130,9 +132,11 @@ export function LeaderboardPage() {
       if (usrJson.ok && Array.isArray(usrJson.users)) {
         mappedUsers = usrJson.users.map((u: any) => {
           const isMe = Boolean(user && u.uid === user.uid);
-          const isFounder = u.role === 'founder';
+          const isFounder = u.role === 'founder' || u.uid === '00000';
           const userLevel = isFounder ? 999999 : (u.level || 1);
-          const userCharisma = isFounder ? Math.max(9999, Number(u.charisma ?? 9999)) : Number(u.charisma ?? 0);
+          const userCharisma = isFounder
+            ? Math.max(9999, Number(u.charisma ?? 9999))
+            : Math.max(0, Number(u.charisma ?? 0));
           const watched = Number(u.totalEpisodesWatched || 0);
           return {
             uid: u.uid,
@@ -150,6 +154,10 @@ export function LeaderboardPage() {
             topRank: u.topRank || null,
             topCategory: u.topCategory || null,
             avatar: u.photoUrl || defaultAvatarImg,
+            activeBorder: u.activeBorder || 'classic',
+            profileBgColor: u.profileBgColor || '',
+            statusEmoji: u.statusEmoji || '',
+            isOnline: Boolean(u.isOnline || isMe),
             isMe,
             isPremium: Boolean(u.isPremium || isFounder),
             activeBadge: u.activeBadge || (isFounder ? 'Verified Founder' : 'Member'),
@@ -160,22 +168,38 @@ export function LeaderboardPage() {
 
       if (user) {
         const uAny = user as any;
-        const isFounder = user.email === 'wanglin72kk@gmail.com' || user.role === 'founder';
+        const isFounder =
+          user.email === 'wanglin72kk@gmail.com' ||
+          user.role === 'founder' ||
+          user.uid === '00000';
         const myIndex = mappedUsers.findIndex((u) => u.uid === user.uid);
         if (myIndex >= 0) {
+          const dbCharisma = mappedUsers[myIndex].charisma;
           mappedUsers[myIndex] = {
             ...mappedUsers[myIndex],
             name: user.name || mappedUsers[myIndex].name,
             level: isFounder ? 999999 : (user.level || mappedUsers[myIndex].level || 1),
             exp: user.exp ?? mappedUsers[myIndex].exp ?? 0,
-            charisma: isFounder
-              ? Math.max(9999, Number(uAny.charisma ?? mappedUsers[myIndex].charisma ?? 9999))
-              : Number(uAny.charisma ?? mappedUsers[myIndex].charisma ?? 0),
-            episodesWatched: Number(uAny.totalEpisodesWatched ?? mappedUsers[myIndex].episodesWatched ?? 0),
-            hours: `${Math.round((Number(uAny.totalEpisodesWatched ?? mappedUsers[myIndex].episodesWatched ?? 0) * 24) / 60)} Jam`,
+            // Preserve the actual database count returned by /api/social/leaderboard
+            charisma: dbCharisma,
+            episodesWatched: Number(
+              mappedUsers[myIndex].episodesWatched || uAny.totalEpisodesWatched || 0
+            ),
+            hours: `${Math.round(
+              (Number(mappedUsers[myIndex].episodesWatched || uAny.totalEpisodesWatched || 0) *
+                24) /
+                60
+            )} Jam`,
             avatar: user.photoUrl || mappedUsers[myIndex].avatar || defaultAvatarImg,
+            activeBorder: user.activeBorder || mappedUsers[myIndex].activeBorder || 'classic',
+            profileBgColor: user.profileBgColor || mappedUsers[myIndex].profileBgColor || '',
+            statusEmoji: user.statusEmoji || mappedUsers[myIndex].statusEmoji || '',
+            isOnline: true,
             isMe: true,
           };
+          if (Number(user.charisma ?? -1) !== dbCharisma) {
+            applyUserSnapshot({ ...user, charisma: dbCharisma });
+          }
         } else {
           const watched = Number(uAny.totalEpisodesWatched || 0);
           mappedUsers.push({
@@ -184,7 +208,9 @@ export function LeaderboardPage() {
             username: user.username,
             level: isFounder ? 999999 : (user.level || 1),
             exp: user.exp || 0,
-            charisma: isFounder ? Math.max(9999, Number(uAny.charisma ?? 9999)) : Number(uAny.charisma ?? 0),
+            charisma: isFounder
+              ? Math.max(9999, Number(uAny.charisma ?? 9999))
+              : Math.max(0, Number(uAny.charisma ?? 0)),
             episodesWatched: watched,
             hours: `${Math.round((watched * 24) / 60)} Jam`,
             clan: '',
@@ -194,6 +220,10 @@ export function LeaderboardPage() {
             topRank: null,
             topCategory: null,
             avatar: user.photoUrl || defaultAvatarImg,
+            activeBorder: user.activeBorder || 'classic',
+            profileBgColor: user.profileBgColor || '',
+            statusEmoji: user.statusEmoji || '',
+            isOnline: true,
             isMe: true,
             isPremium: Boolean(user.isPremium || isFounder),
             activeBadge: user.activeBadge || (isFounder ? 'Verified Founder' : 'Member'),
@@ -212,11 +242,11 @@ export function LeaderboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, applyUserSnapshot]);
 
   useEffect(() => {
     void loadData();
-    const intervalMs = activeTab === 'clans' ? 4000 : 12000;
+    const intervalMs = activeTab === 'clans' ? 4000 : 8000;
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible') {
         void loadData();
@@ -227,10 +257,21 @@ export function LeaderboardPage() {
         void loadData();
       }
     };
+    const onCharismaUpdated = (e: Event) => {
+      const detail = (e as CustomEvent<{ uid?: string; charisma?: number }>).detail;
+      if (detail?.uid && typeof detail.charisma === 'number') {
+        setRealUsers((prev) =>
+          prev.map((u) => (u.uid === detail.uid ? { ...u, charisma: detail.charisma } : u))
+        );
+      }
+      void loadData();
+    };
     document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('zonestream:charisma-updated', onCharismaUpdated);
     return () => {
       clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('zonestream:charisma-updated', onCharismaUpdated);
     };
   }, [loadData, activeTab]);
 
@@ -874,23 +915,37 @@ export function LeaderboardPage() {
                             size="lg"
                             popoverAlign="left"
                           >
-                            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full p-0.5 bg-gradient-to-tr from-cyan-400 to-purple-500 shadow-lg shadow-purple-500/30">
-                              <img
-                                src={topCharismaUsers[1].avatar}
-                                alt={topCharismaUsers[1].name}
-                                referrerPolicy="no-referrer"
-                                className="w-full h-full rounded-full object-cover"
-                              />
-                            </div>
+                            <AvatarDecoration
+                              src={topCharismaUsers[1].avatar}
+                              alt={topCharismaUsers[1].name}
+                              decorationId={topCharismaUsers[1].activeBorder}
+                              bgColor={topCharismaUsers[1].profileBgColor}
+                              level={topCharismaUsers[1].level}
+                              isFounder={topCharismaUsers[1].role === 'founder'}
+                              size="lg"
+                            >
+                              {topCharismaUsers[1].isOnline && (
+                                <span className="absolute top-0 right-0 z-30 w-3 h-3 rounded-full bg-emerald-400 ring-2 ring-[#181522]" />
+                              )}
+                            </AvatarDecoration>
                           </AvatarWithBadges>
-                          <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-300 text-slate-900 text-xs font-extrabold flex items-center justify-center shadow z-20">
+                          <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-300 text-slate-900 text-xs font-extrabold flex items-center justify-center shadow z-30">
                             2
                           </span>
                         </div>
                         <div>
-                          <p className="text-xs sm:text-sm font-extrabold text-white group-hover:text-pink-300 truncate max-w-[105px]">
-                            {topCharismaUsers[1].name}
-                          </p>
+                          <div className="flex items-center justify-center gap-1 max-w-[115px]">
+                            <p className="text-xs sm:text-sm font-extrabold text-white group-hover:text-pink-300 truncate">
+                              {topCharismaUsers[1].name}
+                            </p>
+                            {topCharismaUsers[1].isPremium && (
+                              <VerifiedBadge
+                                size="sm"
+                                isFounder={topCharismaUsers[1].role === 'founder'}
+                                badgeLabel={topCharismaUsers[1].activeBadge}
+                              />
+                            )}
+                          </div>
                           <p className="text-[10px] text-pink-400 font-bold flex items-center justify-center gap-0.5 mt-0.5">
                             <Heart className="w-3 h-3 fill-current" /> {topCharismaUsers[1].charisma}
                           </p>
@@ -922,23 +977,40 @@ export function LeaderboardPage() {
                             size="xl"
                             popoverAlign="center"
                           >
-                            <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full p-1 bg-gradient-to-tr from-amber-400 via-rose-500 to-amber-300 shadow-2xl shadow-amber-500/40 ring-4 ring-amber-400/30">
-                              <img
-                                src={topCharismaUsers[0].avatar}
-                                alt={topCharismaUsers[0].name}
-                                referrerPolicy="no-referrer"
-                                className="w-full h-full rounded-full object-cover"
-                              />
-                            </div>
+                            <AvatarDecoration
+                              src={topCharismaUsers[0].avatar}
+                              alt={topCharismaUsers[0].name}
+                              decorationId={topCharismaUsers[0].activeBorder}
+                              bgColor={topCharismaUsers[0].profileBgColor}
+                              level={topCharismaUsers[0].level}
+                              isFounder={topCharismaUsers[0].role === 'founder'}
+                              size="xl"
+                            >
+                              {topCharismaUsers[0].isOnline && (
+                                <span className="absolute top-1 right-1 z-30 w-3.5 h-3.5 rounded-full bg-emerald-400 ring-2 ring-[#181522]" />
+                              )}
+                            </AvatarDecoration>
                           </AvatarWithBadges>
-                          <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-7 h-7 rounded-full bg-gradient-to-tr from-amber-400 to-amber-600 text-slate-950 text-xs font-extrabold flex items-center justify-center shadow z-20">
+                          <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-7 h-7 rounded-full bg-gradient-to-tr from-amber-400 to-amber-600 text-slate-950 text-xs font-extrabold flex items-center justify-center shadow z-30">
                             1
                           </span>
                         </div>
                         <div>
-                          <p className="text-xs sm:text-sm font-extrabold text-amber-300 group-hover:text-white truncate max-w-[130px]">
-                            {topCharismaUsers[0].name}
-                          </p>
+                          <div className="flex items-center justify-center gap-1 max-w-[140px]">
+                            <p className="text-xs sm:text-sm font-extrabold text-amber-300 group-hover:text-white truncate">
+                              {topCharismaUsers[0].name}
+                            </p>
+                            {topCharismaUsers[0].isPremium && (
+                              <VerifiedBadge
+                                size="sm"
+                                isFounder={topCharismaUsers[0].role === 'founder'}
+                                badgeLabel={topCharismaUsers[0].activeBadge}
+                              />
+                            )}
+                            {topCharismaUsers[0].statusEmoji && (
+                              <StatusEmojiBadge statusEmoji={topCharismaUsers[0].statusEmoji} size="xs" />
+                            )}
+                          </div>
                           <p className="text-[11px] text-pink-400 font-extrabold flex items-center justify-center gap-0.5 mt-0.5">
                             <Heart className="w-3.5 h-3.5 fill-current" /> {topCharismaUsers[0].charisma}
                           </p>
@@ -969,23 +1041,37 @@ export function LeaderboardPage() {
                             size="lg"
                             popoverAlign="right"
                           >
-                            <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full p-0.5 bg-gradient-to-tr from-amber-600 to-rose-700 shadow-lg shadow-rose-900/40">
-                              <img
-                                src={topCharismaUsers[2].avatar}
-                                alt={topCharismaUsers[2].name}
-                                referrerPolicy="no-referrer"
-                                className="w-full h-full rounded-full object-cover"
-                              />
-                            </div>
+                            <AvatarDecoration
+                              src={topCharismaUsers[2].avatar}
+                              alt={topCharismaUsers[2].name}
+                              decorationId={topCharismaUsers[2].activeBorder}
+                              bgColor={topCharismaUsers[2].profileBgColor}
+                              level={topCharismaUsers[2].level}
+                              isFounder={topCharismaUsers[2].role === 'founder'}
+                              size="lg"
+                            >
+                              {topCharismaUsers[2].isOnline && (
+                                <span className="absolute top-0 right-0 z-30 w-3 h-3 rounded-full bg-emerald-400 ring-2 ring-[#181522]" />
+                              )}
+                            </AvatarDecoration>
                           </AvatarWithBadges>
-                          <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-amber-700 text-white text-xs font-extrabold flex items-center justify-center shadow z-20">
+                          <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-amber-700 text-white text-xs font-extrabold flex items-center justify-center shadow z-30">
                             3
                           </span>
                         </div>
                         <div>
-                          <p className="text-xs sm:text-sm font-extrabold text-white group-hover:text-pink-300 truncate max-w-[105px]">
-                            {topCharismaUsers[2].name}
-                          </p>
+                          <div className="flex items-center justify-center gap-1 max-w-[115px]">
+                            <p className="text-xs sm:text-sm font-extrabold text-white group-hover:text-pink-300 truncate">
+                              {topCharismaUsers[2].name}
+                            </p>
+                            {topCharismaUsers[2].isPremium && (
+                              <VerifiedBadge
+                                size="sm"
+                                isFounder={topCharismaUsers[2].role === 'founder'}
+                                badgeLabel={topCharismaUsers[2].activeBadge}
+                              />
+                            )}
+                          </div>
                           <p className="text-[10px] text-pink-400 font-bold flex items-center justify-center gap-0.5 mt-0.5">
                             <Heart className="w-3 h-3 fill-current" /> {topCharismaUsers[2].charisma}
                           </p>
@@ -1029,12 +1115,19 @@ export function LeaderboardPage() {
                           size="md"
                           popoverAlign="left"
                         >
-                          <img
+                          <AvatarDecoration
                             src={u.avatar}
                             alt={u.name}
-                            referrerPolicy="no-referrer"
-                            className="w-10 h-10 rounded-full object-cover shrink-0"
-                          />
+                            decorationId={u.activeBorder}
+                            bgColor={u.profileBgColor}
+                            level={u.level}
+                            isFounder={u.role === 'founder'}
+                            size="md"
+                          >
+                            {u.isOnline && (
+                              <span className="absolute bottom-0 right-0 z-30 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#14161F]" />
+                            )}
+                          </AvatarDecoration>
                         </AvatarWithBadges>
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
@@ -1048,6 +1141,7 @@ export function LeaderboardPage() {
                                 badgeLabel={u.activeBadge}
                               />
                             )}
+                            {u.statusEmoji && <StatusEmojiBadge statusEmoji={u.statusEmoji} size="xs" />}
                             {u.clan && (
                               <span className="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-500 text-[10px] font-bold">
                                 [{u.clan}]
@@ -1123,12 +1217,19 @@ export function LeaderboardPage() {
                       popoverAlign="left"
                       popoverPlacement={idx === 0 ? 'bottom' : 'top'}
                     >
-                      <img
+                      <AvatarDecoration
                         src={w.avatar}
                         alt={w.name}
-                        referrerPolicy="no-referrer"
-                        className="w-11 h-11 rounded-full object-cover shrink-0"
-                      />
+                        decorationId={w.activeBorder}
+                        bgColor={w.profileBgColor}
+                        level={w.level}
+                        isFounder={w.role === 'founder'}
+                        size="md"
+                      >
+                        {w.isOnline && (
+                          <span className="absolute bottom-0 right-0 z-30 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#14161F]" />
+                        )}
+                      </AvatarDecoration>
                     </AvatarWithBadges>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -1142,6 +1243,7 @@ export function LeaderboardPage() {
                             badgeLabel={w.activeBadge}
                           />
                         )}
+                        {w.statusEmoji && <StatusEmojiBadge statusEmoji={w.statusEmoji} size="xs" />}
                         {w.clan && (
                           <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-500 text-[10px] font-bold">
                             [{w.clan}]
@@ -1965,12 +2067,19 @@ export function LeaderboardPage() {
                       popoverAlign="left"
                       popoverPlacement={idx === 0 ? 'bottom' : 'top'}
                     >
-                      <img
+                      <AvatarDecoration
                         src={lvl.avatar}
                         alt={lvl.name}
-                        referrerPolicy="no-referrer"
-                        className="w-11 h-11 rounded-full object-cover shrink-0"
-                      />
+                        decorationId={lvl.activeBorder}
+                        bgColor={lvl.profileBgColor}
+                        level={lvl.level}
+                        isFounder={lvl.role === 'founder'}
+                        size="md"
+                      >
+                        {lvl.isOnline && (
+                          <span className="absolute bottom-0 right-0 z-30 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#14161F]" />
+                        )}
+                      </AvatarDecoration>
                     </AvatarWithBadges>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -1984,6 +2093,7 @@ export function LeaderboardPage() {
                             badgeLabel={lvl.activeBadge}
                           />
                         )}
+                        {lvl.statusEmoji && <StatusEmojiBadge statusEmoji={lvl.statusEmoji} size="xs" />}
                         {lvl.clan && (
                           <span className="px-2 py-0.5 rounded bg-amber-500/15 text-amber-500 text-[10px] font-bold">
                             [{lvl.clan}]

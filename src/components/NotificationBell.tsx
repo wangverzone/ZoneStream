@@ -448,17 +448,17 @@ export function NotificationBell({
         aria-label={isEn ? 'Notifications' : 'Notifikasi'}
         aria-expanded={open}
         title={isEn ? 'Notifications' : 'Notifikasi'}
-        className={`relative flex items-center justify-center rounded-xl border transition-colors ${
-          compact ? 'w-9 h-9 sm:w-10 sm:h-10' : 'w-10 h-10'
+        className={`relative flex items-center justify-center rounded-full border transition-colors ${
+          compact ? 'w-11 h-11' : 'w-11 h-11'
         } ${
           open
-            ? 'bg-[#E84A18]/15 border-[#E84A18]/50 text-[#E84A18]'
-            : 'bg-slate-100 hover:bg-slate-200/80 dark:bg-[#13151C] dark:hover:bg-[#1B1E28] border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-gray-300 hover:text-[#E84A18]'
+            ? 'bg-[#2E90FA]/20 border-[#2E90FA]/50 text-[#2E90FA]'
+            : 'bg-[#252833] hover:bg-[#2E3240] border-white/[0.08] text-white'
         }`}
       >
-        <Bell className={`${compact ? 'w-4 h-4 sm:w-[18px] sm:h-[18px]' : 'w-4 h-4'}`} />
+        <Bell className="w-5 h-5" />
         {totalUnread > 0 && (
-          <span className="absolute -top-1 -right-1 min-w-[17px] h-[17px] px-1 rounded-full bg-[#E84A18] text-white text-[10px] font-extrabold flex items-center justify-center font-mono-tabular shadow">
+          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center font-mono-tabular shadow">
             {totalUnread > 99 ? '99+' : totalUnread}
           </span>
         )}

@@ -1,14 +1,13 @@
-import { createRoot } from 'react-dom/client';
-import { registerSW } from 'virtual:pwa-register';
-import App from './App.tsx';
-import { installCapacitorApiBridge } from './utils/apiBase';
-import './index.css';
+import { installCapacitorApiBridge, isNativeCapacitorRuntime } from './utils/apiBase';
 
 installCapacitorApiBridge();
 
-const isNativeCapacitor =
-  typeof window !== 'undefined' &&
-  Boolean((window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.());
+import { createRoot } from 'react-dom/client';
+import { registerSW } from 'virtual:pwa-register';
+import App from './App.tsx';
+import './index.css';
+
+const isNativeCapacitor = isNativeCapacitorRuntime();
 
 if (typeof window !== 'undefined' && 'serviceWorker' in navigator && !isNativeCapacitor) {
   registerSW({
@@ -24,4 +23,3 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator && !isNativeCa
 }
 
 createRoot(document.getElementById('root')!).render(<App />);
-

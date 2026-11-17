@@ -250,8 +250,8 @@ export function HeaderSearch({
           autoComplete="off"
           spellCheck={false}
           className={`w-full ${
-            compact ? 'h-10 text-xs' : 'h-11 sm:h-10 text-sm sm:text-xs'
-          } pl-9 pr-9 rounded-xl bg-slate-100/90 hover:bg-slate-100 focus:bg-white dark:bg-[#13151C] dark:hover:bg-[#171A23] dark:focus:bg-[#14161F] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-[#E84A18] focus:ring-2 focus:ring-[#E84A18]/20 transition-colors`}
+            compact ? 'h-10 text-xs rounded-xl' : 'h-12 text-sm rounded-2xl'
+          } pl-10 pr-9 bg-[#181A20] hover:bg-[#1E2028] focus:bg-[#181A20] border border-white/[0.09] text-white placeholder-[#9CA3AF] focus:outline-none focus:border-[#2E90FA] focus:ring-2 focus:ring-[#2E90FA]/20 transition-colors`}
         />
         {query ? (
           <button

@@ -1,12 +1,15 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import {
+  GoogleAuthProvider,
   onAuthStateChanged,
+  signInWithCredential,
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
   signOut as firebaseSignOut,
 } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase';
+import { isNativeCapacitorRuntime } from '../utils/apiBase';
 import { playSoundEffect } from '../utils/soundEffects';
 import { logSessionEvent } from '../utils/sessionLogger';
 import {
@@ -873,11 +876,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async (identifier: string, password: string): Promise<boolean> => {
     setAuthError(null);
     explicitLogoutRef.current = false;
+    const cleanIdentifier = String(identifier || '').trim();
     try {
       const resp = await fetch('/api/user/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier, password }),
+        body: JSON.stringify({ identifier: cleanIdentifier, password }),
       });
       const json = await resp.json();
       if (!resp.ok) {
@@ -908,26 +912,151 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const completeGoogleIdTokenSignIn = useCallback(
+    async (rawGoogleOrFirebaseToken: string, source: string): Promise<boolean> => {
+      let tokenToExchange = rawGoogleOrFirebaseToken;
+      try {
+        const credential = GoogleAuthProvider.credential(rawGoogleOrFirebaseToken);
+        const credResult = await signInWithCredential(auth, credential);
+        tokenToExchange = await credResult.user.getIdToken();
+      } catch {
+        // If rawGoogleOrFirebaseToken is already a Firebase idToken or if backend verifies Google idToken directly
+        tokenToExchange = rawGoogleOrFirebaseToken;
+      }
+      return await exchangeFirebaseGoogleIdToken(tokenToExchange, source);
+    },
+    [exchangeFirebaseGoogleIdToken]
+  );
+
   const loginWithGoogle = async (): Promise<boolean> => {
-    // Trigger signInWithPopup synchronously before any React state update so the browser preserves user activation
-    const popupPromise = signInWithPopup(auth, googleProvider);
     explicitLogoutRef.current = false;
     setAuthError(null);
+
+    const w = window as unknown as {
+      ZoneStreamNativeAuth?: { openGoogleAuthSheet?: (url: string) => void };
+      __zonestreamReceiveNativeGoogleIdToken?: (idToken: string) => void;
+      __zonestreamCancelNativeGoogleAuth?: () => void;
+    };
+
+    // 1. Native Android In-App Bottom-Sheet Google Account Picker (Zero external Chrome)
+    if (typeof w.ZoneStreamNativeAuth?.openGoogleAuthSheet === 'function') {
+      logSessionEvent('login_google_popup_start', {
+        hasJwt: Boolean(readStoredToken()),
+        hasFirebaseUser: Boolean(auth.currentUser),
+        detail: { mode: 'native_apk_sheet' },
+      });
+      return await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const finish = (result: boolean) => {
+          if (settled) return;
+          settled = true;
+          delete w.__zonestreamReceiveNativeGoogleIdToken;
+          delete w.__zonestreamCancelNativeGoogleAuth;
+          resolve(result);
+        };
+
+        w.__zonestreamReceiveNativeGoogleIdToken = (googleIdToken: string) => {
+          if (!googleIdToken) {
+            setAuthError('Token Google tidak ditemukan. Silakan coba lagi.');
+            finish(false);
+            return;
+          }
+          void completeGoogleIdTokenSignIn(googleIdToken, 'native_apk_google_sheet').then(
+            (ok) => finish(ok),
+            () => {
+              setAuthError('Gagal memverifikasi akun Google di aplikasi.');
+              finish(false);
+            }
+          );
+        };
+
+        w.__zonestreamCancelNativeGoogleAuth = () => {
+          finish(false);
+        };
+
+        const nonce = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+        const oauthUrl =
+          `https://accounts.google.com/o/oauth2/v2/auth` +
+          `?client_id=752723113015-dv2p2dkqcs6ugom72ou0amtr7quq6ulb.apps.googleusercontent.com` +
+          `&redirect_uri=${encodeURIComponent('https://zonestream-61ffe.firebaseapp.com/__/auth/handler')}` +
+          `&response_type=id_token` +
+          `&scope=${encodeURIComponent('openid email profile')}` +
+          `&nonce=${encodeURIComponent(nonce)}` +
+          `&prompt=select_account`;
+
+        try {
+          w.ZoneStreamNativeAuth!.openGoogleAuthSheet!(oauthUrl);
+        } catch {
+          setAuthError('Gagal membuka jendela login Google di aplikasi.');
+          finish(false);
+        }
+      });
+    }
+
+    // 2. Standard Web / PWA / Capacitor Fallback with In-App Popup Interception
+    let nativeTokenFallbackPromise: Promise<boolean | null> | null = null;
+    const cleanupFallback = () => {
+      delete w.__zonestreamReceiveNativeGoogleIdToken;
+      delete w.__zonestreamCancelNativeGoogleAuth;
+    };
+    if (isNativeCapacitorRuntime()) {
+      nativeTokenFallbackPromise = new Promise<boolean | null>((resolve) => {
+        w.__zonestreamReceiveNativeGoogleIdToken = (googleIdToken: string) => {
+          cleanupFallback();
+          if (!googleIdToken) {
+            resolve(false);
+            return;
+          }
+          void completeGoogleIdTokenSignIn(googleIdToken, 'capacitor_popup_intercept').then(
+            (ok) => resolve(ok),
+            () => resolve(false)
+          );
+        };
+        w.__zonestreamCancelNativeGoogleAuth = () => {
+          cleanupFallback();
+          resolve(false);
+        };
+      });
+    }
+
+    // Trigger signInWithPopup synchronously before any React state update so the browser preserves user activation
+    const popupPromise = signInWithPopup(auth, googleProvider);
     logSessionEvent('login_google_popup_start', {
       hasJwt: Boolean(readStoredToken()),
       hasFirebaseUser: Boolean(auth.currentUser),
     });
     try {
-      const result = await popupPromise;
-      const idToken = await result.user.getIdToken();
-      return await exchangeFirebaseGoogleIdToken(idToken, 'google_popup');
+      const popupRace = popupPromise.then(async (result) => {
+        const idToken = await result.user.getIdToken();
+        return await exchangeFirebaseGoogleIdToken(idToken, 'google_popup');
+      });
+
+      if (nativeTokenFallbackPromise) {
+        const raced = await Promise.race([
+          popupRace,
+          nativeTokenFallbackPromise.then((res) => (res === null ? popupRace : res)),
+        ]);
+        cleanupFallback();
+        return Boolean(raced);
+      }
+
+      return await popupRace;
     } catch (err: any) {
+      cleanupFallback();
       const msg = String(err?.code || err?.message || '');
       logSessionEvent('login_google_error', {
         level: 'warn',
         detail: { source: 'google_popup', code: msg },
       });
       if (msg.includes('popup-blocked') || msg.includes('cancelled-popup-request')) {
+        // IMPORTANT: Never call signInWithRedirect inside Capacitor Android APK because
+        // Capacitor intercepts external redirects and opens Chrome on localhost!
+        if (isNativeCapacitorRuntime()) {
+          setAuthError(
+            'Silakan perbarui ZoneStream.apk ke versi rilis terbaru dari GitHub Releases agar Login Google berjalan langsung di dalam aplikasi (tanpa dialihkan ke Chrome), atau masuk dengan Email/Username & Password.'
+          );
+          return false;
+        }
         try {
           await signInWithRedirect(auth, googleProvider);
           return false;
@@ -938,7 +1067,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return false;
         }
       } else if (msg.includes('popup-closed-by-user')) {
-        setAuthError('Popup login Google ditutup sebelum selesai.');
+        setAuthError('Jendela login Google ditutup sebelum selesai.');
       } else if (msg.includes('unauthorized-domain')) {
         setAuthError(
           'Domain belum terdaftar di Firebase Authorized Domains (tambahkan domain ini di Firebase Console -> Authentication -> Settings).'

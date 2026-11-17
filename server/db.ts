@@ -101,6 +101,11 @@ export function sanitizeUser(user: IUser): PublicUser {
     String(pub.email || '').toLowerCase()
   );
 
+  const realLikesCount = Array.isArray(pub.likedBy)
+    ? pub.likedBy.filter((uid) => typeof uid === 'string' && uid.trim().length > 0).length
+    : 0;
+  const storedCharisma = Math.max(0, Math.floor(Number(pub.charisma) || 0));
+
   if (isFounderUser) {
     pub.role = 'founder';
     pub.activeBadge = 'Verified Founder';
@@ -110,7 +115,10 @@ export function sanitizeUser(user: IUser): PublicUser {
     pub.bannedAt = null;
     pub.banReason = '';
     pub.level = 999999;
-    pub.charisma = Math.max(9999, Number(pub.charisma ?? 9999));
+    pub.charisma = Math.max(9999 + realLikesCount, storedCharisma);
+    if (!pub.activeBorder || pub.activeBorder === 'classic') {
+      pub.activeBorder = 'lightning-aura';
+    }
   } else {
     pub.role = 'member';
     pub.isBanned = Boolean(pub.isBanned);
@@ -128,7 +136,7 @@ export function sanitizeUser(user: IUser): PublicUser {
       pub.activeBadge = 'Member';
     }
     pub.level = Math.max(1, Number(pub.level) || 1);
-    pub.charisma = Math.max(0, Number(pub.charisma ?? 0));
+    pub.charisma = Math.max(storedCharisma, realLikesCount);
   }
 
   // Normalize Daily Watch Streak & Earned Animated Profile Frames
@@ -326,14 +334,19 @@ async function ensureFounderFallback() {
   const oneYearExpiry = new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString();
   for (const u of Object.values(store)) {
     const emailLower = String(u.email || '').toLowerCase();
+    const realLikes = Array.isArray(u.likedBy)
+      ? u.likedBy.filter((id) => typeof id === 'string' && id.trim().length > 0).length
+      : 0;
+    const storedCharisma = Math.max(0, Math.floor(Number(u.charisma) || 0));
     if (emailLower === 'wanglin72kk@gmail.com' || u.role === 'founder') {
       u.role = 'founder';
       u.isPremium = true;
       u.isVerified = true;
       u.level = 999999;
-      u.charisma = Math.max(9999, Number(u.charisma ?? 9999));
+      u.charisma = Math.max(9999 + realLikes, storedCharisma);
       u.activeBadge = 'Verified Founder';
     } else {
+      u.charisma = Math.max(storedCharisma, realLikes);
       const hasFounderBadge =
         String(u.activeBadge || '').trim().toLowerCase() === 'verified founder';
       if (hasFounderBadge) {
@@ -355,21 +368,18 @@ async function ensureFounderFallback() {
             ? u.activeBadge
             : 'Verified VIP';
       }
-      // Ensure non-founder users without real likes from other users have charisma = 0
-      if (!Array.isArray(u.likedBy) || u.likedBy.length === 0) {
-        u.charisma = 0;
-      }
     }
   }
 
   if (store['4167293'] && !store[FOUNDER_UID]) {
+    const prevLikes = Array.isArray(store['4167293'].likedBy) ? store['4167293'].likedBy.length : 0;
     store[FOUNDER_UID] = {
       ...store['4167293'],
       uid: FOUNDER_UID,
       role: 'founder',
       level: 999999,
       exp: 0,
-      charisma: 9999,
+      charisma: 9999 + prevLikes,
       activeBadge: 'Verified Founder',
       activeBorder:
         !store['4167293'].activeBorder || store['4167293'].activeBorder === 'classic'
@@ -396,17 +406,6 @@ export async function ensureFounderAccount() {
   founderSeeded = true;
   try {
     await UserModel.collection.dropIndex('firebaseUid_1').catch(() => {});
-
-    // Zero out legacy default charisma (1200 / 38500 / auto-boosted) for non-founders who have no real likes yet
-    await UserModel.updateMany(
-      {
-        role: { $ne: 'founder' },
-        email: { $ne: FOUNDER_EMAIL },
-        $or: [{ likedBy: { $exists: false } }, { likedBy: { $size: 0 } }],
-        charisma: { $ne: 0 },
-      },
-      { $set: { charisma: 0 } }
-    ).catch(() => {});
 
     // Strip exclusive 'Verified Founder' badge from any non-founder accounts in DB
     await UserModel.updateMany(
@@ -436,9 +435,8 @@ export async function ensureFounderAccount() {
         pakistanUser.level = 1;
         pakistanUser.exp = 0;
       }
-      if (!Array.isArray(pakistanUser.likedBy) || pakistanUser.likedBy.length === 0) {
-        pakistanUser.charisma = 0;
-      }
+      const pkLikes = Array.isArray(pakistanUser.likedBy) ? pakistanUser.likedBy.length : 0;
+      pakistanUser.charisma = Math.max(Math.floor(Number(pakistanUser.charisma) || 0), pkLikes);
       pakistanUser.premiumPlan = pakistanUser.premiumPlan || 'VIP 1 Tahun';
       pakistanUser.premiumExpiryDate =
         pakistanUser.premiumExpiryDate ||
@@ -458,7 +456,8 @@ export async function ensureFounderAccount() {
       founderUser.isPremium = true;
       founderUser.isVerified = true;
       founderUser.level = 999999;
-      founderUser.charisma = Math.max(9999, Number(founderUser.charisma ?? 9999));
+      const fLikes = Array.isArray(founderUser.likedBy) ? founderUser.likedBy.length : 0;
+      founderUser.charisma = Math.max(9999 + fLikes, Math.floor(Number(founderUser.charisma) || 9999));
       founderUser.coins = Math.max(50000, Number(founderUser.coins ?? 50000));
       founderUser.totalCoinsEarned = Math.max(founderUser.coins, Number(founderUser.totalCoinsEarned ?? founderUser.coins));
       founderUser.activeBadge = 'Verified Founder';
@@ -524,6 +523,11 @@ export async function ensureFounderAccount() {
       }
       if (!existing.statusEmoji) {
         existing.statusEmoji = 'infinity-dao';
+        dirty = true;
+      }
+      const expectedFounderCharisma = 9999 + (Array.isArray(existing.likedBy) ? existing.likedBy.length : 0);
+      if (existing.charisma !== expectedFounderCharisma) {
+        existing.charisma = expectedFounderCharisma;
         dirty = true;
       }
       if (dirty) {
@@ -661,9 +665,11 @@ export async function updateUserByUid(
     Object.assign(doc, updated);
     doc.markModified('watchHistory');
     doc.markModified('bookmarks');
+    doc.markModified('episodeBookmarks');
     doc.markModified('streakDates');
     doc.markModified('unlockedStreakFrames');
     doc.markModified('checkInDates');
+    doc.markModified('likedBy');
     await doc.save();
     return doc.toObject();
   }
@@ -895,10 +901,20 @@ export async function touchUserLastActive(uid: string): Promise<void> {
 export async function setUserOnlinePresence(uid: string, online: boolean): Promise<IUser | null> {
   if (!uid) return null;
   const targetDate = online ? new Date() : new Date(Date.now() - 10 * 60 * 1000);
-  return updateUserByUid(uid, (cur) => ({
-    ...cur,
-    lastActiveAt: targetDate,
-  }));
+  const mongoOk = await connectDB();
+  if (mongoOk) {
+    const doc = await UserModel.findOneAndUpdate(
+      { uid },
+      { $set: { lastActiveAt: targetDate } },
+      { new: true }
+    );
+    return doc ? doc.toObject() : null;
+  }
+  const store = readFallbackUsers();
+  if (!store[uid]) return null;
+  store[uid].lastActiveAt = targetDate;
+  writeFallbackUsers(store);
+  return store[uid];
 }
 
 export async function touchUserLogin(uid: string): Promise<void> {
@@ -1033,7 +1049,7 @@ export function toCommunityUserSummary(user: IUser) {
     bannerUrl: pub.bannerUrl || '',
     level: pub.role === 'founder' ? 999999 : pub.level || 1,
     exp: pub.exp || 0,
-    charisma: pub.role === 'founder' ? Math.max(9999, Number(pub.charisma ?? 9999)) : Number(pub.charisma ?? 0),
+    charisma: pub.role === 'founder' ? Math.max(9999, Number(pub.charisma ?? 9999)) : Math.max(0, Number(pub.charisma ?? 0)),
     isPremium: Boolean(pub.isPremium || pub.role === 'founder'),
     isVerified: Boolean(pub.isVerified || pub.isPremium || pub.role === 'founder'),
     premiumPlan: pub.role === 'founder' ? 'Founder Lifetime' : pub.premiumPlan || '',
