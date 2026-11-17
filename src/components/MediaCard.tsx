@@ -4,22 +4,73 @@ import { Link, useLocation } from 'react-router-dom';
 import { resolveApiUrl } from '../utils/apiBase';
 import type { MediaCardItem } from '../types';
 
-export function resolveFallbackPosterUrl(poster?: string, retryStage = 0): string {
+export function extractUnderlyingImageUrl(raw?: string): string {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  if (s.includes('/api/stream/img')) {
+    try {
+      const u = new URL(s, 'http://localhost');
+      const inner = u.searchParams.get('url');
+      if (inner && /^https?:\/\//i.test(inner)) {
+        return inner;
+      }
+    } catch {
+      // Regex extraction fallback
+      const m = s.match(/[?&]url=([^&]+)/);
+      if (m?.[1]) {
+        try {
+          const dec = decodeURIComponent(m[1]);
+          if (/^https?:\/\//i.test(dec)) return dec;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+  return s;
+}
+
+export function resolveFallbackPosterUrl(
+  poster?: string,
+  retryStage = 0,
+  title?: string,
+  id?: string
+): string {
   const raw = String(poster || '').trim();
   if (!raw) return '';
-  if (retryStage === 0) return resolveApiUrl(raw);
 
+  if (retryStage === 0) {
+    if (raw.startsWith('/api/stream/img') || /^https?:\/\//i.test(raw)) {
+      return resolveApiUrl(raw);
+    }
+    const params = new URLSearchParams();
+    params.set('url', raw);
+    if (title) params.set('title', title);
+    if (id) params.set('id', id);
+    return resolveApiUrl(`/api/stream/img?${params.toString()}`);
+  }
+
+  const innerUrl = extractUnderlyingImageUrl(raw);
+
+  // Stage 1: Retry with explicit title and id to server proxy to trigger server-side AniList artwork resolution
   if (retryStage === 1) {
-    if (raw.startsWith('/api/stream/img')) {
-      try {
-        const u = new URL(raw, 'http://localhost');
-        const inner = u.searchParams.get('url');
-        if (inner) return inner;
-      } catch {
-        // Ignore
+    const params = new URLSearchParams();
+    params.set('url', innerUrl || raw);
+    params.set('retry', '1');
+    if (title) params.set('title', title);
+    if (id) params.set('id', id);
+    return resolveApiUrl(`/api/stream/img?${params.toString()}`);
+  }
+
+  // Stage 2: Direct unblocked global CDN if available
+  if (retryStage === 2 && /^https?:\/\//i.test(innerUrl)) {
+    try {
+      const host = new URL(innerUrl).hostname.toLowerCase();
+      if (host.endsWith('anilist.co') || host.endsWith('myanimelist.net')) {
+        return innerUrl;
       }
-    } else if (/^https?:\/\//i.test(raw)) {
-      return resolveApiUrl(`/api/stream/img?url=${encodeURIComponent(raw)}`);
+    } catch {
+      // ignore
     }
   }
 
@@ -34,7 +85,7 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
     setRetryStage(0);
   }, [item.poster, item.id]);
 
-  const currentSrc = resolveFallbackPosterUrl(item.poster, retryStage);
+  const currentSrc = resolveFallbackPosterUrl(item.poster, retryStage, item.title, item.id);
   const epQuery = item.episodeId ? `?ep=${encodeURIComponent(item.episodeId)}` : '';
   const targetHref = `/detail/${item.type}/${encodeURIComponent(item.id)}${epQuery}`;
   const backTo = `${location.pathname}${location.search}` || '/';
@@ -52,7 +103,9 @@ export function MediaCard({ item }: { item: MediaCardItem }) {
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={() => setRetryStage((prev) => prev + 1)}
+          onError={() => {
+            if (retryStage < 2) setRetryStage((prev) => prev + 1);
+          }}
           className="relative z-[1] w-full h-full object-cover lg:transition-transform lg:duration-500 lg:group-hover:scale-105"
         />
       ) : (

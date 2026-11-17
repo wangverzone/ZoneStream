@@ -19,6 +19,11 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { WatchPartySidebar } from '../components/WatchPartySidebar';
+import {
+  DanmakuControlBar,
+  DanmakuVideoOverlay,
+  useEpisodeDanmaku,
+} from '../components/DanmakuOverlay';
 import { AdsterraBanner300x250 } from '../components/AdsterraAds';
 import { WatchAdsModal } from '../components/WatchAdsModal';
 import { CommentSection } from '../components/CommentSection';
@@ -31,6 +36,7 @@ import {
   useAppLanguage,
 } from '../utils/language';
 import { resolveApiUrl } from '../utils/apiBase';
+import { resolveFallbackPosterUrl } from '../components/MediaCard';
 import type { EpisodeStreamData, StreamServer, WatchHistoryReward } from '../types';
 
 const MIDROLL_INTERVAL_SECONDS = 120; // Iklan muncul setiap 2 menit untuk user gratis
@@ -135,7 +141,16 @@ export function WatchPage() {
   const [adUnlocked, setAdUnlocked] = useState(isPremium || alreadyUnlockedByNav);
   const [nextAdSeconds, setNextAdSeconds] = useState(MIDROLL_INTERVAL_SECONDS);
   const [reward, setReward] = useState<WatchHistoryReward | null>(null);
-  const [showWatchParty, setShowWatchParty] = useState(false);
+  const searchParams = new URLSearchParams(location.search);
+  const initialNobarOpen = searchParams.get('nobar') === '1' || Boolean(searchParams.get('room'));
+  const customRoomId = searchParams.get('room') || undefined;
+  const [showWatchParty, setShowWatchParty] = useState(initialNobarOpen);
+  const {
+    bullets: danmakuBullets,
+    enabled: danmakuEnabled,
+    toggleEnabled: toggleDanmaku,
+    appendLocalBullet: appendDanmakuBullet,
+  } = useEpisodeDanmaku(episodeId);
 
   useEffect(() => {
     if (isPremium) {
@@ -547,7 +562,22 @@ export function WatchPage() {
                   <span>{activeSubObj.subLabel} Aktif</span>
                 </div>
               )}
+
+              {/* Live Flying Danmaku Bullet Comments Overlay */}
+              {adUnlocked && !loading && (
+                <DanmakuVideoOverlay bullets={danmakuBullets} enabled={danmakuEnabled} />
+              )}
             </div>
+
+            {/* Live Danmaku (Bullet Comments) Control & Input Bar */}
+            {adUnlocked && !loading && (
+              <DanmakuControlBar
+                episodeId={episodeId}
+                enabled={danmakuEnabled}
+                onToggleEnabled={toggleDanmaku}
+                onBulletSent={appendDanmakuBullet}
+              />
+            )}
 
             {/* Quick Mirror, Server Status & 4-Language Subtitle Switcher Bar */}
             {adUnlocked && !loading && (
@@ -638,7 +668,12 @@ export function WatchPage() {
                 <div className="flex items-center gap-3.5 min-w-0">
                   {stream?.poster && (
                     <img
-                      src={resolveApiUrl(stream.poster)}
+                      src={resolveFallbackPosterUrl(
+                        stream.poster,
+                        0,
+                        stream.seriesTitle || stream.title,
+                        stream.episodeId || episodeId
+                      )}
                       alt={stream.seriesTitle || stream.title}
                       decoding="async"
                       referrerPolicy="no-referrer"
@@ -816,7 +851,10 @@ export function WatchPage() {
           {showWatchParty && (
             <WatchPartySidebar
               episodeId={episodeId}
-              seriesTitle={stream?.title || 'Watch Party'}
+              seriesTitle={stream?.seriesTitle || stream?.title || 'Watch Party'}
+              mediaType={type === 'anime' ? 'anime' : 'donghua'}
+              poster={stream?.poster || navState?.poster || ''}
+              roomId={customRoomId}
               isOpen={showWatchParty}
               onClose={() => setShowWatchParty(false)}
             />

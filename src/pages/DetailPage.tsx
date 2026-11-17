@@ -83,10 +83,11 @@ export function DetailPage() {
   };
 
   const effectivePoster = detail?.poster || navState?.poster || '';
+  const seriesTitle = detail?.title || navState?.seriesTitle || '';
   const resolvedPosterSrc =
-    resolveFallbackPosterUrl(effectivePoster, posterStage) || heroFallbackImg;
+    resolveFallbackPosterUrl(effectivePoster, posterStage, seriesTitle, id) || heroFallbackImg;
   const resolvedBackdropSrc =
-    resolveFallbackPosterUrl(detail?.backdrop || effectivePoster, backdropStage) ||
+    resolveFallbackPosterUrl(detail?.backdrop || effectivePoster, backdropStage, seriesTitle, id) ||
     resolvedPosterSrc;
 
   const handleEpisodeClick = (ep: EpisodeItem) => {
@@ -139,7 +140,7 @@ export function DetailPage() {
               decoding="async"
               referrerPolicy="no-referrer"
               onError={() => {
-                if (backdropStage < 3) setBackdropStage((prev) => prev + 1);
+                if (backdropStage < 2) setBackdropStage((prev) => prev + 1);
               }}
               className={`w-full h-full object-cover contrast-[1.05] saturate-[1.06] ${
                 detail.hasWideBanner ? 'opacity-90' : 'opacity-80'
@@ -166,7 +167,7 @@ export function DetailPage() {
                 decoding="async"
                 referrerPolicy="no-referrer"
                 onError={() => {
-                  if (posterStage < 3) setPosterStage((prev) => prev + 1);
+                  if (posterStage < 2) setPosterStage((prev) => prev + 1);
                 }}
                 className="w-32 sm:w-44 aspect-[3/4] rounded-2xl object-cover shadow-2xl border border-white/20 dark:border-white/10 shrink-0 bg-slate-900 dark:bg-[#16181F]"
               />
@@ -311,7 +312,7 @@ export function DetailPage() {
                       >
                         {s.poster && (
                           <img
-                            src={s.poster}
+                            src={resolveFallbackPosterUrl(s.poster, 0, s.title, s.id)}
                             alt={s.title}
                             referrerPolicy="no-referrer"
                             className="w-10 h-14 rounded-lg object-cover shrink-0 bg-slate-900"

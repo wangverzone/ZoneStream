@@ -94,128 +94,23 @@ function isValidHttpImageUrl(raw?: string): boolean {
   return /^https?:\/\//i.test(url);
 }
 
-function proxyPoster(raw?: string): string {
-  const url = String(raw || '').trim();
-  if (!url || url.startsWith('data:')) return '';
-  if (url.startsWith('/api/stream/img') || url.startsWith('/assets/')) return url;
-  if (/^https?:\/\//i.test(url)) {
-    try {
-      const host = new URL(url).hostname.toLowerCase();
-      // Hosts with no hotlink block that load directly in browser (avoids Vercel US-East datacenter 403s)
-      if (
-        host.endsWith('otakudesu.blog') ||
-        host.endsWith('otakudesu.cloud') ||
-        host.endsWith('anilist.co') ||
-        host.endsWith('myanimelist.net') ||
-        host === 'wsrv.nl' ||
-        host.endsWith('weserv.nl')
-      ) {
-        return url;
-      }
-    } catch {
-      // Fallback to proxy below
-    }
-    return `/api/stream/img?url=${encodeURIComponent(url)}`;
-  }
-  return '';
+const slugPosterMap = new Map<string, string>();
+const authoritativePosterKeys = new Set<string>();
+
+function normalizePosterKey(raw: string): string {
+  return String(raw || '')
+    .toLowerCase()
+    .replace(/\b(sub|indo|subtitle|indonesia)\b/gi, ' ')
+    .replace(/[^a-z0-9]/g, '');
 }
 
-// GET /api/stream/img?url=... — Bypass hotlink 403 with multi-stage fallback & direct browser redirect
-router.get('/img', async (req, res) => {
-  const rawUrl = String(req.query.url || '').trim();
-  try {
-    if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
-      return res.status(400).send('Invalid URL');
-    }
-
-    const parsed = new URL(rawUrl);
-    const host = parsed.hostname.toLowerCase();
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host.startsWith('10.') ||
-      host.startsWith('192.168.') ||
-      host.startsWith('172.')
-    ) {
-      return res.status(403).send('Forbidden host');
-    }
-
-    const now = Date.now();
-    const cached = imageCache.get(rawUrl);
-    if (cached && cached.expiresAt > now) {
-      res.setHeader('Content-Type', cached.contentType);
-      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
-      return res.send(cached.buf);
-    }
-
-    const fetchImageBuffer = async (
-      targetUrl: string,
-      referer?: string,
-      timeoutMs = 5500
-    ): Promise<{ contentType: string; buf: Buffer } | null> => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      try {
-        const headers: Record<string, string> = {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        };
-        if (referer) headers.Referer = referer;
-        const resp = await fetch(targetUrl, { signal: controller.signal, headers });
-        if (!resp.ok) return null;
-        const contentType = resp.headers.get('content-type') || 'image/jpeg';
-        if (!contentType.startsWith('image/')) return null;
-        const arr = await resp.arrayBuffer();
-        const buf = Buffer.from(arr);
-        if (buf.byteLength < 100) return null;
-        return { contentType, buf };
-      } catch {
-        return null;
-      } finally {
-        clearTimeout(timer);
-      }
-    };
-
-    // Attempt 1: Direct upstream fetch with origin Referer (required by anichin.moe & donghive.vip)
-    let result = await fetchImageBuffer(rawUrl, `${parsed.origin}/`, 5000);
-
-    // Attempt 2: Direct fetch without Referer (works for hosts that dislike server-side Referer)
-    if (!result) {
-      result = await fetchImageBuffer(rawUrl, undefined, 4500);
-    }
-
-    if (result) {
-      if (imageCache.size > 250) {
-        const firstKey = imageCache.keys().next().value;
-        if (firstKey) imageCache.delete(firstKey);
-      }
-      imageCache.set(rawUrl, {
-        expiresAt: now + 2 * 60 * 60 * 1000,
-        contentType: result.contentType,
-        buf: result.buf,
-      });
-
-      res.setHeader('Content-Type', result.contentType);
-      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
-      return res.send(result.buf);
-    }
-
-    // Attempt 3: Redirect browser directly to rawUrl (with referrerPolicy="no-referrer" on <img>, browser loads from user's residential IP)
-    return res.redirect(302, rawUrl);
-  } catch {
-    if (rawUrl && /^https?:\/\//i.test(rawUrl)) {
-      return res.redirect(302, rawUrl);
-    }
-    return res.status(502).send('Image proxy error');
-  }
-});
-
-const slugPosterMap = new Map<string, string>();
-const hdArtworkCache = new Map<
-  string,
-  { expiresAt: number; bannerImage: string; coverExtraLarge: string }
->();
+function cleanTitle(raw: string): string {
+  return String(raw || '')
+    .replace(/\s*Subtitle Indonesia/gi, '')
+    .replace(/\s*Sub Indo/gi, '')
+    .replace(/\s*\[SVIP\]\s*/gi, '')
+    .trim();
+}
 
 function stripSeasonSuffix(title: string): string {
   return title
@@ -270,14 +165,12 @@ function isConfidentTitleMatch(
       .replace(/[^a-z0-9]/g, '');
     if (!cNormFull) continue;
 
-    // Exact normalized title match
     if (qNormFull === cNormFull) return true;
 
     const cWords = normalizeWords(cand);
     if (cWords.length === 0) continue;
 
     const overlap = qWords.filter((w) => cWords.includes(w)).length;
-    // For short titles (1-2 significant words), require ALL words to match and similar length
     if (qWords.length <= 2) {
       if (overlap === qWords.length && cWords.length <= qWords.length + 1) {
         return true;
@@ -285,7 +178,6 @@ function isConfidentTitleMatch(
       continue;
     }
 
-    // For longer titles (3+ words), require at least 75% word overlap in both directions
     const qRatio = overlap / qWords.length;
     const cRatio = overlap / cWords.length;
     if (qRatio >= 0.75 && cRatio >= 0.6) {
@@ -294,6 +186,11 @@ function isConfidentTitleMatch(
   }
   return false;
 }
+
+const hdArtworkCache = new Map<
+  string,
+  { expiresAt: number; bannerImage: string; coverExtraLarge: string }
+>();
 
 async function fetchHdArtwork(
   title: string,
@@ -342,7 +239,7 @@ async function fetchHdArtwork(
       const json = (await resp.json()) as any;
       const list = json?.data?.Page?.media || [];
 
-      // Strictly filter by countryOfOrigin and confident title match — NEVER fall back to list[0]!
+      // Strictly filter by countryOfOrigin and confident title match
       const matched = list.find((m: any) => {
         if (expectedType === 'donghua' && m?.countryOfOrigin && m.countryOfOrigin !== 'CN') {
           return false;
@@ -380,6 +277,256 @@ async function fetchHdArtwork(
 
   return { bannerImage: bestBanner, coverExtraLarge: bestCover };
 }
+
+function rememberPoster(key: string, poster?: string, authoritative = false) {
+  if (key && isValidHttpImageUrl(poster)) {
+    const cleanUrl = String(poster).trim();
+    const lowerKey = key.toLowerCase();
+    const normKey = `norm:${normalizePosterKey(key)}`;
+
+    if (authoritative || !slugPosterMap.has(lowerKey) || !authoritativePosterKeys.has(lowerKey)) {
+      slugPosterMap.set(lowerKey, cleanUrl);
+      if (authoritative) authoritativePosterKeys.add(lowerKey);
+    }
+    if (
+      normalizePosterKey(key).length >= 3 &&
+      (authoritative || !slugPosterMap.has(normKey) || !authoritativePosterKeys.has(normKey))
+    ) {
+      slugPosterMap.set(normKey, cleanUrl);
+      if (authoritative) authoritativePosterKeys.add(normKey);
+    }
+  }
+}
+
+function lookupPoster(slug?: string, title?: string): string {
+  if (slug) {
+    const bySlug = slugPosterMap.get(slug.toLowerCase());
+    if (bySlug) return bySlug;
+    const byNormSlug = slugPosterMap.get(`norm:${normalizePosterKey(slug)}`);
+    if (byNormSlug) return byNormSlug;
+  }
+  if (title) {
+    const byTitle = slugPosterMap.get(title.toLowerCase());
+    if (byTitle) return byTitle;
+    const byNormTitle = slugPosterMap.get(`norm:${normalizePosterKey(title)}`);
+    if (byNormTitle) return byNormTitle;
+  }
+  return '';
+}
+
+function extractTitleFromImageUrl(url: string): string {
+  try {
+    const pathname = new URL(url).pathname;
+    const filename = pathname.split('/').filter(Boolean).pop() || '';
+    const nameWithoutExt = filename.replace(/\.[a-zA-Z0-9]+$/, '');
+    return nameWithoutExt
+      .replace(/-\d+x\d+$/, '')
+      .replace(/-subtitle-indonesia.*$/i, '')
+      .replace(/-sub-indo.*$/i, '')
+      .replace(/-part-\d+.*$/i, '')
+      .replace(/-season-\d+.*$/i, '')
+      .replace(/[-_]/g, ' ')
+      .trim();
+  } catch {
+    return '';
+  }
+}
+
+function buildFallbackPosterSvg(displayTitle = 'ZoneStream HD', subtitle = 'Streaming Online'): string {
+  const safeTitle = displayTitle.slice(0, 40).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="420" viewBox="0 0 300 420" fill="#14161F">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1B1E2B"/>
+      <stop offset="50%" stop-color="#12141C"/>
+      <stop offset="100%" stop-color="#0A0B0E"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2E90FA" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#1570EF" stop-opacity="0.05"/>
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#bg)"/>
+  <rect width="100%" height="100%" fill="url(#glow)"/>
+  <circle cx="150" cy="170" r="44" fill="#2E90FA" fill-opacity="0.12" stroke="#2E90FA" stroke-width="1.5" stroke-opacity="0.3"/>
+  <polygon points="144,152 166,170 144,188" fill="#2E90FA"/>
+  <text x="150" y="240" fill="#F8FAFC" font-size="13" font-family="system-ui, -apple-system, sans-serif" font-weight="700" text-anchor="middle">${safeTitle}</text>
+  <text x="150" y="262" fill="#94A3B8" font-size="11" font-family="system-ui, -apple-system, sans-serif" font-weight="500" text-anchor="middle">${subtitle}</text>
+</svg>`;
+}
+
+function proxyPoster(raw?: string, title?: string, id?: string, type?: string): string {
+  const url = String(raw || '').trim();
+  if (!url || url.startsWith('data:')) return '';
+  if (url.startsWith('/assets/')) return url;
+
+  if (url.startsWith('/api/stream/img')) {
+    if (title || id || type) {
+      try {
+        const u = new URL(url, 'http://localhost');
+        if (title && !u.searchParams.get('title')) u.searchParams.set('title', title);
+        if (id && !u.searchParams.get('id')) u.searchParams.set('id', id);
+        if (type && !u.searchParams.get('type')) u.searchParams.set('type', type);
+        return `${u.pathname}${u.search}`;
+      } catch {
+        return url;
+      }
+    }
+    return url;
+  }
+
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.toLowerCase();
+      // AniList and MyAnimeList are global reliable CDNs:
+      if (host.endsWith('anilist.co') || host.endsWith('myanimelist.net')) {
+        return url;
+      }
+    } catch {
+      // Fallback to proxy below
+    }
+    const params = new URLSearchParams();
+    params.set('url', url);
+    if (title) params.set('title', title);
+    if (id) params.set('id', id);
+    if (type) params.set('type', type);
+    return `/api/stream/img?${params.toString()}`;
+  }
+  return '';
+}
+
+// GET /api/stream/img?url=... — Bypass hotlink 403 & Indonesian ISP DNS blocks with multi-stage fallback
+router.get('/img', async (req, res) => {
+  const rawUrl = String(req.query.url || '').trim();
+  const explicitTitle = String(req.query.title || '').trim();
+  const explicitId = String(req.query.id || '').trim();
+  const explicitType = String(req.query.type || '').trim() as 'anime' | 'donghua' | '';
+
+  try {
+    if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) {
+      res.setHeader('Content-Type', 'image/svg+xml');
+      return res.status(200).send(buildFallbackPosterSvg(explicitTitle || 'ZoneStream HD'));
+    }
+
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host.startsWith('172.')
+    ) {
+      return res.status(403).send('Forbidden host');
+    }
+
+    const now = Date.now();
+    const cached = imageCache.get(rawUrl);
+    if (cached && cached.expiresAt > now) {
+      res.setHeader('Content-Type', cached.contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+      return res.send(cached.buf);
+    }
+
+    const fetchImageBuffer = async (
+      targetUrl: string,
+      referer?: string,
+      timeoutMs = 5000
+    ): Promise<{ contentType: string; buf: Buffer } | null> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const headers: Record<string, string> = {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        };
+        if (referer) headers.Referer = referer;
+        const resp = await fetch(targetUrl, { signal: controller.signal, headers });
+        if (!resp.ok) return null;
+        const contentType = resp.headers.get('content-type') || 'image/jpeg';
+        if (!contentType.startsWith('image/')) return null;
+        const arr = await resp.arrayBuffer();
+        const buf = Buffer.from(arr);
+        if (buf.byteLength < 100) return null;
+        return { contentType, buf };
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    // Attempt 1: Direct upstream fetch with origin Referer (required by anichin.moe & donghive.vip)
+    let result = await fetchImageBuffer(rawUrl, `${parsed.origin}/`, 5000);
+
+    // Attempt 2: Direct fetch without Referer (works for hosts that dislike server-side Referer)
+    if (!result) {
+      result = await fetchImageBuffer(rawUrl, undefined, 4500);
+    }
+
+    // Attempt 3: Known cached alternative poster for this id/title
+    if (!result) {
+      const altUrl = lookupPoster(explicitId, explicitTitle);
+      if (altUrl && altUrl !== rawUrl && /^https?:\/\//i.test(altUrl)) {
+        try {
+          const altParsed = new URL(altUrl);
+          result =
+            (await fetchImageBuffer(altUrl, `${altParsed.origin}/`, 4000)) ||
+            (await fetchImageBuffer(altUrl, undefined, 4000));
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // Attempt 4: AniList HD Artwork Lookup by title (highest quality & permanent)
+    if (!result) {
+      const candidateTitle = explicitTitle || extractTitleFromImageUrl(rawUrl);
+      if (candidateTitle && candidateTitle.length >= 2) {
+        try {
+          const hd = await fetchHdArtwork(candidateTitle, undefined, explicitType || undefined);
+          if (hd.coverExtraLarge && /^https?:\/\//i.test(hd.coverExtraLarge)) {
+            result = await fetchImageBuffer(hd.coverExtraLarge, undefined, 5000);
+            if (result) {
+              rememberPoster(explicitId || candidateTitle, hd.coverExtraLarge, false);
+              rememberPoster(candidateTitle, hd.coverExtraLarge, false);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (result) {
+      if (imageCache.size > 500) {
+        const firstKey = imageCache.keys().next().value;
+        if (firstKey) imageCache.delete(firstKey);
+      }
+      imageCache.set(rawUrl, {
+        expiresAt: now + 24 * 60 * 60 * 1000,
+        contentType: result.contentType,
+        buf: result.buf,
+      });
+
+      res.setHeader('Content-Type', result.contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=3600');
+      return res.send(result.buf);
+    }
+
+    // Attempt 5: Branded dynamic SVG fallback with title
+    const fallbackTitle = explicitTitle || extractTitleFromImageUrl(rawUrl) || 'ZoneStream HD';
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(buildFallbackPosterSvg(fallbackTitle));
+  } catch {
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    return res.status(200).send(buildFallbackPosterSvg(explicitTitle || 'ZoneStream HD'));
+  }
+});
 
 async function fetchJsonWithCache<T = any>(
   url: string,
@@ -600,14 +747,6 @@ function cleanDonghuaSeriesSlug(episodeSlug: string): string {
     .replace(/-end$/i, '');
 }
 
-function cleanTitle(raw: string): string {
-  return String(raw || '')
-    .replace(/\s*Subtitle Indonesia/gi, '')
-    .replace(/\s*Sub Indo/gi, '')
-    .replace(/\s*\[SVIP\]\s*/gi, '')
-    .trim();
-}
-
 function cleanGenreList(list: unknown[], fallback: string[]): string[] {
   const cleaned = list
     .map((g: any) => (typeof g === 'string' ? g : g?.name || g?.title || ''))
@@ -625,57 +764,11 @@ function deterministicScore(seed: string): string {
   return score.toFixed(2);
 }
 
-// Keep season/part/movie numbers intact so Season 1, Season 2, Season 5 never collide or swap posters
-function normalizePosterKey(raw: string): string {
-  return String(raw || '')
-    .toLowerCase()
-    .replace(/\b(sub|indo|subtitle|indonesia)\b/gi, ' ')
-    .replace(/[^a-z0-9]/g, '');
-}
-
-const authoritativePosterKeys = new Set<string>();
-
-function rememberPoster(key: string, poster?: string, authoritative = false) {
-  if (key && isValidHttpImageUrl(poster)) {
-    const cleanUrl = String(poster).trim();
-    const lowerKey = key.toLowerCase();
-    const normKey = `norm:${normalizePosterKey(key)}`;
-
-    if (authoritative || !slugPosterMap.has(lowerKey) || !authoritativePosterKeys.has(lowerKey)) {
-      slugPosterMap.set(lowerKey, cleanUrl);
-      if (authoritative) authoritativePosterKeys.add(lowerKey);
-    }
-    if (
-      normalizePosterKey(key).length >= 3 &&
-      (authoritative || !slugPosterMap.has(normKey) || !authoritativePosterKeys.has(normKey))
-    ) {
-      slugPosterMap.set(normKey, cleanUrl);
-      if (authoritative) authoritativePosterKeys.add(normKey);
-    }
-  }
-}
-
-function lookupPoster(slug?: string, title?: string): string {
-  if (slug) {
-    const bySlug = slugPosterMap.get(slug.toLowerCase());
-    if (bySlug) return bySlug;
-    const byNormSlug = slugPosterMap.get(`norm:${normalizePosterKey(slug)}`);
-    if (byNormSlug) return byNormSlug;
-  }
-  if (title) {
-    const byTitle = slugPosterMap.get(title.toLowerCase());
-    if (byTitle) return byTitle;
-    const byNormTitle = slugPosterMap.get(`norm:${normalizePosterKey(title)}`);
-    if (byNormTitle) return byNormTitle;
-  }
-  return '';
-}
-
 async function enrichMissingPosters(items: any[]): Promise<any[]> {
   for (const item of items) {
     if (!item.poster) {
       const found = lookupPoster(item.id, item.title);
-      if (found) item.poster = proxyPoster(found);
+      if (found) item.poster = proxyPoster(found, item.title, item.id, item.type);
     }
   }
   const missing = items.filter((x) => !x.poster && x.title);
@@ -691,7 +784,7 @@ async function enrichMissingPosters(items: any[]): Promise<any[]> {
           if (m.type === 'donghua') {
             const d = (await getDonghuaDetailData(m.id, m.episodeId || ''))?.data;
             if (isValidHttpImageUrl(d?.poster)) {
-              m.poster = proxyPoster(d.poster);
+              m.poster = proxyPoster(d.poster, m.title, m.id, m.type);
               rememberPoster(m.id, d.poster, true);
               rememberPoster(m.title, d.poster, true);
               return;
@@ -699,22 +792,26 @@ async function enrichMissingPosters(items: any[]): Promise<any[]> {
           } else {
             const a = (await getAnimeDetailData(m.id))?.data;
             if (isValidHttpImageUrl(a?.poster)) {
-              m.poster = proxyPoster(a.poster);
+              m.poster = proxyPoster(a.poster, m.title, m.id, m.type);
               rememberPoster(m.id, a.poster, true);
               rememberPoster(m.title, a.poster, true);
               return;
             }
           }
 
-          // 2. Fallback to strict AniList match only if upstream detail had no poster
+          // 2. Fallback to strict AniList match
           const hd = await fetchHdArtwork(m.title, undefined, m.type);
           if (hd.coverExtraLarge) {
-            m.poster = proxyPoster(hd.coverExtraLarge);
+            m.poster = proxyPoster(hd.coverExtraLarge, m.title, m.id, m.type);
             rememberPoster(m.id, hd.coverExtraLarge, false);
             rememberPoster(m.title, hd.coverExtraLarge, false);
+            return;
           }
+
+          // 3. Fallback to dynamic themed SVG poster so no card has empty poster
+          m.poster = proxyPoster('', m.title, m.id, m.type);
         } catch {
-          // Ignore individual timeout
+          m.poster = proxyPoster('', m.title, m.id, m.type);
         }
       })
     );
@@ -1173,7 +1270,7 @@ function mapGlobalAniListCard(g: any) {
     type: g.type as 'donghua' | 'anime',
     title: g.title,
     altTitle: g.altTitle || '',
-    poster: proxyPoster(rawPoster),
+    poster: proxyPoster(rawPoster, g.title, g.id, g.type),
     status: g.status || 'Ongoing',
     rating: g.rating || deterministicScore(g.id),
     episodeLabel: g.episodeLabel || 'Ongoing',
@@ -1201,7 +1298,7 @@ function mapDonghuaCatalogCard(d: any, fallbackLabel = 'Donghua', extraGenres: s
     id: d.slug,
     type: 'donghua' as const,
     title: t,
-    poster: proxyPoster(resolvedPoster),
+    poster: proxyPoster(resolvedPoster, t, d.slug, 'donghua'),
     status: d.status || 'Ongoing',
     rating: deterministicScore(d.slug || t || 'dh'),
     episodeLabel,
@@ -1233,7 +1330,7 @@ function mapAnimeCatalogCard(a: any, defaultStatus = 'Ongoing', extraGenres: str
     id: a.animeId,
     type: 'anime' as const,
     title: t,
-    poster: proxyPoster(resolvedPoster),
+    poster: proxyPoster(resolvedPoster, t, a.animeId, 'anime'),
     status,
     rating: a.score || deterministicScore(a.animeId || t || 'an'),
     episodeLabel,
@@ -1890,6 +1987,22 @@ interface NormalizedEpisodeEntry {
   releaseDate?: string;
 }
 
+const seriesMaxEpisodeMap = new Map<string, number>();
+
+function rememberMaxEpisode(key: string, count: number) {
+  if (!key || !count || count <= 0) return;
+  const lKey = key.toLowerCase().trim();
+  const existing = seriesMaxEpisodeMap.get(lKey) || 0;
+  if (count > existing) {
+    seriesMaxEpisodeMap.set(lKey, count);
+  }
+}
+
+function lookupMaxEpisode(key?: string): number {
+  if (!key) return 0;
+  return seriesMaxEpisodeMap.get(key.toLowerCase().trim()) || 0;
+}
+
 /**
  * Guarantees a 100% contiguous episode list from Episode 1 up to the latest episode (maxEp).
  * Fixes long-running Donghua/Anime series (e.g. Tales of Herding Gods stopping at Ep 17 on upstream)
@@ -1904,7 +2017,8 @@ function ensureCompleteEpisodeSequence(
 ): NormalizedEpisodeEntry[] {
   const byNumber = new Map<number, NormalizedEpisodeEntry>();
   const nonNumeric: NormalizedEpisodeEntry[] = [];
-  let maxEp = Math.min(2500, Math.max(0, Number(minTotalEpisodes) || 0));
+  const remembered = Math.max(lookupMaxEpisode(seriesId), lookupMaxEpisode(seriesTitle));
+  let maxEp = Math.min(2500, Math.max(0, Number(minTotalEpisodes) || 0, remembered));
   let templatePrefix = '';
   let templateSuffix = type === 'donghua' ? '-subtitle-indonesia' : '-sub-indo';
 
@@ -1936,6 +2050,11 @@ function ensureCompleteEpisodeSequence(
     } else {
       nonNumeric.push(ep);
     }
+  }
+
+  if (maxEp > 0) {
+    rememberMaxEpisode(seriesId, maxEp);
+    rememberMaxEpisode(seriesTitle, maxEp);
   }
 
   if (!templatePrefix) {

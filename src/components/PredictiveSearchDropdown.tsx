@@ -71,7 +71,7 @@ function ResilientSearchThumb({
     setStage(0);
   }, [poster, title]);
 
-  const src = resolveFallbackPosterUrl(poster, stage);
+  const src = resolveFallbackPosterUrl(poster, stage, title);
 
   if (!src) {
     return (
@@ -87,7 +87,9 @@ function ResilientSearchThumb({
       alt={title}
       loading="lazy"
       referrerPolicy="no-referrer"
-      onError={() => setStage((s) => s + 1)}
+      onError={() => {
+        if (stage < 2) setStage((s) => s + 1);
+      }}
       className="w-10 h-13 rounded-lg object-cover bg-slate-200 dark:bg-[#1F222C] shrink-0"
     />
   );

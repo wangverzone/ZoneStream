@@ -3,6 +3,8 @@ import {
   ChevronRight,
   Clock,
   Crown,
+  Flame,
+  Gift,
   Heart,
   MessageCircle,
   Play,
@@ -19,6 +21,10 @@ import { AvatarDecoration } from '../components/AvatarDecoration';
 import { StatusEmojiBadge } from '../components/VipEmojis';
 import { HeaderSearch } from '../components/HeaderSearch';
 import { NotificationBell } from '../components/NotificationBell';
+import {
+  OPEN_DAILY_REWARD_EVENT,
+  computeClientDailyRewardState,
+} from '../components/DailyRewardModal';
 import { MediaGridSkeleton } from '../components/SkeletonLoaders';
 import { useAuth } from '../context/AuthContext';
 import { seedCatalogIndex } from '../utils/catalogSearch';
@@ -68,7 +74,7 @@ function ResilientPosterImage({
     setStage(0);
   }, [src]);
 
-  const resolved = resolveFallbackPosterUrl(src, stage) || fallbackSrc;
+  const resolved = resolveFallbackPosterUrl(src, stage, alt) || fallbackSrc;
 
   return (
     <img
@@ -78,7 +84,7 @@ function ResilientPosterImage({
       decoding="async"
       referrerPolicy="no-referrer"
       onError={() => {
-        if (stage < 3) setStage((prev) => prev + 1);
+        if (stage < 2) setStage((prev) => prev + 1);
       }}
       className={className}
     />
@@ -199,8 +205,17 @@ export function HomePage() {
 
   useEffect(() => {
     void loadHome(false);
-    const socialTimer = setInterval(() => void syncRealtimeSocial(), 8000);
-    const streamTimer = setInterval(() => void loadHome(true), 60 * 1000);
+    // Lightweight polling intervals: only run when tab is visible to eliminate mobile phone lag
+    const socialTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void syncRealtimeSocial();
+      }
+    }, 30_000);
+    const streamTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void loadHome(false);
+      }
+    }, 300_000);
     const onCharismaUpdated = (e: Event) => {
       const detail = (e as CustomEvent<{ uid?: string; charisma?: number }>).detail;
       if (detail?.uid && typeof detail.charisma === 'number') {
@@ -696,9 +711,40 @@ export function HomePage() {
                     <StatusEmojiBadge statusEmoji={user.statusEmoji} size="xs" />
                   )}
                 </div>
-                <div className="mt-1 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#242731] border border-white/[0.06] text-[11px] font-extrabold text-gray-200">
-                  <Zap className="w-3 h-3 text-amber-400 fill-amber-400" />
-                  <span>Lvl. {isFounder ? '∞' : userLevel}</span>
+                <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                  <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-[#242731] border border-white/[0.06] text-[11px] font-extrabold text-gray-200">
+                    <Zap className="w-3 h-3 text-amber-400 fill-amber-400" />
+                    <span>Lvl. {isFounder ? '∞' : userLevel}</span>
+                  </div>
+                  {user && (() => {
+                    const dr = computeClientDailyRewardState(user, Date.now());
+                    return (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          window.dispatchEvent(new CustomEvent(OPEN_DAILY_REWARD_EVENT));
+                        }}
+                        className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold transition-all ${
+                          dr.canClaim
+                            ? 'bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 shadow-sm animate-pulse'
+                            : 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
+                        }`}
+                      >
+                        {dr.canClaim ? (
+                          <>
+                            <Gift className="w-3 h-3" />
+                            <span>Klaim Hadiah 24j!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Flame className="w-3 h-3 text-orange-400 fill-orange-400" />
+                            <span>Streak {dr.activeStreak} Hari</span>
+                          </>
+                        )}
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
             </Link>
@@ -733,6 +779,8 @@ export function HomePage() {
             dropdownClassName="left-0 right-0"
           />
         </section>
+
+
 
         {/* 3. FEATURED 5-SLIDE REAL-TIME TOP RANKING & SPOTLIGHT CAROUSEL */}
         <section aria-label="Peringkat & Sorotan Real-Time" className="mt-3.5">

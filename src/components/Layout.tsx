@@ -13,6 +13,8 @@ import {
   User as UserIcon,
   Users,
   X,
+  Gift,
+  Sparkles,
 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -28,6 +30,7 @@ import { AvatarDecoration } from './AvatarDecoration';
 import { CountryFlagBadge } from './CountryFlag';
 import { HeaderSearch } from './HeaderSearch';
 import { NotificationBell } from './NotificationBell';
+import { DailyRewardModal } from './DailyRewardModal';
 import { APP_LANGUAGES, UI_TRANSLATIONS, useAppLanguage } from '../utils/language';
 import { playSoundEffect } from '../utils/soundEffects';
 
@@ -336,35 +339,43 @@ export function Layout({
                   </button>
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-4 gap-2">
                   <Link
                     to="/chat"
                     onClick={() => setShowQuickGearMenu(false)}
-                    className="p-3 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center relative"
+                    className="p-2.5 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center relative"
                   >
-                    <MessageCircle className="w-5 h-5 text-sky-400" />
-                    <span className="text-[11px] font-bold text-white">Pesan Chat</span>
+                    <MessageCircle className="w-4 h-4 text-sky-400" />
+                    <span className="text-[10px] font-bold text-white">Pesan</span>
                     {unreadChat > 0 && (
-                      <span className="absolute top-2 right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-extrabold flex items-center justify-center">
+                      <span className="absolute top-1 right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-rose-600 text-white text-[9px] font-extrabold flex items-center justify-center">
                         {unreadChat}
                       </span>
                     )}
                   </Link>
                   <Link
+                    to="/profile?tab=settings&section=features"
+                    onClick={() => setShowQuickGearMenu(false)}
+                    className="p-2.5 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-400" />
+                    <span className="text-[10px] font-bold text-white">Aktivitas</span>
+                  </Link>
+                  <Link
                     to="/leaderboard"
                     onClick={() => setShowQuickGearMenu(false)}
-                    className="p-3 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center"
+                    className="p-2.5 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center"
                   >
-                    <Trophy className="w-5 h-5 text-amber-400" />
-                    <span className="text-[11px] font-bold text-white">Top Rank</span>
+                    <Trophy className="w-4 h-4 text-amber-400" />
+                    <span className="text-[10px] font-bold text-white">Top Rank</span>
                   </Link>
                   <Link
                     to="/community"
                     onClick={() => setShowQuickGearMenu(false)}
-                    className="p-3 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center"
+                    className="p-2.5 rounded-2xl bg-[#1E212B] hover:bg-[#262A36] border border-white/[0.07] flex flex-col items-center gap-1.5 text-center"
                   >
-                    <Users className="w-5 h-5 text-emerald-400" />
-                    <span className="text-[11px] font-bold text-white">Cari User</span>
+                    <Users className="w-4 h-4 text-emerald-400" />
+                    <span className="text-[10px] font-bold text-white">Komunitas</span>
                   </Link>
                 </div>
 
@@ -438,6 +449,7 @@ export function Layout({
           </div>
         </nav>
       )}
+      <DailyRewardModal />
     </div>
   );
 }

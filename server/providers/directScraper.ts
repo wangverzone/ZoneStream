@@ -33,22 +33,32 @@ function stripTags(html: string): string {
 export function extractBestImageUrl(htmlChunk: string, baseOrigin = DONGHIVE_BASE): string {
   if (!htmlChunk) return '';
   const attrPatterns = [
+    /data-wp-lazy-src=["']([^"']+)["']/gi,
     /data-lazy-src=["']([^"']+)["']/gi,
     /data-src=["']([^"']+)["']/gi,
+    /data-original-src=["']([^"']+)["']/gi,
     /data-original=["']([^"']+)["']/gi,
     /data-cfsrc=["']([^"']+)["']/gi,
+    /data-lazy=["']([^"']+)["']/gi,
+    /data-delayed-src=["']([^"']+)["']/gi,
+    /data-thumb(?:nail)?=["']([^"']+)["']/gi,
+    /data-image=["']([^"']+)["']/gi,
+    /data-full-url=["']([^"']+)["']/gi,
     /property=["']og:image["']\s+content=["']([^"']+)["']/gi,
     /content=["']([^"']+)["']\s+property=["']og:image["']/gi,
+    /data-srcset=["']([^"']+)["']/gi,
     /srcset=["']([^"']+)["']/gi,
+    /<source[^>]+srcset=["']([^"']+)["']/gi,
     /<img[^>]+src=["']([^"']+)["']/gi,
+    /background(?:-image)?:\s*url\(['"]?([^'"()]+)['"]?\)/gi,
   ];
 
   for (const regex of attrPatterns) {
     for (const match of htmlChunk.matchAll(regex)) {
       let raw = decodeHtml(match[1] || '').trim();
       if (!raw) continue;
-      // Handle srcset="url1 300w, url2 600w"
-      if (regex.source.startsWith('srcset')) {
+      // Handle srcset="url1 300w, url2 600w" or "url1, url2 2x"
+      if (regex.source.includes('srcset')) {
         const parts = raw
           .split(',')
           .map((s) => s.trim().split(/\s+/)[0])

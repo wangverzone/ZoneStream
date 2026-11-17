@@ -74,6 +74,7 @@ import { GiftPremiumModal } from '../components/GiftPremiumModal';
 import { PremiumTierIndicator } from '../components/PremiumTierIndicator';
 import { SoundSettingsPanel } from '../components/SoundSettingsPanel';
 import { VipBenefitsLog } from '../components/VipBenefitsLog';
+import { CommunityFeaturesHub } from '../components/CommunityFeaturesHub';
 import { BannerMedia } from '../components/BannerMedia';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { useAuth, PROFILE_THEMES } from '../context/AuthContext';
@@ -269,7 +270,25 @@ export function ProfilePage() {
   const [equippingFrameId, setEquippingFrameId] = useState<string>('');
   const [streakFrameNotice, setStreakFrameNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [pendingClanInvite, setPendingClanInviteState] = useState<ClanInvitePreview | null>(null);
-  const [settingsSection, setSettingsSection] = useState<'appearance' | 'sound' | 'account'>('appearance');
+  const [settingsSection, setSettingsSection] = useState<'features' | 'appearance' | 'sound' | 'account'>(() => {
+    const rawTab = searchParams.get('tab');
+    const rawSection = searchParams.get('section');
+    if (
+      rawSection === 'features' ||
+      rawTab === 'quests' ||
+      rawTab === 'shop' ||
+      rawTab === 'redeem' ||
+      rawTab === 'nobar' ||
+      rawTab === 'features' ||
+      rawTab === 'aktivitas'
+    ) {
+      return 'features';
+    }
+    if (rawSection === 'appearance' || rawSection === 'sound' || rawSection === 'account') {
+      return rawSection;
+    }
+    return 'features';
+  });
 
   useEffect(() => {
     if (user) {
@@ -391,19 +410,67 @@ export function ProfilePage() {
   };
 
   const rawTab = searchParams.get('tab');
+  const rawSection = searchParams.get('section');
+  const isFeatureSubTab =
+    rawTab === 'quests' ||
+    rawTab === 'shop' ||
+    rawTab === 'redeem' ||
+    rawTab === 'nobar' ||
+    rawTab === 'features' ||
+    rawTab === 'aktivitas';
   const activeProfileTab: 'overview' | 'wallet' | 'streak' | 'settings' | 'founder' =
     rawTab === 'wallet' ||
     rawTab === 'streak' ||
     rawTab === 'settings' ||
+    isFeatureSubTab ||
     (rawTab === 'founder' && isFounderUser)
-      ? rawTab
+      ? (isFeatureSubTab ? 'settings' : (rawTab as any))
       : 'overview';
 
+  useEffect(() => {
+    if (
+      rawSection === 'features' ||
+      rawTab === 'quests' ||
+      rawTab === 'shop' ||
+      rawTab === 'redeem' ||
+      rawTab === 'nobar' ||
+      rawTab === 'features' ||
+      rawTab === 'aktivitas'
+    ) {
+      setSettingsSection('features');
+    } else if (rawSection === 'appearance' || rawSection === 'sound' || rawSection === 'account') {
+      setSettingsSection(rawSection);
+    }
+  }, [rawTab, rawSection]);
+
+  const featureInitialTab: 'quests' | 'shop' | 'redeem' | 'nobar' =
+    rawTab === 'shop' || rawTab === 'redeem' || rawTab === 'nobar' ? rawTab : 'quests';
+
+  useEffect(() => {
+    if (isFeatureSubTab && rawTab) {
+      const timer = setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('zonestream:open-features', { detail: { tab: rawTab } })
+        );
+      }, 250);
+      return () => clearTimeout(timer);
+    }
+  }, [rawTab, isFeatureSubTab]);
+
   const setActiveProfileTab = (
-    tab: 'overview' | 'wallet' | 'streak' | 'settings' | 'founder'
+    tab: 'overview' | 'wallet' | 'streak' | 'settings' | 'founder',
+    section?: 'features' | 'appearance' | 'sound' | 'account'
   ) => {
     if (tab === 'overview') {
       setSearchParams({}, { replace: true });
+    } else if (tab === 'settings') {
+      const targetSec = section || settingsSection;
+      setSettingsSection(targetSec);
+      if (targetSec === 'features') {
+        setSearchParams({ tab: 'settings', section: 'features' }, { replace: true });
+      } else {
+        setSearchParams({ tab: 'settings', section: targetSec }, { replace: true });
+      }
     } else {
       setSearchParams({ tab }, { replace: true });
     }
@@ -1546,7 +1613,7 @@ export function ProfilePage() {
                 }`}
               >
                 <Flame className="w-4 h-4" />
-                <span>Misi &amp; Frame</span>
+                <span>Streak &amp; Frame</span>
               </button>
 
               <button
@@ -1738,11 +1805,33 @@ export function ProfilePage() {
                     <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
                   </Link>
 
+                  {/* Pusat Aktivitas Row */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveProfileTab('settings', 'features')}
+                    className="w-full p-4 flex items-center justify-between gap-3 text-left hover:bg-slate-50/80 dark:hover:bg-white/[0.02] transition-colors border-t border-slate-100 dark:border-white/[0.04]"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-500 flex items-center justify-center shrink-0">
+                        <Sparkles className="w-4 h-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                          Pusat Aktivitas
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-[#9CA3AF] truncate">
+                          Misi Harian, Toko Koin, Gift Code &amp; Room Nobar
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
+                  </button>
+
                   {/* Settings Quick Row */}
                   <button
                     type="button"
                     onClick={() => setActiveProfileTab('settings')}
-                    className="w-full p-4 flex items-center justify-between gap-3 text-left hover:bg-slate-50/80 dark:hover:bg-white/[0.02] transition-colors"
+                    className="w-full p-4 flex items-center justify-between gap-3 text-left hover:bg-slate-50/80 dark:hover:bg-white/[0.02] transition-colors border-t border-slate-100 dark:border-white/[0.04]"
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <span className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-gray-300 flex items-center justify-center shrink-0">
@@ -1924,6 +2013,33 @@ export function ProfilePage() {
                   onOpenHistoryModal={() => setShowCoinHistoryModal(true)}
                 />
               )}
+
+              {/* Pusat Aktivitas Shortcut Banner */}
+              <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-500 flex items-center justify-center shrink-0">
+                      <Sparkles className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                        Pusat Aktivitas Komunitas
+                      </h4>
+                      <p className="text-xs text-slate-500 dark:text-[#9CA3AF]">
+                        Misi Harian, Toko Koin, Gift Code, dan Ruang Nobar kini berpusat di Pengaturan agar performa aplikasi tetap cepat dan ringan di mobile.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveProfileTab('settings', 'features')}
+                    className="h-9 px-4 rounded-xl bg-gradient-to-r from-[#E84A18] to-amber-500 hover:from-[#d04215] hover:to-amber-400 text-white text-xs font-extrabold shadow-md shrink-0 active:scale-95 transition-all inline-flex items-center gap-1.5"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Buka Pusat Aktivitas</span>
+                  </button>
+                </div>
+              </div>
 
               <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
               {/* Header Row */}
@@ -2323,7 +2439,23 @@ export function ProfilePage() {
                 <p className="px-3 pt-2 pb-2 text-xs font-extrabold text-slate-500 dark:text-gray-400">
                   Kategori Pengaturan
                 </p>
-                <div className="grid grid-cols-3 lg:grid-cols-1 gap-1">
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsSection('features');
+                      setSearchParams({ tab: 'settings', section: 'features' }, { replace: true });
+                    }}
+                    className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center justify-center lg:justify-start gap-2.5 transition-colors whitespace-nowrap ${
+                      settingsSection === 'features'
+                        ? 'bg-[#E84A18] text-white shadow-sm'
+                        : 'text-slate-700 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-white/[0.06]'
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span className="truncate">Pusat Aktivitas</span>
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => setSettingsSection('appearance')}
@@ -2367,6 +2499,12 @@ export function ProfilePage() {
 
               {/* Settings Content Pane */}
               <div className="lg:col-span-8 space-y-4">
+                {settingsSection === 'features' && (
+                  <div className={`rounded-2xl border p-4 sm:p-5 shadow-sm dark:shadow-none ${activeTheme.cardClass}`}>
+                    <CommunityFeaturesHub inline={true} initialTab={featureInitialTab} />
+                  </div>
+                )}
+
                 {settingsSection === 'appearance' && (
                   <>
                     {/* Theme Mode */}

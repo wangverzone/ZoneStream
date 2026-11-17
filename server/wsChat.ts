@@ -10,11 +10,13 @@ interface ClientMeta {
   username: string;
   role: 'member' | 'founder';
   roomKey: string;
+  nobarRoomKey: string;
   isAlive: boolean;
 }
 
 const uidSockets = new Map<string, Set<WebSocket>>();
 const roomSockets = new Map<string, Set<WebSocket>>();
+const nobarSockets = new Map<string, Set<WebSocket>>();
 const clientMeta = new WeakMap<WebSocket, ClientMeta>();
 
 let wssInstance: WebSocketServer | null = null;
@@ -42,6 +44,29 @@ function subscribeSocketToRoom(ws: WebSocket, nextRoomKey: string) {
   nextSet.add(ws);
 }
 
+function subscribeSocketToNobar(ws: WebSocket, nextNobarKey: string) {
+  const meta = clientMeta.get(ws);
+  if (!meta) return;
+
+  if (meta.nobarRoomKey && meta.nobarRoomKey !== nextNobarKey) {
+    const oldSet = nobarSockets.get(meta.nobarRoomKey);
+    if (oldSet) {
+      oldSet.delete(ws);
+      if (oldSet.size === 0) nobarSockets.delete(meta.nobarRoomKey);
+    }
+  }
+
+  meta.nobarRoomKey = nextNobarKey;
+  if (!nextNobarKey) return;
+
+  let nextSet = nobarSockets.get(nextNobarKey);
+  if (!nextSet) {
+    nextSet = new Set();
+    nobarSockets.set(nextNobarKey, nextSet);
+  }
+  nextSet.add(ws);
+}
+
 function cleanupSocket(ws: WebSocket) {
   const meta = clientMeta.get(ws);
   if (!meta) return;
@@ -59,6 +84,14 @@ function cleanupSocket(ws: WebSocket) {
       if (rSet.size === 0) roomSockets.delete(meta.roomKey);
     }
   }
+
+  if (meta.nobarRoomKey) {
+    const nSet = nobarSockets.get(meta.nobarRoomKey);
+    if (nSet) {
+      nSet.delete(ws);
+      if (nSet.size === 0) nobarSockets.delete(meta.nobarRoomKey);
+    }
+  }
 }
 
 function sendJson(ws: WebSocket, payload: unknown) {
@@ -72,7 +105,7 @@ function sendJson(ws: WebSocket, payload: unknown) {
 
 function dispatchToTargets(
   payload: unknown,
-  options: { roomKey?: string; targetUids?: string[]; excludeUid?: string }
+  options: { roomKey?: string; nobarKey?: string; targetUids?: string[]; excludeUid?: string }
 ) {
   const recipients = new Set<WebSocket>();
 
@@ -80,6 +113,13 @@ function dispatchToTargets(
     const rSet = roomSockets.get(options.roomKey);
     if (rSet) {
       for (const ws of rSet) recipients.add(ws);
+    }
+  }
+
+  if (options.nobarKey) {
+    const nSet = nobarSockets.get(options.nobarKey);
+    if (nSet) {
+      for (const ws of nSet) recipients.add(ws);
     }
   }
 
@@ -106,6 +146,49 @@ function dispatchToTargets(
       // Ignore write error on closing socket
     }
   }
+}
+
+export function broadcastSystemEvent(payload: Record<string, any>) {
+  if (!wssInstance) return;
+  const serialized = JSON.stringify({ ...payload, ts: Date.now() });
+  for (const ws of wssInstance.clients) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    try {
+      ws.send(serialized);
+    } catch {
+      // Ignore write error
+    }
+  }
+}
+
+export function broadcastNobarEvent(
+  roomId: string,
+  payload: Record<string, any>,
+  excludeUid?: string
+) {
+  const nobarKey = `nobar:${roomId}`;
+  dispatchToTargets(
+    {
+      ...payload,
+      roomId,
+      ts: Date.now(),
+    },
+    { nobarKey, excludeUid }
+  );
+}
+
+export function getNobarOnlineCount(roomId: string): number {
+  const nobarKey = `nobar:${roomId}`;
+  const set = nobarSockets.get(nobarKey);
+  if (!set) return 0;
+  const uniqueUids = new Set<string>();
+  for (const ws of set) {
+    if (ws.readyState === WebSocket.OPEN) {
+      const m = clientMeta.get(ws);
+      if (m?.uid) uniqueUids.add(m.uid);
+    }
+  }
+  return uniqueUids.size;
 }
 
 export function attachChatWebSocketServer(httpServer: http.Server): void {
@@ -145,30 +228,30 @@ export function attachChatWebSocketServer(httpServer: http.Server): void {
 
       const token = String(parsed.searchParams.get('token') || '').trim();
       const authUser = token ? verifyAuthToken(token) : null;
-      if (!authUser) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
-      }
+      const effectiveUid =
+        authUser?.uid || `guest_${Math.random().toString(36).slice(2, 10)}`;
+      const effectiveUsername = authUser?.username || 'Guest';
+      const effectiveRole: 'member' | 'founder' = authUser?.role || 'member';
 
       wss.handleUpgrade(request, socket, head, (ws) => {
         const meta: ClientMeta = {
-          uid: authUser.uid,
-          username: authUser.username,
-          role: authUser.role,
+          uid: effectiveUid,
+          username: effectiveUsername,
+          role: effectiveRole,
           roomKey: '',
+          nobarRoomKey: '',
           isAlive: true,
         };
         clientMeta.set(ws, meta);
 
-        let uSet = uidSockets.get(authUser.uid);
+        let uSet = uidSockets.get(effectiveUid);
         if (!uSet) {
           uSet = new Set();
-          uidSockets.set(authUser.uid, uSet);
+          uidSockets.set(effectiveUid, uSet);
         }
         uSet.add(ws);
 
-        sendJson(ws, { type: 'chat:connected', uid: authUser.uid, ts: Date.now() });
+        sendJson(ws, { type: 'chat:connected', uid: effectiveUid, ts: Date.now() });
 
         ws.on('pong', () => {
           const m = clientMeta.get(ws);
@@ -200,6 +283,38 @@ export function attachChatWebSocketServer(httpServer: http.Server): void {
             return;
           }
 
+          if (msg.type === 'nobar:subscribe') {
+            const roomId = String(msg.roomId || '').trim().slice(0, 120);
+            subscribeSocketToNobar(ws, roomId ? `nobar:${roomId}` : '');
+            if (roomId) {
+              broadcastNobarEvent(roomId, {
+                type: 'nobar:presence',
+                onlineCount: getNobarOnlineCount(roomId),
+              });
+            }
+            return;
+          }
+
+          if (msg.type === 'nobar:sync') {
+            const roomId = String(msg.roomId || '').trim().slice(0, 120);
+            if (!roomId) return;
+            broadcastNobarEvent(
+              roomId,
+              {
+                type: 'nobar:sync',
+                senderUid: m.uid,
+                senderName: m.username,
+                isPlaying: Boolean(msg.isPlaying),
+                currentTime: Math.max(0, Number(msg.currentTime) || 0),
+                episodeId: String(msg.episodeId || ''),
+                mediaType: String(msg.mediaType || 'donghua'),
+                seriesTitle: String(msg.seriesTitle || ''),
+              },
+              m.uid
+            );
+            return;
+          }
+
           if (msg.type === 'typing') {
             const roomType = String(msg.roomType || '') as ChatRoomType;
             const roomKey = String(msg.roomKey || '').trim().slice(0, 120);
@@ -226,7 +341,17 @@ export function attachChatWebSocketServer(httpServer: http.Server): void {
           }
         });
 
-        ws.on('close', () => cleanupSocket(ws));
+        ws.on('close', () => {
+          const prevNobar = meta.nobarRoomKey;
+          cleanupSocket(ws);
+          if (prevNobar && prevNobar.startsWith('nobar:')) {
+            const rId = prevNobar.slice('nobar:'.length);
+            broadcastNobarEvent(rId, {
+              type: 'nobar:presence',
+              onlineCount: getNobarOnlineCount(rId),
+            });
+          }
+        });
         ws.on('error', () => cleanupSocket(ws));
       });
     } catch {

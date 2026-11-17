@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Bookmark, Clock, Play } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
-import { MediaCard } from '../components/MediaCard';
+import { MediaCard, resolveFallbackPosterUrl } from '../components/MediaCard';
 import { useAuth } from '../context/AuthContext';
 import heroFallbackImg from '../assets/images/donghua_hero_fallback_1794755348232.jpg';
 
@@ -133,7 +133,7 @@ export function LibraryPage() {
                 >
                   <div className="relative w-28 aspect-video rounded-xl overflow-hidden bg-slate-200 dark:bg-[#1D202A] shrink-0">
                     <img
-                      src={eb.poster || heroFallbackImg}
+                      src={resolveFallbackPosterUrl(eb.poster, 0, eb.title, eb.episodeId) || heroFallbackImg}
                       alt={eb.title}
                       referrerPolicy="no-referrer"
                       onError={(e) => {
@@ -192,7 +192,7 @@ export function LibraryPage() {
               >
                 <div className="relative w-28 aspect-video rounded-xl overflow-hidden bg-slate-200 dark:bg-[#1D202A] shrink-0">
                   <img
-                    src={h.poster || heroFallbackImg}
+                    src={resolveFallbackPosterUrl(h.poster, 0, h.title, h.episodeId) || heroFallbackImg}
                     alt={h.title}
                     referrerPolicy="no-referrer"
                     onError={(e) => {
