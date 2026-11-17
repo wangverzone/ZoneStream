@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import mongoose from 'mongoose';
@@ -41,6 +42,7 @@ const memoryCodes = new Map<
   string,
   { email: string; uid?: string; purpose: string; code: string; expiresAt: number }
 >();
+const otpFailedAttempts = new Map<string, number>();
 
 const getFallbackFilePath = (): string => {
   const isVercel = Boolean(process.env.VERCEL);
@@ -765,6 +767,8 @@ export async function saveOtpCode(params: {
   code: string;
 }) {
   const normalizedEmail = params.email.trim().toLowerCase();
+  const attemptKey = `${params.purpose}:${normalizedEmail}`;
+  otpFailedAttempts.delete(attemptKey);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
   const mongoOk = await connectDB();
 
@@ -783,13 +787,20 @@ export async function saveOtpCode(params: {
     return;
   }
 
-  memoryCodes.set(`${params.purpose}:${normalizedEmail}`, {
+  memoryCodes.set(attemptKey, {
     email: normalizedEmail,
     uid: params.uid,
     purpose: params.purpose,
     code: params.code,
     expiresAt: expiresAt.getTime(),
   });
+}
+
+function safeOtpEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 export async function verifyAndConsumeOtpCode(params: {
@@ -799,26 +810,47 @@ export async function verifyAndConsumeOtpCode(params: {
 }): Promise<boolean> {
   const normalizedEmail = params.email.trim().toLowerCase();
   const cleanCode = params.code.trim();
+  const attemptKey = `${params.purpose}:${normalizedEmail}`;
+  const currentAttempts = otpFailedAttempts.get(attemptKey) || 0;
+  if (currentAttempts >= 5) {
+    return false;
+  }
+
   const mongoOk = await connectDB();
 
   if (mongoOk) {
     const doc = await VerificationCodeModel.findOne({
       email: normalizedEmail,
       purpose: params.purpose,
-      code: cleanCode,
       expiresAt: { $gt: new Date() },
     });
-    if (!doc) return false;
+    if (!doc || !safeOtpEqual(String(doc.code || ''), cleanCode)) {
+      const nextAttempts = currentAttempts + 1;
+      otpFailedAttempts.set(attemptKey, nextAttempts);
+      if (nextAttempts >= 5) {
+        await VerificationCodeModel.deleteMany({
+          email: normalizedEmail,
+          purpose: params.purpose,
+        }).catch(() => {});
+      }
+      return false;
+    }
+    otpFailedAttempts.delete(attemptKey);
     await VerificationCodeModel.deleteOne({ _id: doc._id });
     return true;
   }
 
-  const key = `${params.purpose}:${normalizedEmail}`;
-  const entry = memoryCodes.get(key);
-  if (!entry || entry.code !== cleanCode || Date.now() > entry.expiresAt) {
+  const entry = memoryCodes.get(attemptKey);
+  if (!entry || Date.now() > entry.expiresAt || !safeOtpEqual(entry.code, cleanCode)) {
+    const nextAttempts = currentAttempts + 1;
+    otpFailedAttempts.set(attemptKey, nextAttempts);
+    if (nextAttempts >= 5) {
+      memoryCodes.delete(attemptKey);
+    }
     return false;
   }
-  memoryCodes.delete(key);
+  otpFailedAttempts.delete(attemptKey);
+  memoryCodes.delete(attemptKey);
   return true;
 }
 

@@ -616,6 +616,9 @@ router.post('/friends/accept', requireAuth, async (req: AuthenticatedRequest, re
       if (!existing) {
         return res.status(404).json({ error: 'Permintaan pertemanan tidak ditemukan.' });
       }
+      if (existing.status !== 'accepted' && existing.recipientUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya penerima permintaan yang dapat menyetujui pertemanan ini.' });
+      }
       existing.status = 'accepted';
       await existing.save();
     } else {
@@ -623,6 +626,9 @@ router.post('/friends/accept', requireAuth, async (req: AuthenticatedRequest, re
       const idx = all.findIndex((f) => f.pairKey === pairKey);
       if (idx < 0) {
         return res.status(404).json({ error: 'Permintaan pertemanan tidak ditemukan.' });
+      }
+      if (all[idx].status !== 'accepted' && all[idx].recipientUid !== meUid) {
+        return res.status(403).json({ error: 'Hanya penerima permintaan yang dapat menyetujui pertemanan ini.' });
       }
       all[idx].status = 'accepted';
       all[idx].updatedAt = new Date();
@@ -1074,6 +1080,9 @@ router.post('/groups/:groupId/invite', requireAuth, async (req: AuthenticatedReq
       const all = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
       const found = all.find((g) => g.groupId === groupId);
       if (!found) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      if (!found.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup.' });
+      }
       if (!found.members.includes(targetUid)) {
         found.members.push(targetUid);
       }
@@ -1107,6 +1116,9 @@ router.post('/groups/:groupId/avatar', requireAuth, async (req: AuthenticatedReq
       const all = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
       const found = all.find((g) => g.groupId === groupId);
       if (!found) return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      if (!found.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
+      }
       found.avatarUrl = avatarUrl;
       writeFallbackJson('groups-v1.json', all);
     }
@@ -1191,6 +1203,13 @@ router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedR
 
     let created: any;
     if (isDbMongoConnected()) {
+      const group = await GroupChatModel.findOne({ groupId });
+      if (!group) {
+        return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      }
+      if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
+      }
       const doc = await GroupMessageModel.create({
         groupId,
         senderUid: meUid,
@@ -1206,6 +1225,14 @@ router.post('/groups/:groupId/messages', requireAuth, async (req: AuthenticatedR
       });
       created = { ...doc.toObject(), _id: String(doc._id) };
     } else {
+      const allGroups = readFallbackJson<StoredGroupChat[]>('groups-v1.json', []);
+      const group = allGroups.find((g) => g.groupId === groupId);
+      if (!group) {
+        return res.status(404).json({ error: 'Grup tidak ditemukan.' });
+      }
+      if (!group.members.includes(meUid) && req.authUser!.role !== 'founder') {
+        return res.status(403).json({ error: 'Anda bukan anggota grup ini.' });
+      }
       const all = readFallbackJson<StoredGroupMessage[]>('group-messages-v1.json', []);
       created = {
         _id: `gmsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,

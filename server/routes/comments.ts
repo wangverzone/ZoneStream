@@ -406,6 +406,10 @@ router.post('/:id/pin', requireAuth, async (req: AuthenticatedRequest, res) => {
     if (req.authUser?.role !== 'founder') {
       return res.status(403).json({ error: 'Hanya VerzonFounder yang dapat menyematkan komentar.' });
     }
+    const actor = await findUserByUid(req.authUser.uid);
+    if (!actor || actor.role !== 'founder') {
+      return res.status(403).json({ error: 'Hanya VerzonFounder yang dapat menyematkan komentar.' });
+    }
     const commentId = req.params.id;
     const mongoOk = await connectDB();
 

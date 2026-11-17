@@ -78,9 +78,10 @@ export const COIN_PREMIUM_PACKAGES: readonly CoinPremiumPackageSpec[] = Object.f
 ]);
 
 const COIN_LEDGER_FALLBACK_FILE = 'coin-ledger-v1.json';
-const senderMutexSet = new Set<string>();
+const coinUserMutexSet = new Set<string>();
 const idempotencyCache = new Map<string, { expiresAt: number; result: any }>();
 const giftRateWindow = new Map<string, number[]>();
+const checkInRateWindow = new Map<string, number[]>();
 const watchDurationCooldown = new Map<string, number>();
 const commentExpState = new Map<string, { lastAt: number; lastText: string; dayStr: string; dayCount: number }>();
 
@@ -367,15 +368,15 @@ export async function executeSecureCoinPremiumGift(params: {
     };
   }
 
-  if (senderMutexSet.has(senderUid)) {
+  if (coinUserMutexSet.has(senderUid)) {
     return {
       ok: false,
       status: 409,
-      error: 'Transaksi sebelumnya sedang diproses. Mohon tunggu sebentar.',
+      error: 'Transaksi koin sebelumnya sedang diproses. Mohon tunggu sebentar.',
     };
   }
 
-  senderMutexSet.add(senderUid);
+  coinUserMutexSet.add(senderUid);
 
   try {
     await connectDB();
@@ -644,7 +645,7 @@ export async function executeSecureCoinPremiumGift(params: {
 
     return finalResult;
   } finally {
-    senderMutexSet.delete(senderUid);
+    coinUserMutexSet.delete(senderUid);
   }
 }
 
@@ -669,7 +670,17 @@ export const DAILY_CHECKIN_REWARDS: readonly DailyCheckInTierSpec[] = Object.fre
   { day: 7, coins: 400, bonusExp: 100, label: 'Hari 7 · Jackpot', isJackpot: true },
 ]);
 
-const checkInMutexSet = new Set<string>();
+function checkCheckInRateLimit(uid: string): boolean {
+  const now = Date.now();
+  const history = (checkInRateWindow.get(uid) || []).filter((ts) => now - ts < 60_000);
+  if (history.length >= 10) {
+    checkInRateWindow.set(uid, history);
+    return false;
+  }
+  history.push(now);
+  checkInRateWindow.set(uid, history);
+  return true;
+}
 
 export interface DailyCheckInStatusSnapshot {
   canClaim: boolean;
@@ -761,15 +772,23 @@ export async function executeDailyCheckIn(uid: string): Promise<ExecuteDailyChec
     return { ok: false, status: 401, error: 'Sesi pengguna tidak valid.' };
   }
 
-  if (checkInMutexSet.has(cleanUid)) {
+  if (!checkCheckInRateLimit(cleanUid)) {
     return {
       ok: false,
-      status: 409,
-      error: 'Permintaan check-in sedang diproses. Mohon tunggu sebentar.',
+      status: 429,
+      error: 'Terlalu banyak percobaan check-in dalam 1 menit. Tunggu sebentar.',
     };
   }
 
-  checkInMutexSet.add(cleanUid);
+  if (coinUserMutexSet.has(cleanUid)) {
+    return {
+      ok: false,
+      status: 409,
+      error: 'Permintaan koin sedang diproses. Mohon tunggu sebentar.',
+    };
+  }
+
+  coinUserMutexSet.add(cleanUid);
 
   try {
     await connectDB();
@@ -923,6 +942,6 @@ export async function executeDailyCheckIn(uid: string): Promise<ExecuteDailyChec
       user: sanitizeUser(savedUser),
     };
   } finally {
-    checkInMutexSet.delete(cleanUid);
+    coinUserMutexSet.delete(cleanUid);
   }
 }

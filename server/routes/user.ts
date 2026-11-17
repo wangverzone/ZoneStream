@@ -1,9 +1,11 @@
+import crypto from 'crypto';
 import { Router } from 'express';
 import nodemailer from 'nodemailer';
 import {
   hashPassword,
   requireAuth,
   signAuthToken,
+  verifyAuthToken,
   verifyPassword,
   type AuthenticatedRequest,
 } from '../auth.ts';
@@ -45,6 +47,24 @@ import {
 
 const router = Router();
 const FIREBASE_WEB_API_KEY = 'AIzaSyBPXKFLf1xPdo9H9Bw8w8KAPFGY0dYH-04';
+
+const authRateWindows = new Map<string, number[]>();
+function checkAuthRateLimit(bucket: string, limit: number, windowMs: number): boolean {
+  const now = Date.now();
+  const entries = (authRateWindows.get(bucket) || []).filter((ts) => now - ts < windowMs);
+  if (entries.length >= limit) {
+    authRateWindows.set(bucket, entries);
+    return false;
+  }
+  entries.push(now);
+  authRateWindows.set(bucket, entries);
+  return true;
+}
+
+function getClientIp(req: any): string {
+  const fwd = String(req.headers?.['x-forwarded-for'] || '').split(',')[0].trim();
+  return fwd || req.ip || req.socket?.remoteAddress || 'unknown';
+}
 
 export const getExpNeededForLevel = (level: number) => Math.max(100, level * 200);
 
@@ -142,6 +162,12 @@ router.post('/login', async (req, res) => {
     if (!identifier || !password) {
       return res.status(400).json({ error: 'Username/Email dan Password wajib diisi.' });
     }
+    const rateKey = `login:${getClientIp(req)}:${String(identifier).trim().toLowerCase()}`;
+    if (!checkAuthRateLimit(rateKey, 15, 5 * 60 * 1000)) {
+      return res.status(429).json({
+        error: 'Terlalu banyak percobaan login. Silakan tunggu beberapa menit lalu coba lagi.',
+      });
+    }
 
     const user = await findUserByIdentifier(String(identifier));
     if (!user || !verifyPassword(String(password), user.passwordHash)) {
@@ -189,7 +215,7 @@ router.post('/firebase-google', async (req, res) => {
 
     const verifyJson = (await verifyResp.json()) as any;
     const fbUser = verifyJson?.users?.[0];
-    if (!verifyResp.ok || !fbUser?.email) {
+    if (!verifyResp.ok || !fbUser?.email || fbUser.emailVerified === false) {
       return res.status(401).json({ error: 'Verifikasi akun Google Firebase gagal.' });
     }
 
@@ -294,6 +320,13 @@ router.post('/send-code', async (req, res) => {
       return res.status(400).json({ error: 'Tujuan kode verifikasi tidak valid.' });
     }
 
+    const sendCodeIpKey = `sendcode:${getClientIp(req)}:${purpose}`;
+    if (!checkAuthRateLimit(sendCodeIpKey, 8, 5 * 60 * 1000)) {
+      return res.status(429).json({
+        error: 'Terlalu banyak permintaan kode verifikasi. Mohon tunggu beberapa menit.',
+      });
+    }
+
     let resolvedEmail = String(targetEmail || email || '').trim().toLowerCase();
     let uid = '';
 
@@ -319,15 +352,24 @@ router.post('/send-code', async (req, res) => {
       uid = user.uid;
     } else if (purpose === 'change-password') {
       const authHeader = req.headers.authorization || '';
-      const user = await findUserByIdentifier(resolvedEmail);
-      if (!authHeader.startsWith('Bearer ') && !user) {
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const decoded = token ? verifyAuthToken(token) : null;
+      if (!decoded) {
         return res.status(401).json({ error: 'Silakan masuk terlebih dahulu.' });
       }
-      if (user) {
-        resolvedEmail = user.email;
-        uid = user.uid;
+      const user = await findUserByUid(decoded.uid);
+      if (!user) {
+        return res.status(404).json({ error: 'Akun tidak ditemukan.' });
       }
+      resolvedEmail = user.email;
+      uid = user.uid;
     } else if (purpose === 'change-email') {
+      const authHeader = req.headers.authorization || '';
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const decoded = token ? verifyAuthToken(token) : null;
+      if (!decoded) {
+        return res.status(401).json({ error: 'Silakan masuk terlebih dahulu.' });
+      }
       if (!resolvedEmail || !resolvedEmail.includes('@')) {
         return res.status(400).json({ error: 'Masukkan alamat email baru yang valid.' });
       }
@@ -335,9 +377,10 @@ router.post('/send-code', async (req, res) => {
       if (taken) {
         return res.status(409).json({ error: 'Email tersebut sudah digunakan akun lain.' });
       }
+      uid = decoded.uid;
     }
 
-    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const code = String(crypto.randomInt(100000, 1000000));
     await saveOtpCode({
       email: resolvedEmail,
       uid,
@@ -356,11 +399,20 @@ router.post('/send-code', async (req, res) => {
 
     const delivery = await dispatchEmailCode(resolvedEmail, code, purposeText);
 
+    const isSensitiveSecurityFlow =
+      purpose === 'forgot-password' || purpose === 'change-password' || purpose === 'change-email';
+
+    if (isSensitiveSecurityFlow && delivery !== 'email') {
+      return res.status(503).json({
+        error: 'Layanan pengiriman email OTP sedang tidak tersedia. Coba lagi beberapa saat.',
+      });
+    }
+
     return res.json({
       ok: true,
       delivery,
       email: resolvedEmail,
-      previewCode: delivery === 'in-app' ? code : undefined,
+      previewCode: !isSensitiveSecurityFlow && delivery === 'in-app' ? code : undefined,
       message:
         delivery === 'email'
           ? `Kode verifikasi 6 digit telah dikirim ke Gmail ${resolvedEmail}. Cek Kotak Masuk atau folder Spam.`
@@ -381,6 +433,10 @@ router.post('/verify-change-email', requireAuth, async (req: AuthenticatedReques
 
     if (!cleanEmail || !code || !currentPassword) {
       return res.status(400).json({ error: 'Email baru, kode verifikasi, dan password saat ini wajib diisi.' });
+    }
+
+    if (!checkAuthRateLimit(`verify-email:${uid}`, 10, 10 * 60 * 1000)) {
+      return res.status(429).json({ error: 'Terlalu banyak percobaan verifikasi. Coba lagi nanti.' });
     }
 
     const currentUser = await findUserByUid(uid);
@@ -419,6 +475,10 @@ router.post('/verify-change-password', requireAuth, async (req: AuthenticatedReq
       return res.status(400).json({ error: 'Kode verifikasi dan password baru (min. 6 karakter) wajib diisi.' });
     }
 
+    if (!checkAuthRateLimit(`verify-pw:${uid}`, 10, 10 * 60 * 1000)) {
+      return res.status(429).json({ error: 'Terlalu banyak percobaan verifikasi. Coba lagi nanti.' });
+    }
+
     const currentUser = await findUserByUid(uid);
     if (!currentUser) {
       return res.status(404).json({ error: 'Akun tidak ditemukan.' });
@@ -451,6 +511,11 @@ router.post('/forgot-password', async (req, res) => {
     const { identifier, code, newPassword } = req.body || {};
     if (!identifier || !code || !newPassword || String(newPassword).length < 6) {
       return res.status(400).json({ error: 'Email/Username, kode verifikasi, dan password baru (min. 6 karakter) wajib diisi.' });
+    }
+
+    const rateKey = `forgot:${getClientIp(req)}:${String(identifier).trim().toLowerCase()}`;
+    if (!checkAuthRateLimit(rateKey, 10, 10 * 60 * 1000)) {
+      return res.status(429).json({ error: 'Terlalu banyak percobaan reset password. Coba lagi nanti.' });
     }
 
     const user = await findUserByIdentifier(String(identifier));
@@ -573,14 +638,19 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
     const hasPremiumAccess = Boolean(existing.isPremium || existing.role === 'founder');
     const cleanBorder = typeof activeBorder === 'string' ? activeBorder.trim().slice(0, 64) : undefined;
     const cleanTheme = typeof profileTheme === 'string' ? profileTheme.trim().slice(0, 64) : undefined;
-    const cleanBgColor =
-      typeof profileBgColor === 'string'
-        ? profileBgColor.trim() === ''
-          ? ''
-          : /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(profileBgColor.trim())
-          ? profileBgColor.trim().toUpperCase()
-          : undefined
-        : undefined;
+    let cleanBgColor: string | undefined;
+    if (typeof profileBgColor === 'string') {
+      const trimmedColor = profileBgColor.trim();
+      if (trimmedColor === '') {
+        cleanBgColor = '';
+      } else if (/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(trimmedColor)) {
+        cleanBgColor = trimmedColor.toUpperCase();
+      } else {
+        return res.status(400).json({
+          error: 'Format warna latar profil tidak valid. Gunakan kode hex seperti #1A1B26.',
+        });
+      }
+    }
 
     const streakTier = cleanBorder
       ? STREAK_FRAME_TIERS.find((t) => t.id === cleanBorder)
@@ -739,7 +809,7 @@ router.put('/profile', requireAuth, async (req: AuthenticatedRequest, res) => {
 // Direct upgrade endpoint locked for members (must checkout via Pakasir /api/payment/create-transaction)
 router.post('/upgrade', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    if (req.authUser?.role !== 'founder') {
+    if (!(await ensureFounderActor(req))) {
       return res.status(402).json({
         error: 'Silakan selesaikan pembayaran paket VIP via Pakasir untuk mengaktifkan Premium.',
       });
